@@ -62,6 +62,17 @@ interface PumpPortalEventRow {
   processingAttempts?: number;
 }
 
+export interface ClosedTradeStatRow {
+  reason: string;
+  exitPriceSource: string;
+  score: number;
+  source: string;
+  pnlUsd: number;
+  pnlPct: number;
+  openedAt: string;
+  closedAt: string;
+}
+
 export class SqliteStore {
   private readonly db: Database.Database;
 
@@ -223,10 +234,10 @@ export class SqliteStore {
   saveClosedTrade(trade: PaperTrade): void {
     const insert = this.db.prepare(
       `INSERT OR IGNORE INTO closed_trades (
-        position_id, chain, address, symbol, token_json, entry_price_usd, exit_price_usd,
+        position_id, chain, address, symbol, token_json, score, source, entry_price_usd, exit_price_usd,
         quantity, reason, exit_price_source, pnl_usd, pnl_pct, opened_at, closed_at
       ) VALUES (
-        @positionId, @chain, @address, @symbol, @tokenJson, @entryPriceUsd, @exitPriceUsd,
+        @positionId, @chain, @address, @symbol, @tokenJson, @score, @source, @entryPriceUsd, @exitPriceUsd,
         @quantity, @reason, @exitPriceSource, @pnlUsd, @pnlPct, @openedAt, @closedAt
       )`,
     );
@@ -239,6 +250,8 @@ export class SqliteStore {
         address: trade.token.address,
         symbol: trade.token.symbol,
         tokenJson: JSON.stringify(trade.token),
+        score: trade.score ?? 0,
+        source: trade.token.source ?? '',
         entryPriceUsd: trade.entryPriceUsd,
         exitPriceUsd: trade.exitPriceUsd,
         quantity: trade.quantity,
@@ -252,6 +265,19 @@ export class SqliteStore {
       removeOpen.run(trade.positionId);
     });
     transaction();
+  }
+
+  // All closed trades projected to the fields performance analytics needs. Not
+  // limited: aggregate stats should reflect the full history, not a recent page.
+  loadClosedTradeStats(): ClosedTradeStatRow[] {
+    return this.db
+      .prepare(
+        `SELECT reason, exit_price_source as exitPriceSource, score, source,
+                pnl_usd as pnlUsd, pnl_pct as pnlPct, opened_at as openedAt, closed_at as closedAt
+         FROM closed_trades
+         ORDER BY closed_at ASC`,
+      )
+      .all() as ClosedTradeStatRow[];
   }
 
   listClosedTrades(limit = 50): ClosedTradeRow[] {
@@ -389,6 +415,8 @@ export class SqliteStore {
         address TEXT NOT NULL,
         symbol TEXT NOT NULL,
         token_json TEXT NOT NULL,
+        score INTEGER NOT NULL DEFAULT 0,
+        source TEXT NOT NULL DEFAULT '',
         entry_price_usd REAL NOT NULL,
         exit_price_usd REAL NOT NULL,
         quantity REAL NOT NULL,
@@ -429,6 +457,8 @@ export class SqliteStore {
     this.addColumnIfMissing('open_positions', 'high_water_mark_usd', 'REAL');
     this.addColumnIfMissing('open_positions', 'last_mark_usd', 'REAL');
     this.addColumnIfMissing('closed_trades', 'exit_price_source', "TEXT NOT NULL DEFAULT 'fresh'");
+    this.addColumnIfMissing('closed_trades', 'score', 'INTEGER NOT NULL DEFAULT 0');
+    this.addColumnIfMissing('closed_trades', 'source', "TEXT NOT NULL DEFAULT ''");
     this.addColumnIfMissing('scored_candidates', 'route_input_mint', 'TEXT');
     this.addColumnIfMissing('scored_candidates', 'route_input_symbol', 'TEXT');
     this.addColumnIfMissing('pumpportal_events', 'processing_status', "TEXT NOT NULL DEFAULT 'pending'");

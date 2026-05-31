@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { renderReport } from '../bot/report.js';
 import { runPaperCycle } from '../bot/paperCycle.js';
 import { renderStorageReport } from '../bot/storageReport.js';
+import { computeTradeAnalytics, renderAnalyticsReport } from '../bot/analytics.js';
 import { runPumpWatch } from '../bot/pumpWatch.js';
 import { processPumpPortalEvents } from '../bot/pumpProcess.js';
 import { processExits } from '../bot/exitPositions.js';
@@ -114,6 +115,16 @@ program.command('report').description('Print persisted scan, position, and trade
   );
   store.close();
 });
+
+program
+  .command('stats')
+  .description('Aggregate paper-trade performance: expectancy, win rate, and PnL by reason / score / source')
+  .action(() => {
+    const store = new SqliteStore();
+    const analytics = computeTradeAnalytics(store.loadClosedTradeStats());
+    process.stdout.write(renderAnalyticsReport(analytics));
+    store.close();
+  });
 
 program
   .command('pump-watch')

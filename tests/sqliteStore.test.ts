@@ -73,6 +73,7 @@ describe('SqliteStore', () => {
     const trade: PaperTrade = {
       positionId: position.id,
       token: candidate,
+      score: 82,
       entryPriceUsd: 0.01,
       exitPriceUsd: 0.015,
       quantity: 2500,
@@ -91,6 +92,10 @@ describe('SqliteStore', () => {
     expect(store.listOpenPositions()).toHaveLength(0);
     expect(store.listClosedTrades()).toHaveLength(1);
     expect(store.listClosedTrades()[0]).toMatchObject({ positionId: 'paper-1', pnlUsd: 12.5, exitPriceSource: 'fresh' });
+    // Analytics projection carries the entry score and discovery source.
+    const stats = store.loadClosedTradeStats();
+    expect(stats).toHaveLength(1);
+    expect(stats[0]).toMatchObject({ reason: 'take_profit', score: 82, source: 'test', exitPriceSource: 'fresh', pnlUsd: 12.5 });
     store.close();
   });
 

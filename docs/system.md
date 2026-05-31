@@ -308,6 +308,21 @@ Prints persisted state from SQLite:
 - PnL summary
 - win rate
 
+### `stats`
+
+```bash
+npm run bot -- stats
+```
+
+Aggregates closed paper trades into performance analytics. Reports overall expectancy (mean PnL per trade), win rate, average win/loss, profit factor (gross wins ÷ gross losses), and average hold time, then breaks the same metrics down by:
+
+- exit reason (stop-loss / take-profit / trailing-stop / timeout),
+- exit price source (`fresh` vs stale `last_mark` / `entry_fallback`),
+- entry score bucket (`75-79`, `80-89`, `90-100`),
+- discovery source (PumpPortal / DexScreener / Raydium combinations).
+
+This is the loop that tells you whether the score threshold and exit rules are paying off, and which discovery source is feeding good or toxic flow. It reads only persisted trades and makes no network calls.
+
 ### `pump-watch`
 
 ```bash

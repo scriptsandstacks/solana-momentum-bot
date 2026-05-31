@@ -195,6 +195,7 @@ export class PaperBroker {
     const trade: PaperTrade = {
       positionId,
       token: position.token,
+      score: position.score,
       entryPriceUsd: position.entryPriceUsd,
       exitPriceUsd: netExitPriceUsd,
       quantity: position.quantity,
