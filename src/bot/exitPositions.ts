@@ -109,8 +109,13 @@ export async function processExits(options: ProcessExitsOptions): Promise<Proces
   const fetchPrices = options.fetchPrices ?? defaultFetchPrices;
   const prices = await fetchPrices(mints);
 
-  const recordClose = (positionId: string, exitPriceUsd: number, reason: ExitReason) => {
-    const trade = broker.closePosition(positionId, exitPriceUsd, reason, now);
+  const recordClose = (
+    positionId: string,
+    exitPriceUsd: number,
+    reason: ExitReason,
+    exitPriceSource: NonNullable<PaperTrade['exitPriceSource']> = 'fresh',
+  ) => {
+    const trade = broker.closePosition(positionId, exitPriceUsd, reason, now, exitPriceSource);
     options.store.saveClosedTrade(trade);
     result.closed += 1;
     if (reason === 'stop_loss') result.stopLoss += 1;
@@ -127,7 +132,8 @@ export async function processExits(options: ProcessExitsOptions): Promise<Proces
       // at its last known mark (entry price if it was never marked) so it frees
       // its slot. Price-based exits are skipped until a real price returns.
       if (minutesHeld(position.openedAt, now) >= options.exits.maxHoldMinutes) {
-        recordClose(position.id, position.lastMarkUsd ?? position.entryPriceUsd, 'timeout');
+        const exitPriceSource = position.lastMarkUsd === undefined ? 'entry_fallback' : 'last_mark';
+        recordClose(position.id, position.lastMarkUsd ?? position.entryPriceUsd, 'timeout', exitPriceSource);
       } else {
         result.missingPrice += 1;
       }

@@ -103,7 +103,7 @@ describe('processExits', () => {
 
     expect(result).toMatchObject({ positionsChecked: 1, repriced: 1, closed: 1, takeProfit: 1 });
     expect(store._closed).toHaveLength(1);
-    expect(store._closed[0]).toMatchObject({ positionId: 'paper-1', reason: 'take_profit' });
+    expect(store._closed[0]).toMatchObject({ positionId: 'paper-1', reason: 'take_profit', exitPriceSource: 'fresh' });
     expect(store._closed[0].pnlUsd).toBeGreaterThan(0);
   });
 
@@ -155,7 +155,12 @@ describe('processExits', () => {
 
     expect(result).toMatchObject({ positionsChecked: 1, missingPrice: 0, closed: 1, timeout: 1 });
     expect(store._closed).toHaveLength(1);
-    expect(store._closed[0]).toMatchObject({ positionId: 'paper-1', reason: 'timeout', exitPriceUsd: 0.013 });
+    expect(store._closed[0]).toMatchObject({
+      positionId: 'paper-1',
+      reason: 'timeout',
+      exitPriceUsd: 0.013,
+      exitPriceSource: 'last_mark',
+    });
     // PnL is booked against the last mark, not entry: (0.013 - 0.01) * 2500 = 7.5
     expect(store._closed[0].pnlUsd).toBeCloseTo(7.5);
   });
@@ -173,7 +178,7 @@ describe('processExits', () => {
     });
 
     expect(result).toMatchObject({ closed: 1, timeout: 1 });
-    expect(store._closed[0]).toMatchObject({ reason: 'timeout', exitPriceUsd: 0.01 });
+    expect(store._closed[0]).toMatchObject({ reason: 'timeout', exitPriceUsd: 0.01, exitPriceSource: 'entry_fallback' });
     expect(store._closed[0].pnlUsd).toBeCloseTo(0);
   });
 });

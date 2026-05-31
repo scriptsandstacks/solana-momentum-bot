@@ -40,6 +40,7 @@ interface ClosedTradeRow {
   exitPriceUsd: number;
   quantity: number;
   reason: string;
+  exitPriceSource: string;
   pnlUsd: number;
   pnlPct: number;
   openedAt: string;
@@ -223,10 +224,10 @@ export class SqliteStore {
     const insert = this.db.prepare(
       `INSERT OR IGNORE INTO closed_trades (
         position_id, chain, address, symbol, token_json, entry_price_usd, exit_price_usd,
-        quantity, reason, pnl_usd, pnl_pct, opened_at, closed_at
+        quantity, reason, exit_price_source, pnl_usd, pnl_pct, opened_at, closed_at
       ) VALUES (
         @positionId, @chain, @address, @symbol, @tokenJson, @entryPriceUsd, @exitPriceUsd,
-        @quantity, @reason, @pnlUsd, @pnlPct, @openedAt, @closedAt
+        @quantity, @reason, @exitPriceSource, @pnlUsd, @pnlPct, @openedAt, @closedAt
       )`,
     );
     const removeOpen = this.db.prepare('DELETE FROM open_positions WHERE id = ?');
@@ -242,6 +243,7 @@ export class SqliteStore {
         exitPriceUsd: trade.exitPriceUsd,
         quantity: trade.quantity,
         reason: trade.reason,
+        exitPriceSource: trade.exitPriceSource ?? 'fresh',
         pnlUsd: trade.pnlUsd,
         pnlPct: trade.pnlPct,
         openedAt: trade.openedAt.toISOString(),
@@ -257,7 +259,7 @@ export class SqliteStore {
       .prepare(
         `SELECT position_id as positionId, chain, address, symbol,
                 entry_price_usd as entryPriceUsd, exit_price_usd as exitPriceUsd,
-                quantity, reason, pnl_usd as pnlUsd, pnl_pct as pnlPct,
+                quantity, reason, exit_price_source as exitPriceSource, pnl_usd as pnlUsd, pnl_pct as pnlPct,
                 opened_at as openedAt, closed_at as closedAt
          FROM closed_trades
          ORDER BY closed_at DESC
@@ -391,6 +393,7 @@ export class SqliteStore {
         exit_price_usd REAL NOT NULL,
         quantity REAL NOT NULL,
         reason TEXT NOT NULL,
+        exit_price_source TEXT NOT NULL DEFAULT 'fresh',
         pnl_usd REAL NOT NULL,
         pnl_pct REAL NOT NULL,
         opened_at TEXT NOT NULL,
@@ -425,6 +428,7 @@ export class SqliteStore {
     `);
     this.addColumnIfMissing('open_positions', 'high_water_mark_usd', 'REAL');
     this.addColumnIfMissing('open_positions', 'last_mark_usd', 'REAL');
+    this.addColumnIfMissing('closed_trades', 'exit_price_source', "TEXT NOT NULL DEFAULT 'fresh'");
     this.addColumnIfMissing('scored_candidates', 'route_input_mint', 'TEXT');
     this.addColumnIfMissing('scored_candidates', 'route_input_symbol', 'TEXT');
     this.addColumnIfMissing('pumpportal_events', 'processing_status', "TEXT NOT NULL DEFAULT 'pending'");
