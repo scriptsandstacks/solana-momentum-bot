@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { checkJupiterRoute } from '../src/discovery/jupiter.js';
+import { checkJupiterRoute, quoteJupiterSellImpactBps } from '../src/discovery/jupiter.js';
+
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 describe('Jupiter route check', () => {
   it('returns route availability and slippage estimate from a quote response', async () => {
@@ -86,5 +88,37 @@ describe('Jupiter route check', () => {
     expect(quote.routeAvailable).toBe(false);
     expect(quote.estimatedSlippageBps).toBe(10_000);
     expect(quote.routeInputSymbol).toBeUndefined();
+  });
+});
+
+describe('quoteJupiterSellImpactBps', () => {
+  it('quotes an ExactOut sell into USDC sized in 6-decimal base units', async () => {
+    let seenUrl = '';
+    const bps = await quoteJupiterSellImpactBps('token-abc', 250, {
+      fetchJson: async (url) => {
+        seenUrl = url;
+        return { inAmount: '1000000', priceImpactPct: '0.0275' };
+      },
+    });
+
+    const params = new URL(seenUrl).searchParams;
+    expect(params.get('inputMint')).toBe('token-abc');
+    expect(params.get('outputMint')).toBe(USDC_MINT);
+    expect(params.get('swapMode')).toBe('ExactOut');
+    // $250 of USDC at 6 decimals.
+    expect(params.get('amount')).toBe('250000000');
+    expect(bps).toBe(275);
+  });
+
+  it('returns undefined when no route/quote is available', async () => {
+    expect(
+      await quoteJupiterSellImpactBps('token-abc', 250, {
+        fetchJson: async () => {
+          throw new Error('no route');
+        },
+      }),
+    ).toBeUndefined();
+    // Non-positive size never quotes.
+    expect(await quoteJupiterSellImpactBps('token-abc', 0)).toBeUndefined();
   });
 });

@@ -25,6 +25,9 @@ export interface JupiterRouteCheck {
 const KEYED_QUOTE_URL = 'https://api.jup.ag/swap/v1/quote';
 const KEYLESS_QUOTE_URL = 'https://lite-api.jup.ag/swap/v1/quote';
 
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const USDC_DECIMALS = 6;
+
 const ROUTE_INPUTS = [
   {
     symbol: 'SOL',
@@ -33,7 +36,7 @@ const ROUTE_INPUTS = [
   },
   {
     symbol: 'USDC',
-    mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+    mint: USDC_MINT,
     amount: 10_000_000,
   },
   {
@@ -43,10 +46,51 @@ const ROUTE_INPUTS = [
   },
 ];
 
-export async function checkJupiterRoute(outputMint: string, deps: JupiterDeps = {}): Promise<JupiterRouteCheck> {
+function resolveQuoteEndpoint(deps: JupiterDeps): { baseUrl: string; fetchJson: (url: string) => Promise<any> } {
   const apiKey = deps.apiKey ?? process.env.JUPITER_API_KEY;
   const baseUrl = deps.baseUrl ?? process.env.JUPITER_QUOTE_URL ?? (apiKey ? KEYED_QUOTE_URL : KEYLESS_QUOTE_URL);
   const fetchJson = deps.fetchJson ?? ((url: string) => defaultFetchJson(url, apiKey));
+  return { baseUrl, fetchJson };
+}
+
+// Estimate the price impact (bps) of selling a position out to USDC, sized to
+// the position's USD value. Uses an ExactOut quote (token -> exactly this much
+// USDC) so we never need the token's decimals — only USDC's, which are fixed.
+// Best-effort: returns undefined when no route/quote is available so callers
+// can fall back to a coarser estimate. This is the realistic exit-leg slippage,
+// freshly quoted in the sell direction at the actual size — unlike the entry
+// route check, which probes a small fixed buy.
+export async function quoteJupiterSellImpactBps(
+  tokenMint: string,
+  usdcOutUsd: number,
+  deps: JupiterDeps = {},
+): Promise<number | undefined> {
+  if (!tokenMint || !Number.isFinite(usdcOutUsd) || usdcOutUsd <= 0) return undefined;
+  const usdcOutBaseUnits = Math.round(usdcOutUsd * 10 ** USDC_DECIMALS);
+  if (usdcOutBaseUnits <= 0) return undefined;
+
+  const { baseUrl, fetchJson } = resolveQuoteEndpoint(deps);
+  const params = new URLSearchParams({
+    inputMint: tokenMint,
+    outputMint: USDC_MINT,
+    amount: String(usdcOutBaseUnits),
+    swapMode: 'ExactOut',
+    slippageBps: '500',
+  });
+
+  try {
+    const quote = await fetchJson(`${baseUrl}?${params.toString()}`);
+    if (!quote?.inAmount) return undefined;
+    const priceImpactPct = Number(quote?.priceImpactPct ?? 0);
+    if (!Number.isFinite(priceImpactPct) || priceImpactPct < 0) return undefined;
+    return Math.round(priceImpactPct * 10_000);
+  } catch {
+    return undefined;
+  }
+}
+
+export async function checkJupiterRoute(outputMint: string, deps: JupiterDeps = {}): Promise<JupiterRouteCheck> {
+  const { baseUrl, fetchJson } = resolveQuoteEndpoint(deps);
   const availableRoutes: JupiterRouteCheck[] = [];
 
   for (const input of ROUTE_INPUTS) {

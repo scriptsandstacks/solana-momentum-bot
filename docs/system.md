@@ -481,7 +481,7 @@ fees:
 - **Entry:** the effective buy price is the mid worsened by the per-leg cost, so the same `positionSizeUsd` buys fewer tokens. The position's `entryPriceUsd` records this actual fill (so exit-rule PnL is measured against what was really paid), while the high-water and last marks track the observed mid for trailing-stop math.
 - **Exit:** realized proceeds are reduced by the per-leg cost; the persisted `exitPriceUsd` is this net price, so reported PnL and cash reflect what the position would actually have fetched.
 
-The per-leg slippage uses the candidate's Jupiter-estimated route price impact. When the `fees` block is omitted, fills are frictionless (the historical behavior). A future improvement is to source the exit slippage from a fresh Jupiter sell-quote for the position size rather than reusing the entry estimate.
+Slippage sourcing differs by leg. The entry leg uses the candidate's Jupiter route estimate (a small fixed buy probe). The exit leg, when `applyRouteSlippage` is on, fetches a **fresh sell-direction quote sized to the position** — a Jupiter ExactOut quote (token → exactly the position's USD value in USDC, so no token decimals are needed) whose price impact reflects what unwinding the actual position would cost. This is best-effort: if no sell quote is available, the broker falls back to the entry estimate. The sell quote is only requested for positions that are actually closing and only when the cost model applies route slippage, so frictionless runs make no extra network calls. When the `fees` block is omitted, fills are frictionless (the historical behavior).
 
 Exit rules are enforced by the exit engine (`bot/exitPositions.ts`):
 

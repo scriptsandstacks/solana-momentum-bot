@@ -168,6 +168,10 @@ export class PaperBroker {
     reason: PaperTrade['reason'],
     closedAt = new Date(),
     exitPriceSource: NonNullable<PaperTrade['exitPriceSource']> = 'fresh',
+    // Fresh sell-direction price impact (bps) for the exit leg. When provided it
+    // overrides the position's entry-time route estimate, which was a small
+    // buy-side probe and a poor proxy for selling the full position later.
+    exitSlippageBps?: number,
   ): PaperTrade {
     const position = this.openPositions.get(positionId);
     if (!position) {
@@ -179,8 +183,9 @@ export class PaperBroker {
 
     // Worsen the realized sell price by exit-leg friction. The recorded
     // exitPriceUsd is this net price, so persisted PnL and cash reflect what the
-    // position would actually have fetched, not the frictionless mark.
-    const costFraction = this.legCostFraction(position.token.estimatedSlippageBps);
+    // position would actually have fetched, not the frictionless mark. A fresh
+    // sell-side slippage estimate is preferred over the stale entry probe.
+    const costFraction = this.legCostFraction(exitSlippageBps ?? position.token.estimatedSlippageBps);
     const netExitPriceUsd = exitPriceUsd * (1 - costFraction);
     const entryValueUsd = position.entryPriceUsd * position.quantity;
     const exitValueUsd = netExitPriceUsd * position.quantity;

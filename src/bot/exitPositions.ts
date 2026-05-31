@@ -1,4 +1,5 @@
 import { fetchPumpPortalMarketCandidates } from './pumpCandidates.js';
+import { quoteJupiterSellImpactBps } from '../discovery/jupiter.js';
 import { restoreBrokerFromStore, type BrokerStateStore } from '../paper/restoreBroker.js';
 import type { PaperBrokerOptions } from '../paper/paperBroker.js';
 import type { PaperPosition, PaperTrade } from '../types/domain.js';
@@ -24,6 +25,11 @@ interface ProcessExitsOptions {
   // Returns a current USD price per token mint. Defaults to a DexScreener +
   // Raydium lookup. Only positive prices should be returned.
   fetchPrices?: (tokenMints: string[]) => Promise<Map<string, number>>;
+  // Returns the fresh sell-side price impact (bps) for exiting a position of the
+  // given USD value, or undefined when no quote is available. Defaults to a
+  // Jupiter ExactOut sell quote. Only consulted when the cost model applies
+  // route slippage, so frictionless runs make no extra network calls.
+  fetchExitSlippageBps?: (tokenMint: string, positionValueUsd: number) => Promise<number | undefined>;
   now?: Date;
 }
 
@@ -81,6 +87,10 @@ async function defaultFetchPrices(tokenMints: string[]): Promise<Map<string, num
   return prices;
 }
 
+function defaultFetchExitSlippageBps(tokenMint: string, positionValueUsd: number): Promise<number | undefined> {
+  return quoteJupiterSellImpactBps(tokenMint, positionValueUsd);
+}
+
 // Re-price open paper positions and close any that hit a configured exit rule.
 // When no fresh price is available, stop-loss / take-profit / trailing exits are
 // skipped (they must react to a real current price), but a max-hold timeout still
@@ -107,6 +117,10 @@ export async function processExits(options: ProcessExitsOptions): Promise<Proces
 
   const mints = [...new Set(open.map((position) => position.token.address).filter(Boolean))];
   const fetchPrices = options.fetchPrices ?? defaultFetchPrices;
+  const fetchExitSlippageBps = options.fetchExitSlippageBps ?? defaultFetchExitSlippageBps;
+  // Only spend a sell-quote when the cost model would actually use route
+  // slippage; otherwise the exit fill is frictionless and the call is wasted.
+  const usesRouteSlippage = options.paper.costModel?.applyRouteSlippage === true;
   const prices = await fetchPrices(mints);
 
   const recordClose = (
@@ -114,8 +128,9 @@ export async function processExits(options: ProcessExitsOptions): Promise<Proces
     exitPriceUsd: number,
     reason: ExitReason,
     exitPriceSource: NonNullable<PaperTrade['exitPriceSource']> = 'fresh',
+    exitSlippageBps?: number,
   ) => {
-    const trade = broker.closePosition(positionId, exitPriceUsd, reason, now, exitPriceSource);
+    const trade = broker.closePosition(positionId, exitPriceUsd, reason, now, exitPriceSource, exitSlippageBps);
     options.store.saveClosedTrade(trade);
     result.closed += 1;
     if (reason === 'stop_loss') result.stopLoss += 1;
@@ -152,7 +167,13 @@ export async function processExits(options: ProcessExitsOptions): Promise<Proces
       continue;
     }
 
-    recordClose(position.id, price, reason);
+    // Freshly quote the sell-side impact for the actual position size so the
+    // exit fill reflects what unwinding really costs, not the entry probe.
+    // Best-effort: a missing quote falls back to the entry estimate in the broker.
+    const exitSlippageBps = usesRouteSlippage
+      ? await fetchExitSlippageBps(position.token.address, price * position.quantity)
+      : undefined;
+    recordClose(position.id, price, reason, 'fresh', exitSlippageBps);
   }
 
   return result;
