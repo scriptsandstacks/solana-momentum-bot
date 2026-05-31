@@ -39,6 +39,24 @@ describe('Jupiter route check', () => {
     expect(quote.estimatedSlippageBps).toBe(50);
   });
 
+  it('queries the migrated api.jup.ag Swap API with the canonical USDT mint', async () => {
+    const seenUrls: string[] = [];
+    await checkJupiterRoute('token-abc', {
+      fetchJson: async (url) => {
+        seenUrls.push(url);
+        return { outAmount: '1000', priceImpactPct: '0.01' };
+      },
+    });
+
+    expect(seenUrls).toHaveLength(3);
+    expect(seenUrls.every((url) => url.startsWith('https://api.jup.ag/swap/v1/quote?'))).toBe(true);
+    // The deprecated quote-api.jup.ag/v6 host must no longer be used.
+    expect(seenUrls.some((url) => url.includes('quote-api.jup.ag'))).toBe(false);
+    // Canonical Solana USDT mint, not the previous mistyped value.
+    const usdtUrl = seenUrls.find((url) => new URL(url).searchParams.get('inputMint') === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY2Sr6MGt9RktwD');
+    expect(usdtUrl).toBeDefined();
+  });
+
   it('returns unavailable route when every quote fetch fails', async () => {
     const quote = await checkJupiterRoute('token-abc', {
       fetchJson: async () => {

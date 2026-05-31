@@ -1,5 +1,11 @@
 interface JupiterDeps {
   fetchJson?: (url: string) => Promise<any>;
+  // Free-tier key from https://portal.jup.ag, sent as the x-api-key header.
+  // Defaults to the JUPITER_API_KEY env var.
+  apiKey?: string;
+  // Override the quote endpoint host (e.g. the keyless lite-api.jup.ag during
+  // the migration grace period). Defaults to JUPITER_QUOTE_URL then DEFAULT_QUOTE_URL.
+  baseUrl?: string;
 }
 
 export interface JupiterRouteCheck {
@@ -8,6 +14,13 @@ export interface JupiterRouteCheck {
   routeInputMint?: string;
   routeInputSymbol?: string;
 }
+
+// Quote API V6 (`quote-api.jup.ag/v6`) was deprecated on 2025-10-01. The forward
+// path is the Swap API on api.jup.ag; the query params are unchanged, only the
+// host moved. Free usage requires an API key (x-api-key header) generated at
+// https://portal.jup.ag. The keyless lite-api.jup.ag still works during the
+// grace period and can be selected via JUPITER_QUOTE_URL.
+const DEFAULT_QUOTE_URL = 'https://api.jup.ag/swap/v1/quote';
 
 const ROUTE_INPUTS = [
   {
@@ -22,13 +35,15 @@ const ROUTE_INPUTS = [
   },
   {
     symbol: 'USDT',
-    mint: 'Es9vMFrzaCERmJfrF4H2FYD4DqE6P7ZX9HKo6uWjz3h',
+    mint: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY2Sr6MGt9RktwD',
     amount: 10_000_000,
   },
 ];
 
 export async function checkJupiterRoute(outputMint: string, deps: JupiterDeps = {}): Promise<JupiterRouteCheck> {
-  const fetchJson = deps.fetchJson ?? defaultFetchJson;
+  const apiKey = deps.apiKey ?? process.env.JUPITER_API_KEY;
+  const baseUrl = deps.baseUrl ?? process.env.JUPITER_QUOTE_URL ?? DEFAULT_QUOTE_URL;
+  const fetchJson = deps.fetchJson ?? ((url: string) => defaultFetchJson(url, apiKey));
   const availableRoutes: JupiterRouteCheck[] = [];
 
   for (const input of ROUTE_INPUTS) {
@@ -40,7 +55,7 @@ export async function checkJupiterRoute(outputMint: string, deps: JupiterDeps = 
     });
 
     try {
-      const quote = await fetchJson(`https://quote-api.jup.ag/v6/quote?${params.toString()}`);
+      const quote = await fetchJson(`${baseUrl}?${params.toString()}`);
       if (!quote?.outAmount) continue;
       const priceImpactPct = Number(quote?.priceImpactPct ?? 1);
       availableRoutes.push({
@@ -58,8 +73,10 @@ export async function checkJupiterRoute(outputMint: string, deps: JupiterDeps = 
   return availableRoutes[0] ?? { routeAvailable: false, estimatedSlippageBps: 10_000 };
 }
 
-async function defaultFetchJson(url: string): Promise<any> {
-  const response = await fetch(url, { headers: { accept: 'application/json' } });
+async function defaultFetchJson(url: string, apiKey?: string): Promise<any> {
+  const headers: Record<string, string> = { accept: 'application/json' };
+  if (apiKey) headers['x-api-key'] = apiKey;
+  const response = await fetch(url, { headers });
   if (!response.ok) {
     throw new Error(`Jupiter quote failed: ${response.status} ${response.statusText}`);
   }
