@@ -1,0 +1,41 @@
+mode: paper
+
+chains:
+  solana:
+    enabled: true
+    # walletFile is only read in live mode; safe to leave set while paper-trading.
+    walletFile: ./wallet/chain-solana.txt
+    minLiquidityUsd: 10000
+    minVolume5mUsd: 5000
+    maxSlippageBps: 500
+
+  base:
+    enabled: false
+    walletFile: ./wallet/chain-ethereum.txt
+    rpcUrlEnv: BASE_RPC_URL
+    minLiquidityUsd: 15000
+    minVolume5mUsd: 7500
+    maxSlippageBps: 500
+
+  ethereum:
+    enabled: false
+    walletFile: ./wallet/chain-ethereum.txt
+    rpcUrlEnv: ETHEREUM_RPC_URL
+    minLiquidityUsd: 50000
+    minVolume5mUsd: 20000
+    maxSlippageBps: 300
+
+paper:
+  startingBalanceUsd: 1000
+  positionSizeUsd: 25
+  maxOpenPositions: 3
+  maxDailyLossUsd: 100
+
+exits:
+  stopLossPct: 20
+  takeProfitPct: 50
+  trailingStopPct: 20
+  maxHoldMinutes: 45
+
+scoring:
+  minimumScoreToEnter: 75
