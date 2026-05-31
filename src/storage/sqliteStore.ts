@@ -73,6 +73,33 @@ export interface ClosedTradeStatRow {
   closedAt: string;
 }
 
+export interface TrackableScoredCandidateRow {
+  id: number;
+  address: string;
+  scoredPriceUsd: number;
+  createdAt: string;
+  outcomeHighUsd: number | null;
+  outcomeLowUsd: number | null;
+}
+
+export interface ScoredOutcomeUpdate {
+  id: number;
+  outcomeHighUsd: number;
+  outcomeLowUsd: number;
+  outcomeLastUsd: number;
+  outcomeLastAt: string;
+  done: boolean;
+}
+
+export interface ScoredOutcomeStatRow {
+  score: number;
+  recommendation: string;
+  scoredPriceUsd: number;
+  outcomeHighUsd: number;
+  outcomeLowUsd: number;
+  outcomeLastUsd: number;
+}
+
 export class SqliteStore {
   private readonly db: Database.Database;
 
@@ -294,6 +321,67 @@ export class SqliteStore {
       .all(limit) as ClosedTradeRow[];
   }
 
+  // Scored candidates still inside their forward-tracking window that have a
+  // mint and a positive scored price. Stale ones (past the window) should be
+  // finalized via markStaleScoredOutcomesDone first so they are not returned.
+  listTrackableScoredCandidates(limit = 200): TrackableScoredCandidateRow[] {
+    return this.db
+      .prepare(
+        `SELECT id, address, price_usd as scoredPriceUsd, created_at as createdAt,
+                outcome_high_usd as outcomeHighUsd, outcome_low_usd as outcomeLowUsd
+         FROM scored_candidates
+         WHERE outcome_done = 0 AND address != '' AND price_usd > 0
+         ORDER BY created_at ASC
+         LIMIT ?`,
+      )
+      .all(limit) as TrackableScoredCandidateRow[];
+  }
+
+  // Finalize candidates whose tracking window has elapsed so they stop being
+  // re-checked even if they were never priced again.
+  markStaleScoredOutcomesDone(cutoffIso: string): number {
+    const result = this.db
+      .prepare('UPDATE scored_candidates SET outcome_done = 1 WHERE outcome_done = 0 AND created_at < ?')
+      .run(cutoffIso);
+    return result.changes;
+  }
+
+  recordScoredOutcome(update: ScoredOutcomeUpdate): void {
+    this.db
+      .prepare(
+        `UPDATE scored_candidates
+         SET outcome_high_usd = @outcomeHighUsd,
+             outcome_low_usd = @outcomeLowUsd,
+             outcome_last_usd = @outcomeLastUsd,
+             outcome_last_at = @outcomeLastAt,
+             outcome_samples = outcome_samples + 1,
+             outcome_done = @done
+         WHERE id = @id`,
+      )
+      .run({
+        id: update.id,
+        outcomeHighUsd: update.outcomeHighUsd,
+        outcomeLowUsd: update.outcomeLowUsd,
+        outcomeLastUsd: update.outcomeLastUsd,
+        outcomeLastAt: update.outcomeLastAt,
+        done: update.done ? 1 : 0,
+      });
+  }
+
+  // Scored candidates with at least one forward observation, projected for
+  // excursion analysis (MFE/MAE vs the scored price).
+  loadScoredOutcomeStats(): ScoredOutcomeStatRow[] {
+    return this.db
+      .prepare(
+        `SELECT score, recommendation, price_usd as scoredPriceUsd,
+                outcome_high_usd as outcomeHighUsd, outcome_low_usd as outcomeLowUsd,
+                outcome_last_usd as outcomeLastUsd
+         FROM scored_candidates
+         WHERE outcome_samples > 0 AND outcome_high_usd IS NOT NULL AND price_usd > 0`,
+      )
+      .all() as ScoredOutcomeStatRow[];
+  }
+
   savePumpPortalEvent(event: PumpPortalRawEvent): void {
     this.db
       .prepare(
@@ -388,7 +476,13 @@ export class SqliteStore {
         recommendation TEXT NOT NULL,
         reasons_json TEXT NOT NULL,
         risks_json TEXT NOT NULL,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        outcome_high_usd REAL,
+        outcome_low_usd REAL,
+        outcome_last_usd REAL,
+        outcome_samples INTEGER NOT NULL DEFAULT 0,
+        outcome_last_at TEXT,
+        outcome_done INTEGER NOT NULL DEFAULT 0
       );
 
       CREATE INDEX IF NOT EXISTS idx_scored_candidates_created_at ON scored_candidates(created_at);
@@ -461,6 +555,13 @@ export class SqliteStore {
     this.addColumnIfMissing('closed_trades', 'source', "TEXT NOT NULL DEFAULT ''");
     this.addColumnIfMissing('scored_candidates', 'route_input_mint', 'TEXT');
     this.addColumnIfMissing('scored_candidates', 'route_input_symbol', 'TEXT');
+    this.addColumnIfMissing('scored_candidates', 'outcome_high_usd', 'REAL');
+    this.addColumnIfMissing('scored_candidates', 'outcome_low_usd', 'REAL');
+    this.addColumnIfMissing('scored_candidates', 'outcome_last_usd', 'REAL');
+    this.addColumnIfMissing('scored_candidates', 'outcome_samples', 'INTEGER NOT NULL DEFAULT 0');
+    this.addColumnIfMissing('scored_candidates', 'outcome_last_at', 'TEXT');
+    this.addColumnIfMissing('scored_candidates', 'outcome_done', 'INTEGER NOT NULL DEFAULT 0');
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_scored_candidates_outcome_done ON scored_candidates(outcome_done, created_at)');
     this.addColumnIfMissing('pumpportal_events', 'processing_status', "TEXT NOT NULL DEFAULT 'pending'");
     this.addColumnIfMissing('pumpportal_events', 'processing_note', 'TEXT');
     this.addColumnIfMissing('pumpportal_events', 'processed_at', 'TEXT');

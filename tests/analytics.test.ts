@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { computeTradeAnalytics, renderAnalyticsReport, type AnalyticsTrade } from '../src/bot/analytics.js';
+import {
+  computeTradeAnalytics,
+  renderAnalyticsReport,
+  computeOutcomeAnalytics,
+  renderOutcomeAnalytics,
+  type AnalyticsTrade,
+  type OutcomeRow,
+} from '../src/bot/analytics.js';
 
 function trade(overrides: Partial<AnalyticsTrade>): AnalyticsTrade {
   return {
@@ -69,5 +76,53 @@ describe('computeTradeAnalytics', () => {
     expect(analytics.overall.expectancyUsd).toBe(0);
     expect(analytics.overall.winRatePct).toBe(0);
     expect(renderAnalyticsReport(analytics)).toContain('No closed trades yet');
+  });
+});
+
+function outcome(overrides: Partial<OutcomeRow>): OutcomeRow {
+  return {
+    score: 80,
+    recommendation: 'paper_trade',
+    scoredPriceUsd: 0.01,
+    outcomeHighUsd: 0.012,
+    outcomeLowUsd: 0.009,
+    outcomeLastUsd: 0.011,
+    ...overrides,
+  };
+}
+
+describe('computeOutcomeAnalytics', () => {
+  const thresholds = { takeProfitPct: 50, stopLossPct: 20 };
+
+  it('computes MFE/MAE and TP/SL hit rates relative to the scored price', () => {
+    const analytics = computeOutcomeAnalytics(
+      [
+        // +60% high (reaches TP), -5% low. final +20%.
+        outcome({ scoredPriceUsd: 0.01, outcomeHighUsd: 0.016, outcomeLowUsd: 0.0095, outcomeLastUsd: 0.012 }),
+        // +10% high (no TP), -30% low (hits SL). final -25%.
+        outcome({ scoredPriceUsd: 0.01, outcomeHighUsd: 0.011, outcomeLowUsd: 0.007, outcomeLastUsd: 0.0075 }),
+      ],
+      thresholds,
+    );
+
+    const o = analytics.overall;
+    expect(o.candidates).toBe(2);
+    expect(o.avgMfePct).toBeCloseTo((60 + 10) / 2);
+    expect(o.avgMaePct).toBeCloseTo((-5 + -30) / 2);
+    expect(o.reachedTpRatePct).toBeCloseTo(50); // 1 of 2 reached +50%
+    expect(o.hitSlRatePct).toBeCloseTo(50); // 1 of 2 hit -20%
+  });
+
+  it('buckets outcomes by score and reports an empty state', () => {
+    const analytics = computeOutcomeAnalytics(
+      [outcome({ score: 92, outcomeHighUsd: 0.02 }), outcome({ score: 77, outcomeHighUsd: 0.0105 })],
+      thresholds,
+    );
+    expect(analytics.byScoreBucket.map((b) => b.label)).toContain('90-100');
+    expect(analytics.byScoreBucket.map((b) => b.label)).toContain('75-79');
+
+    const empty = computeOutcomeAnalytics([], thresholds);
+    expect(empty.overall.candidates).toBe(0);
+    expect(renderOutcomeAnalytics(empty, thresholds)).toContain('No tracked outcomes yet');
   });
 });

@@ -323,6 +323,22 @@ Aggregates closed paper trades into performance analytics. Reports overall expec
 
 This is the loop that tells you whether the score threshold and exit rules are paying off, and which discovery source is feeding good or toxic flow. It reads only persisted trades and makes no network calls.
 
+### `track-outcomes`
+
+```bash
+npm run bot -- track-outcomes --limit 200
+```
+
+Re-prices recently scored candidates — whether or not they were traded — and records their forward high/low/last over the trade horizon (`exits.maxHoldMinutes`). This builds the **counterfactual dataset**: for every score level, how far candidates ran (maximum favorable excursion) and drew down (maximum adverse excursion) after we scored them. Candidates past the horizon are finalized and no longer tracked. The `run` loop performs this pass automatically each interval; this command is for one-off passes or a cron/`/loop`.
+
+### `outcomes`
+
+```bash
+npm run bot -- outcomes
+```
+
+Reports the tracked excursions by score bucket and recommendation: average MFE, average MAE, average final return, and how often candidates would have hit take-profit vs stop-loss (using the configured `exits` thresholds). This is the data that tells you whether `minimumScoreToEnter` is set too high (leaving profitable candidates on the table) or too low (admitting losers). Read-only; no network.
+
 ### `pump-watch`
 
 ```bash
@@ -391,8 +407,9 @@ Runs continuously until Ctrl-C/SIGTERM:
 3. Processes pending PumpPortal events every `--process-interval-seconds`.
 4. Enriches, route-checks, scores, and paper-trades qualifying candidates.
 5. Runs an exit pass on the same interval, closing positions that hit their exit rules.
-6. Prints a compact processing + exit summary each pass.
-7. Closes the websocket and SQLite store on shutdown.
+6. Tracks forward outcomes for recently scored candidates (MFE/MAE) on the same interval.
+7. Prints a compact processing + exit + outcome summary each pass.
+8. Closes the websocket and SQLite store on shutdown.
 
 Useful options:
 
@@ -424,7 +441,7 @@ pumpportal_events
 
 ### `scored_candidates`
 
-Stores every scored candidate from `scan` or `paper`, including:
+Stores every scored candidate from `scan`, `paper`, or `pump-process`. It also holds forward-outcome columns (`outcome_high_usd`, `outcome_low_usd`, `outcome_last_usd`, `outcome_samples`, `outcome_done`) populated by `track-outcomes` so candidate excursions can be analyzed later. Each row includes:
 
 - token identity
 - liquidity and volume data

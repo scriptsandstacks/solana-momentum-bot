@@ -111,6 +111,118 @@ export function computeTradeAnalytics(trades: AnalyticsTrade[]): TradeAnalytics 
   };
 }
 
+// ---------------------------------------------------------------------------
+// Candidate outcome (excursion) analytics — the counterfactual on scored
+// candidates, traded or not. Answers: at each score level, how far did
+// candidates run (MFE) and draw down (MAE) over the trade horizon, and how
+// often would they have hit take-profit vs stop-loss? This is what informs
+// where to set the score threshold.
+// ---------------------------------------------------------------------------
+
+export interface OutcomeRow {
+  score: number;
+  recommendation: string;
+  scoredPriceUsd: number;
+  outcomeHighUsd: number;
+  outcomeLowUsd: number;
+  outcomeLastUsd: number;
+}
+
+export interface OutcomeThresholds {
+  takeProfitPct: number;
+  stopLossPct: number;
+}
+
+export interface OutcomeBucket {
+  label: string;
+  candidates: number;
+  avgMfePct: number;
+  avgMaePct: number;
+  avgFinalPct: number;
+  reachedTpRatePct: number;
+  hitSlRatePct: number;
+}
+
+export interface OutcomeAnalytics {
+  overall: OutcomeBucket;
+  byScoreBucket: OutcomeBucket[];
+  byRecommendation: OutcomeBucket[];
+}
+
+function summarizeOutcomes(label: string, rows: OutcomeRow[], thresholds: OutcomeThresholds): OutcomeBucket {
+  const excursions = rows.map((row) => ({
+    mfePct: ((row.outcomeHighUsd - row.scoredPriceUsd) / row.scoredPriceUsd) * 100,
+    maePct: ((row.outcomeLowUsd - row.scoredPriceUsd) / row.scoredPriceUsd) * 100,
+    finalPct: ((row.outcomeLastUsd - row.scoredPriceUsd) / row.scoredPriceUsd) * 100,
+  }));
+  const n = excursions.length;
+  const reachedTp = excursions.filter((e) => e.mfePct >= thresholds.takeProfitPct).length;
+  const hitSl = excursions.filter((e) => e.maePct <= -thresholds.stopLossPct).length;
+
+  return {
+    label,
+    candidates: n,
+    avgMfePct: mean(excursions.map((e) => e.mfePct)),
+    avgMaePct: mean(excursions.map((e) => e.maePct)),
+    avgFinalPct: mean(excursions.map((e) => e.finalPct)),
+    reachedTpRatePct: n === 0 ? 0 : (reachedTp / n) * 100,
+    hitSlRatePct: n === 0 ? 0 : (hitSl / n) * 100,
+  };
+}
+
+function groupOutcomes(
+  rows: OutcomeRow[],
+  keyOf: (row: OutcomeRow) => string,
+  thresholds: OutcomeThresholds,
+): OutcomeBucket[] {
+  const groups = new Map<string, OutcomeRow[]>();
+  for (const row of rows) {
+    const key = keyOf(row);
+    const group = groups.get(key) ?? [];
+    group.push(row);
+    groups.set(key, group);
+  }
+  return [...groups.entries()]
+    .map(([label, group]) => summarizeOutcomes(label, group, thresholds))
+    .sort((a, b) => b.avgFinalPct - a.avgFinalPct);
+}
+
+export function computeOutcomeAnalytics(rows: OutcomeRow[], thresholds: OutcomeThresholds): OutcomeAnalytics {
+  return {
+    overall: summarizeOutcomes('overall', rows, thresholds),
+    byScoreBucket: groupOutcomes(rows, (row) => scoreBucketLabel(row.score), thresholds),
+    byRecommendation: groupOutcomes(rows, (row) => row.recommendation || 'unknown', thresholds),
+  };
+}
+
+function outcomeBucketLine(bucket: OutcomeBucket): string {
+  return (
+    `  ${bucket.label.padEnd(14)} n=${String(bucket.candidates).padStart(5)} ` +
+    `mfe=${bucket.avgMfePct.toFixed(1).padStart(7)}% mae=${bucket.avgMaePct.toFixed(1).padStart(7)}% ` +
+    `final=${bucket.avgFinalPct.toFixed(1).padStart(7)}% ` +
+    `hitTP=${bucket.reachedTpRatePct.toFixed(1).padStart(5)}% hitSL=${bucket.hitSlRatePct.toFixed(1).padStart(5)}%`
+  );
+}
+
+export function renderOutcomeAnalytics(analytics: OutcomeAnalytics, thresholds: OutcomeThresholds): string {
+  const lines = [
+    'Hermes Paper Bot Candidate Outcomes (MFE/MAE)',
+    `Tracked candidates: ${analytics.overall.candidates}`,
+    `Thresholds: take-profit +${thresholds.takeProfitPct}% / stop-loss -${thresholds.stopLossPct}%`,
+  ];
+
+  if (analytics.overall.candidates === 0) {
+    lines.push('', 'No tracked outcomes yet — run "track-outcomes" (or the run loop) to accumulate forward prices.');
+    return `${lines.join('\n')}\n`;
+  }
+
+  lines.push('', 'By score bucket:');
+  for (const bucket of analytics.byScoreBucket) lines.push(outcomeBucketLine(bucket));
+  lines.push('', 'By recommendation:');
+  for (const bucket of analytics.byRecommendation) lines.push(outcomeBucketLine(bucket));
+  return `${lines.join('\n')}\n`;
+}
+
 function money(value: number): string {
   return `$${value.toFixed(2)}`;
 }

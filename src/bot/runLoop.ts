@@ -1,10 +1,12 @@
 import { PumpPortalClient, type PumpPortalRawEvent } from '../discovery/pumpPortal.js';
 import { processPumpPortalEvents, type PumpProcessResult } from './pumpProcess.js';
 import { processExits as processExitsImpl, type ExitRules, type ProcessExitsResult } from './exitPositions.js';
+import { trackCandidateOutcomes as trackCandidateOutcomesImpl, type TrackOutcomesResult } from './trackOutcomes.js';
 import { isBrokerStateStore } from '../paper/restoreBroker.js';
 import type { ChainConfig } from '../config/schema.js';
 import type { PaperBrokerOptions } from '../paper/paperBroker.js';
 import type { OpportunityScore, PaperPosition, PaperTrade, TokenCandidate } from '../types/domain.js';
+import type { ScoredOutcomeUpdate, TrackableScoredCandidateRow } from '../storage/sqliteStore.js';
 
 interface RunLoopStore {
   savePumpPortalEvent(event: PumpPortalRawEvent): void;
@@ -28,6 +30,11 @@ interface RunLoopStore {
   getRealizedPnlUsd?(): number;
   getRealizedPnlUsdSince?(sinceIso: string): number;
   getNextPositionSeq?(): number;
+  // Scored-candidate outcome tracking. When all are present the run loop also
+  // re-prices recently scored candidates to capture forward MFE/MAE.
+  listTrackableScoredCandidates?(limit?: number): TrackableScoredCandidateRow[];
+  markStaleScoredOutcomesDone?(cutoffIso: string): number;
+  recordScoredOutcome?(update: ScoredOutcomeUpdate): void;
 }
 
 type ProcessExits = (options: {
@@ -39,6 +46,16 @@ type ProcessExits = (options: {
 function canProcessExits(store: RunLoopStore): boolean {
   return isBrokerStateStore(store) && typeof store.saveOpenPosition === 'function' && typeof store.saveClosedTrade === 'function';
 }
+
+function canTrackOutcomes(store: RunLoopStore): boolean {
+  return (
+    typeof store.listTrackableScoredCandidates === 'function' &&
+    typeof store.markStaleScoredOutcomesDone === 'function' &&
+    typeof store.recordScoredOutcome === 'function'
+  );
+}
+
+type TrackOutcomes = (options: { store: RunLoopStore; horizonMinutes: number }) => Promise<TrackOutcomesResult>;
 
 type PumpPortalClientLike = {
   connectFreeStreams(): Promise<void>;
@@ -76,6 +93,7 @@ interface RunBotLoopOptions {
   ClientCtor?: PumpPortalClientCtor;
   processPumpEvents?: ProcessPumpEvents;
   processExits?: ProcessExits;
+  trackOutcomes?: TrackOutcomes;
   stopSignal?: AbortSignal;
   onLog?: (message: string) => void;
 }
@@ -90,6 +108,7 @@ export interface RunBotLoopResult {
   skipped: number;
   failed: number;
   closedPositions: number;
+  outcomesUpdated: number;
 }
 
 export function resolveRunLoopApiKey(
@@ -116,6 +135,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
   const processPumpEvents = options.processPumpEvents ?? (processPumpPortalEvents as ProcessPumpEvents);
 
   const processExits = options.processExits ?? (processExitsImpl as unknown as ProcessExits);
+  const trackOutcomes = options.trackOutcomes ?? (trackCandidateOutcomesImpl as unknown as TrackOutcomes);
 
   let eventsSaved = 0;
   const result: RunBotLoopResult = {
@@ -128,6 +148,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
     skipped: 0,
     failed: 0,
     closedPositions: 0,
+    outcomesUpdated: 0,
   };
 
   const client = new ClientCtor({
@@ -181,6 +202,20 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
         result.closedPositions += exitResult.closed;
         options.onLog?.(
           `[run:exits] checked=${exitResult.positionsChecked} repriced=${exitResult.repriced} closed=${exitResult.closed} sl=${exitResult.stopLoss} tp=${exitResult.takeProfit} trail=${exitResult.trailingStop} timeout=${exitResult.timeout} noPrice=${exitResult.missingPrice}`,
+        );
+      }
+
+      // Capture forward outcomes for recently scored candidates (traded or not)
+      // so the score threshold can be tuned from real MFE/MAE data. Horizon
+      // matches the trade hold window.
+      if (options.exits && canTrackOutcomes(options.store)) {
+        const outcomeResult = await trackOutcomes({
+          store: options.store,
+          horizonMinutes: options.exits.maxHoldMinutes,
+        });
+        result.outcomesUpdated += outcomeResult.updated;
+        options.onLog?.(
+          `[run:outcomes] finalized=${outcomeResult.finalized} tracked=${outcomeResult.tracked} updated=${outcomeResult.updated} completed=${outcomeResult.completed} noPrice=${outcomeResult.missingPrice}`,
         );
       }
     } finally {
