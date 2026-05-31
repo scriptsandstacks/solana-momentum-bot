@@ -293,4 +293,55 @@ describe('SqliteStore', () => {
 
     store.close();
   });
+
+  it('dedupes legacy duplicate closed_trades on migrate and builds the unique index', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hermes-paper-bot-dedup-'));
+    const dbPath = path.join(dir, 'legacy.sqlite');
+
+    // A pre-index DB could hold duplicate closes for one position_id. migrate()
+    // must drop the extras (keeping the lowest id) before creating the unique
+    // index, otherwise CREATE UNIQUE INDEX would throw on open.
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE closed_trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        position_id TEXT NOT NULL, chain TEXT NOT NULL, address TEXT NOT NULL, symbol TEXT NOT NULL,
+        token_json TEXT NOT NULL, entry_price_usd REAL NOT NULL, exit_price_usd REAL NOT NULL,
+        quantity REAL NOT NULL, reason TEXT NOT NULL, pnl_usd REAL NOT NULL, pnl_pct REAL NOT NULL,
+        opened_at TEXT NOT NULL, closed_at TEXT NOT NULL
+      );
+    `);
+    const insert = legacy.prepare(
+      `INSERT INTO closed_trades
+        (position_id, chain, address, symbol, token_json, entry_price_usd, exit_price_usd,
+         quantity, reason, pnl_usd, pnl_pct, opened_at, closed_at)
+       VALUES ('paper-1','solana','t','S','{}',0.01,0.015,2500,'take_profit',@pnl,50,
+               '2026-01-01T00:00:00Z','2026-01-01T00:05:00Z')`,
+    );
+    insert.run({ pnl: 12.5 }); // lowest id — kept
+    insert.run({ pnl: 99.9 });
+    insert.run({ pnl: 12.5 });
+    legacy.close();
+
+    // Opening through SqliteStore runs migrate(); it must not throw.
+    const store = new SqliteStore(dbPath);
+    expect(store.listClosedTrades(50)).toHaveLength(1);
+    expect(store.getRealizedPnlUsd()).toBeCloseTo(12.5);
+
+    // The unique index is now in force: a duplicate close is ignored, not added.
+    store.saveClosedTrade({
+      positionId: 'paper-1',
+      token: candidate,
+      entryPriceUsd: 0.01,
+      exitPriceUsd: 0.02,
+      quantity: 2500,
+      openedAt: new Date('2026-01-01T00:00:00Z'),
+      closedAt: new Date('2026-01-01T00:10:00Z'),
+      reason: 'take_profit',
+      pnlUsd: 25,
+      pnlPct: 100,
+    });
+    expect(store.listClosedTrades(50)).toHaveLength(1);
+    store.close();
+  });
 });
