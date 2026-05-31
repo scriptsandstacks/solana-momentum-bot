@@ -40,4 +40,42 @@ describe('PumpPortal market candidate enrichment', () => {
     });
     expect(candidates[1]).toMatchObject({ address: 'mint-2', source: 'raydium' });
   });
+
+  it('keeps DexScreener activity even when a deeper Raydium pool wins on liquidity', async () => {
+    // Raydium is deeper but reports zeroed/synthetic activity; DexScreener is
+    // shallower but carries the real 5m volume, buy/sell counts, and momentum.
+    const dex: TokenCandidate = {
+      ...candidate('mint-1', 'pumpportal+dexscreener', 30_000),
+      volume5mUsd: 18_000,
+      volume1hUsd: 120_000,
+      priceChange5mPct: 12,
+      buys5m: 90,
+      sells5m: 25,
+    };
+    const raydium: TokenCandidate = {
+      ...candidate('mint-1', 'raydium', 95_000),
+      volume5mUsd: 200,
+      volume1hUsd: 2_400,
+      priceChange5mPct: 0,
+      buys5m: 0,
+      sells5m: 0,
+    };
+
+    const [merged] = await fetchPumpPortalMarketCandidates(
+      ['mint-1'],
+      async () => [dex],
+      async () => [raydium],
+    );
+
+    // Liquidity/pair from the deeper Raydium pool...
+    expect(merged.liquidityUsd).toBe(95_000);
+    expect(merged.pairAddress).toBe('raydium-pair');
+    // ...but the live activity signal from DexScreener, not Raydium's blanks.
+    expect(merged.volume5mUsd).toBe(18_000);
+    expect(merged.volume1hUsd).toBe(120_000);
+    expect(merged.priceChange5mPct).toBe(12);
+    expect(merged.buys5m).toBe(90);
+    expect(merged.sells5m).toBe(25);
+    expect(merged.source).toBe('pumpportal+dexscreener+raydium');
+  });
 });

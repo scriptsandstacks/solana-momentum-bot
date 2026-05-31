@@ -141,12 +141,14 @@ Raydium enrichment contributes:
 ```text
 pairAddress        Raydium pool id
 liquidityUsd       pool TVL
-volume5mUsd        day volume prorated to 5 minutes
-volume1hUsd        day volume prorated to 1 hour
+volume5mUsd        trailing-day volume prorated by the pool's active lifetime
+volume1hUsd        trailing-day volume prorated by the pool's active lifetime
 source             raydium
 ```
 
-DexScreener and Raydium candidates are merged by mint. If both sources return a candidate, the bot keeps the deeper-liquidity candidate while preserving both source labels.
+Raydium's `day.volume` is a trailing-24h total, not a recent rate. It is prorated by the pool's actual active lifetime (floored at 5 minutes, capped at one day) rather than a flat 24h split, so a fresh pool whose volume all accrued in its first minutes is not understated into failing the volume filter. For mature pools (≥ 1 day) this converges back to the flat day-split. Raydium does not report trade-level buy/sell counts or momentum, so those fields are left at zero on a Raydium candidate.
+
+DexScreener and Raydium candidates are merged by mint into a single best view: price, liquidity, and pair come from the deepest (most tradable) pool, but volume, buy/sell counts, and momentum come from a source that actually reports them (DexScreener). This keeps a deeper Raydium pool from blanking out DexScreener's live activity signal — otherwise fresh Raydium-led mints would be filtered or scored as if they were dead. Both source labels are preserved.
 
 ### Jupiter
 
