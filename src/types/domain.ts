@@ -54,6 +54,10 @@ export interface PaperTrade {
   openedAt: Date;
   closedAt: Date;
   reason: 'stop_loss' | 'take_profit' | 'timeout' | 'manual' | 'trailing_stop';
+  // Explains whether the recorded exit price came from a fresh market print or
+  // from stale/fallback timeout policy. Useful for reports so stale timeout PnL
+  // is visibly different from normal price-triggered exits.
+  exitPriceSource?: 'fresh' | 'last_mark' | 'entry_fallback';
   pnlUsd: number;
   pnlPct: number;
 }

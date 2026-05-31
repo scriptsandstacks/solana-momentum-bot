@@ -79,6 +79,7 @@ describe('SqliteStore', () => {
       openedAt: position.openedAt,
       closedAt: new Date('2026-01-01T00:05:00Z'),
       reason: 'take_profit',
+      exitPriceSource: 'fresh',
       pnlUsd: 12.5,
       pnlPct: 50,
     };
@@ -89,7 +90,7 @@ describe('SqliteStore', () => {
     store.saveClosedTrade(trade);
     expect(store.listOpenPositions()).toHaveLength(0);
     expect(store.listClosedTrades()).toHaveLength(1);
-    expect(store.listClosedTrades()[0]).toMatchObject({ positionId: 'paper-1', pnlUsd: 12.5 });
+    expect(store.listClosedTrades()[0]).toMatchObject({ positionId: 'paper-1', pnlUsd: 12.5, exitPriceSource: 'fresh' });
     store.close();
   });
 
@@ -113,6 +114,7 @@ describe('SqliteStore', () => {
       openedAt: position.openedAt,
       closedAt: new Date('2026-01-01T00:05:00Z'),
       reason: 'take_profit',
+      exitPriceSource: 'fresh',
       pnlUsd: 12.5,
       pnlPct: 50,
     };
@@ -148,6 +150,7 @@ describe('SqliteStore', () => {
       openedAt: new Date('2026-01-01T00:00:00Z'),
       closedAt: new Date('2026-01-01T00:05:00Z'),
       reason: 'take_profit',
+      exitPriceSource: 'fresh',
       pnlUsd: 12.5,
       pnlPct: 50,
     };
@@ -327,6 +330,7 @@ describe('SqliteStore', () => {
     // Opening through SqliteStore runs migrate(); it must not throw.
     const store = new SqliteStore(dbPath);
     expect(store.listClosedTrades(50)).toHaveLength(1);
+    expect(store.listClosedTrades(50)[0]).toMatchObject({ exitPriceSource: 'fresh' });
     expect(store.getRealizedPnlUsd()).toBeCloseTo(12.5);
 
     // The unique index is now in force: a duplicate close is ignored, not added.
@@ -339,6 +343,7 @@ describe('SqliteStore', () => {
       openedAt: new Date('2026-01-01T00:00:00Z'),
       closedAt: new Date('2026-01-01T00:10:00Z'),
       reason: 'take_profit',
+      exitPriceSource: 'fresh',
       pnlUsd: 25,
       pnlPct: 100,
     });

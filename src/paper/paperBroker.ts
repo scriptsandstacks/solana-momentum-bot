@@ -139,6 +139,7 @@ export class PaperBroker {
     exitPriceUsd: number,
     reason: PaperTrade['reason'],
     closedAt = new Date(),
+    exitPriceSource: NonNullable<PaperTrade['exitPriceSource']> = 'fresh',
   ): PaperTrade {
     const position = this.openPositions.get(positionId);
     if (!position) {
@@ -162,6 +163,7 @@ export class PaperBroker {
       openedAt: position.openedAt,
       closedAt,
       reason,
+      exitPriceSource,
       pnlUsd,
       pnlPct,
     };

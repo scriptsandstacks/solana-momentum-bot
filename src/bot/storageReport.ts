@@ -34,6 +34,7 @@ interface ClosedTradeRow {
   quantity?: number;
   openedAt?: string;
   reason: string;
+  exitPriceSource?: string;
   pnlUsd: number;
   pnlPct: number;
   closedAt: string;
@@ -89,8 +90,9 @@ export function renderStorageReport(input: StorageReportInput): string {
 
   lines.push('', 'Recent closed trades:');
   for (const row of input.closedTrades.slice(0, 10)) {
+    const source = row.exitPriceSource ? ` source=${row.exitPriceSource}` : '';
     lines.push(
-      `${row.positionId} ${row.chain.toUpperCase()} ${row.symbol} reason=${row.reason} pnl=$${row.pnlUsd.toFixed(2)} pct=${row.pnlPct.toFixed(2)} closed=${row.closedAt}`,
+      `${row.positionId} ${row.chain.toUpperCase()} ${row.symbol} reason=${row.reason}${source} pnl=$${row.pnlUsd.toFixed(2)} pct=${row.pnlPct.toFixed(2)} closed=${row.closedAt}`,
     );
   }
 

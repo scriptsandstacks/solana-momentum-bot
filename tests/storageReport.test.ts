@@ -39,6 +39,7 @@ describe('renderStorageReport', () => {
         exitPriceUsd: 0.015,
         quantity: 2500,
         reason: 'take_profit',
+        exitPriceSource: 'fresh',
         pnlUsd: 12.5,
         pnlPct: 50,
         openedAt: '2026-01-01T00:00:00Z',
@@ -66,5 +67,25 @@ describe('renderStorageReport', () => {
     expect(report).toContain('PumpPortal events: 1');
     expect(report).toContain('new_token MPUMP mint=mint-1 status=processed note=score=82');
     expect(report).toContain('PnL: $12.50');
+  });
+
+  it('renders stale timeout price source for closed trades', () => {
+    const report = renderStorageReport({
+      recentScores: [],
+      openPositions: [],
+      closedTrades: [{
+        positionId: 'paper-9',
+        chain: 'solana',
+        symbol: 'STALE',
+        reason: 'timeout',
+        exitPriceSource: 'last_mark',
+        pnlUsd: -2.5,
+        pnlPct: -10,
+        closedAt: '2026-01-01T01:00:00Z',
+      }],
+      pumpPortalEvents: [],
+    });
+
+    expect(report).toContain('paper-9 SOLANA STALE reason=timeout source=last_mark');
   });
 });
