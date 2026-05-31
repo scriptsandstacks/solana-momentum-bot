@@ -99,6 +99,41 @@ describe('SqliteStore', () => {
     store.close();
   });
 
+  it('prunes old scored candidates but keeps mints that led to a trade', () => {
+    const store = createStore();
+
+    store.saveScoredCandidate({ ...candidate, address: 'mint-traded' }, score);
+    store.saveScoredCandidate({ ...candidate, address: 'mint-skipped' }, score);
+    // mint-traded was actually traded, so its scored row must be preserved.
+    store.saveClosedTrade({
+      positionId: 'paper-1',
+      token: { ...candidate, address: 'mint-traded' },
+      score: 82,
+      entryPriceUsd: 0.01,
+      exitPriceUsd: 0.015,
+      quantity: 2500,
+      openedAt: new Date('2026-01-01T00:00:00Z'),
+      closedAt: new Date('2026-01-01T00:05:00Z'),
+      reason: 'take_profit',
+      exitPriceSource: 'fresh',
+      pnlUsd: 12.5,
+      pnlPct: 50,
+    });
+
+    const future = new Date(Date.now() + 60_000).toISOString();
+    const past = new Date(Date.now() - 60_000).toISOString();
+
+    // Nothing is older than a past cutoff.
+    expect(store.countPrunableScoredCandidates(past)).toBe(0);
+    expect(store.pruneScoredCandidates(past)).toBe(0);
+
+    // With a future cutoff both rows qualify by age, but the traded mint is kept.
+    expect(store.countPrunableScoredCandidates(future)).toBe(1);
+    expect(store.pruneScoredCandidates(future)).toBe(1);
+    expect(store.listRecentScores(10).map((r) => r.address)).toEqual(['mint-traded']);
+    store.close();
+  });
+
   it('makes closing the same position idempotent', () => {
     const store = createStore();
     const position: PaperPosition = {

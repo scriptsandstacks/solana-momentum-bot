@@ -339,6 +339,17 @@ npm run bot -- outcomes
 
 Reports the tracked excursions by score bucket and recommendation: average MFE, average MAE, average final return, and how often candidates would have hit take-profit vs stop-loss (using the configured `exits` thresholds). This is the data that tells you whether `minimumScoreToEnter` is set too high (leaving profitable candidates on the table) or too low (admitting losers). Read-only; no network.
 
+### `prune`
+
+```bash
+npm run bot -- prune --dry-run
+npm run bot -- prune --days 30
+```
+
+Deletes scored candidates older than the retention window (`retention.scoredCandidateDays`, overridable with `--days`) that never led to a position — the "checked but not executed" rows that accumulate on every scan. Trades are never touched, and any mint that appears in `open_positions` or `closed_trades` is preserved so analytics/outcome joins for traded mints stay intact. After deleting it runs `VACUUM` to actually reclaim disk (SQLite does not shrink the file otherwise); pass `--no-vacuum` to skip that. Use `--dry-run` to see the count without deleting.
+
+This is destructive, so it is a separate explicit command rather than something the `run` loop does automatically. On a small device it is reasonable to schedule it (cron or `/loop`) once a day.
+
 ### `pump-watch`
 
 ```bash

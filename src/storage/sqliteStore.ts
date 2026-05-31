@@ -382,6 +382,36 @@ export class SqliteStore {
       .all() as ScoredOutcomeStatRow[];
   }
 
+  // Scored candidates older than the cutoff that never led to a position: the
+  // "checked but not executed" noise. Trades are preserved by excluding any mint
+  // that appears in open_positions or closed_trades, so analytics/outcome joins
+  // for traded mints stay intact.
+  private static readonly PRUNABLE_SCORED_WHERE = `
+    created_at < @cutoff
+    AND address NOT IN (SELECT address FROM open_positions WHERE address != '')
+    AND address NOT IN (SELECT address FROM closed_trades WHERE address != '')
+  `;
+
+  countPrunableScoredCandidates(cutoffIso: string): number {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) as n FROM scored_candidates WHERE ${SqliteStore.PRUNABLE_SCORED_WHERE}`)
+      .get({ cutoff: cutoffIso }) as { n: number };
+    return row.n;
+  }
+
+  pruneScoredCandidates(cutoffIso: string): number {
+    const result = this.db
+      .prepare(`DELETE FROM scored_candidates WHERE ${SqliteStore.PRUNABLE_SCORED_WHERE}`)
+      .run({ cutoff: cutoffIso });
+    return result.changes;
+  }
+
+  // Reclaim disk after large deletes. SQLite does not shrink the file or release
+  // freed pages without VACUUM. Cannot run inside a transaction.
+  vacuum(): void {
+    this.db.exec('VACUUM');
+  }
+
   savePumpPortalEvent(event: PumpPortalRawEvent): void {
     this.db
       .prepare(

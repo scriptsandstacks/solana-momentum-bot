@@ -162,6 +162,35 @@ program
   });
 
 program
+  .command('prune')
+  .description('Delete old scored candidates that never led to a position (trades are always kept)')
+  .option('--days <days>', 'retention window in days; defaults to config retention.scoredCandidateDays')
+  .option('--dry-run', 'report what would be deleted without deleting', false)
+  .option('--no-vacuum', 'skip reclaiming disk with VACUUM after deleting')
+  .action(async (options: { days?: string; dryRun: boolean; vacuum: boolean }) => {
+    const config = loadConfigFromFile(program.opts().config);
+    const days = options.days === undefined ? config.retention.scoredCandidateDays : Number(options.days);
+    if (!Number.isFinite(days) || days <= 0) {
+      throw new Error('--days must be a positive number');
+    }
+    const cutoffIso = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const store = new SqliteStore();
+    try {
+      const prunable = store.countPrunableScoredCandidates(cutoffIso);
+      if (options.dryRun) {
+        process.stdout.write(`Dry run: ${prunable} scored candidate(s) older than ${days}d (before ${cutoffIso}) would be deleted.\n`);
+        return;
+      }
+      const deleted = store.pruneScoredCandidates(cutoffIso);
+      if (deleted > 0 && options.vacuum) store.vacuum();
+      const reclaimed = deleted > 0 && options.vacuum ? ' (disk reclaimed)' : '';
+      process.stdout.write(`Pruned ${deleted} scored candidate(s) older than ${days}d.${reclaimed}\n`);
+    } finally {
+      store.close();
+    }
+  });
+
+program
   .command('pump-watch')
   .description('Watch free PumpPortal new-token and migration streams for a bounded duration')
   .option('--api-key <key>', 'PumpPortal API key; defaults to PUMPPORTAL_API_KEY')
