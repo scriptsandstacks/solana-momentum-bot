@@ -353,6 +353,14 @@ Runs one exit pass:
 4. Closes triggered positions, records the closed trade, and persists raised high-water marks for the rest.
 5. Prints a compact summary of what was checked and closed.
 
+### `check-route`
+
+```bash
+npm run bot -- check-route <mint>
+```
+
+Read-only smoke test: quotes a Jupiter route into the given token mint and prints whether a route exists, the chosen input asset, and the estimated slippage. Places no trade and touches no funds. Reports which host/key is in use, so it doubles as a quick way to confirm the Jupiter quote path is reachable before starting `run`.
+
 ### `run`
 
 ```bash

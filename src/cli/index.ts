@@ -8,6 +8,7 @@ import { processExits } from '../bot/exitPositions.js';
 import { runBotLoop } from '../bot/runLoop.js';
 import { loadConfigFromFile } from '../config/loadConfig.js';
 import { scanSolanaCandidates } from '../chains/solana/scanner.js';
+import { checkJupiterRoute } from '../discovery/jupiter.js';
 import { PaperBroker } from '../paper/paperBroker.js';
 import { scoreTokenCandidate } from '../scoring/scoreToken.js';
 import { SqliteStore } from '../storage/sqliteStore.js';
@@ -61,6 +62,23 @@ program.command('scan').description('Scan enabled chains and print scored candid
   );
   store.close();
 });
+
+program
+  .command('check-route')
+  .description('Smoke-test a Jupiter route for one token mint (read-only quote; no trade)')
+  .argument('<mint>', 'output token mint to quote a swap into')
+  .action(async (mint: string) => {
+    const usingKey = Boolean(process.env.JUPITER_API_KEY);
+    process.stdout.write(`Checking Jupiter route for ${mint} (host=${usingKey ? 'api.jup.ag (keyed)' : 'lite-api.jup.ag (keyless)'})...\n`);
+    const route = await checkJupiterRoute(mint);
+    if (route.routeAvailable) {
+      process.stdout.write(
+        `Route available via ${route.routeInputSymbol} (${route.routeInputMint}); estimatedSlippage=${route.estimatedSlippageBps}bps\n`,
+      );
+    } else {
+      process.stdout.write('No route available (token may be unswappable, illiquid, or the quote API is unreachable).\n');
+    }
+  });
 
 program.command('paper').description('Run one paper-trading scan cycle').action(async () => {
   const config = loadConfigFromFile(program.opts().config);
