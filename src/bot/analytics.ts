@@ -126,6 +126,8 @@ export interface OutcomeRow {
   outcomeHighUsd: number;
   outcomeLowUsd: number;
   outcomeLastUsd: number;
+  outcomeFirstTakeProfitAt?: string | null;
+  outcomeFirstStopLossAt?: string | null;
 }
 
 export interface OutcomeThresholds {
@@ -141,6 +143,9 @@ export interface OutcomeBucket {
   avgFinalPct: number;
   reachedTpRatePct: number;
   hitSlRatePct: number;
+  tpFirstRatePct: number;
+  slFirstRatePct: number;
+  ambiguousRatePct: number;
 }
 
 export interface OutcomeAnalytics {
@@ -149,15 +154,41 @@ export interface OutcomeAnalytics {
   byRecommendation: OutcomeBucket[];
 }
 
+function firstCrossing(row: OutcomeRow, reachedTp: boolean, hitSl: boolean): 'tp' | 'sl' | 'ambiguous' | 'none' {
+  const tpAt = row.outcomeFirstTakeProfitAt;
+  const slAt = row.outcomeFirstStopLossAt;
+  if (tpAt && slAt) {
+    const tpTime = new Date(tpAt).getTime();
+    const slTime = new Date(slAt).getTime();
+    if (Number.isFinite(tpTime) && Number.isFinite(slTime) && tpTime !== slTime) return tpTime < slTime ? 'tp' : 'sl';
+    return 'ambiguous';
+  }
+  if (tpAt && reachedTp) return 'tp';
+  if (slAt && hitSl) return 'sl';
+  return reachedTp && hitSl ? 'ambiguous' : 'none';
+}
+
 function summarizeOutcomes(label: string, rows: OutcomeRow[], thresholds: OutcomeThresholds): OutcomeBucket {
-  const excursions = rows.map((row) => ({
-    mfePct: ((row.outcomeHighUsd - row.scoredPriceUsd) / row.scoredPriceUsd) * 100,
-    maePct: ((row.outcomeLowUsd - row.scoredPriceUsd) / row.scoredPriceUsd) * 100,
-    finalPct: ((row.outcomeLastUsd - row.scoredPriceUsd) / row.scoredPriceUsd) * 100,
-  }));
+  const excursions = rows.map((row) => {
+    const mfePct = ((row.outcomeHighUsd - row.scoredPriceUsd) / row.scoredPriceUsd) * 100;
+    const maePct = ((row.outcomeLowUsd - row.scoredPriceUsd) / row.scoredPriceUsd) * 100;
+    const reachedTp = mfePct >= thresholds.takeProfitPct;
+    const hitSl = maePct <= -thresholds.stopLossPct;
+    return {
+      mfePct,
+      maePct,
+      finalPct: ((row.outcomeLastUsd - row.scoredPriceUsd) / row.scoredPriceUsd) * 100,
+      reachedTp,
+      hitSl,
+      first: firstCrossing(row, reachedTp, hitSl),
+    };
+  });
   const n = excursions.length;
-  const reachedTp = excursions.filter((e) => e.mfePct >= thresholds.takeProfitPct).length;
-  const hitSl = excursions.filter((e) => e.maePct <= -thresholds.stopLossPct).length;
+  const reachedTp = excursions.filter((e) => e.reachedTp).length;
+  const hitSl = excursions.filter((e) => e.hitSl).length;
+  const tpFirst = excursions.filter((e) => e.first === 'tp').length;
+  const slFirst = excursions.filter((e) => e.first === 'sl').length;
+  const ambiguous = excursions.filter((e) => e.first === 'ambiguous').length;
 
   return {
     label,
@@ -167,6 +198,9 @@ function summarizeOutcomes(label: string, rows: OutcomeRow[], thresholds: Outcom
     avgFinalPct: mean(excursions.map((e) => e.finalPct)),
     reachedTpRatePct: n === 0 ? 0 : (reachedTp / n) * 100,
     hitSlRatePct: n === 0 ? 0 : (hitSl / n) * 100,
+    tpFirstRatePct: n === 0 ? 0 : (tpFirst / n) * 100,
+    slFirstRatePct: n === 0 ? 0 : (slFirst / n) * 100,
+    ambiguousRatePct: n === 0 ? 0 : (ambiguous / n) * 100,
   };
 }
 
@@ -200,7 +234,9 @@ function outcomeBucketLine(bucket: OutcomeBucket): string {
     `  ${bucket.label.padEnd(14)} n=${String(bucket.candidates).padStart(5)} ` +
     `mfe=${bucket.avgMfePct.toFixed(1).padStart(7)}% mae=${bucket.avgMaePct.toFixed(1).padStart(7)}% ` +
     `final=${bucket.avgFinalPct.toFixed(1).padStart(7)}% ` +
-    `hitTP=${bucket.reachedTpRatePct.toFixed(1).padStart(5)}% hitSL=${bucket.hitSlRatePct.toFixed(1).padStart(5)}%`
+    `hitTP=${bucket.reachedTpRatePct.toFixed(1).padStart(5)}% hitSL=${bucket.hitSlRatePct.toFixed(1).padStart(5)}% ` +
+    `tpFirst=${bucket.tpFirstRatePct.toFixed(1).padStart(5)}% slFirst=${bucket.slFirstRatePct.toFixed(1).padStart(5)}% ` +
+    `ambiguous=${bucket.ambiguousRatePct.toFixed(1).padStart(5)}%`
   );
 }
 

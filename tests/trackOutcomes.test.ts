@@ -28,6 +28,8 @@ function row(overrides: Partial<TrackableScoredCandidateRow> & { id: number }): 
     createdAt: '2026-01-01T00:10:00.000Z', // 10 min before `now`
     outcomeHighUsd: null,
     outcomeLowUsd: null,
+    outcomeFirstTakeProfitAt: null,
+    outcomeFirstStopLossAt: null,
     ...overrides,
   };
 }
@@ -72,6 +74,31 @@ describe('trackCandidateOutcomes', () => {
       done: true,
     });
     expect(result.completed).toBe(1);
+  });
+
+  it('records the first configured TP/SL crossing times without overwriting earlier crossings', async () => {
+    const store = fakeStore([
+      row({
+        id: 1,
+        outcomeHighUsd: 0.014,
+        outcomeLowUsd: 0.009,
+        outcomeFirstTakeProfitAt: '2026-01-01T00:15:00.000Z',
+        outcomeFirstStopLossAt: null,
+      }),
+    ]);
+
+    await trackCandidateOutcomes({
+      store,
+      horizonMinutes: 45,
+      thresholds: { takeProfitPct: 50, stopLossPct: 20 },
+      now,
+      fetchPrices: async () => new Map([['mint-1', 0.0075]]), // -25%: first SL crossing this pass
+    });
+
+    expect(store._updates[0]).toMatchObject({
+      outcomeFirstTakeProfitAt: '2026-01-01T00:15:00.000Z',
+      outcomeFirstStopLossAt: '2026-01-01T00:20:00.000Z',
+    });
   });
 
   it('counts missing prices and finalizes stale rows via the cutoff', async () => {

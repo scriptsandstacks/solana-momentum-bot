@@ -141,6 +141,7 @@ program
     const result = await trackCandidateOutcomes({
       store,
       horizonMinutes: config.exits.maxHoldMinutes,
+      thresholds: { takeProfitPct: config.exits.takeProfitPct, stopLossPct: config.exits.stopLossPct },
       limit,
     });
     store.close();
