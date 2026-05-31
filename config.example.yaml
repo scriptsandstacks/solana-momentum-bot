@@ -37,5 +37,12 @@ exits:
   trailingStopPct: 20
   maxHoldMinutes: 45
 
+# Paper fill cost model. swapFeeBps is charged per leg (entry and exit) for
+# swap + priority fees; applyRouteSlippage also charges the candidate's estimated
+# route price impact per leg so thin-liquidity PnL is not frictionless fantasy.
+fees:
+  swapFeeBps: 30
+  applyRouteSlippage: true
+
 scoring:
   minimumScoreToEnter: 75

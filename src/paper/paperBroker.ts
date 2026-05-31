@@ -8,6 +8,18 @@ export interface PaperBrokerOptions {
   // PnL drops to -maxDailyLossUsd or worse, no new positions may be opened
   // until the next UTC day. Exits are never blocked.
   maxDailyLossUsd?: number;
+  // Optional trading-cost model. When present, fills are worsened to reflect
+  // real swap friction so paper PnL is not frictionless fantasy:
+  //   - feeBps is charged on every leg (entry and exit) for swap + priority fees;
+  //   - applyRouteSlippage additionally charges the candidate's
+  //     estimatedSlippageBps (route price impact) on each leg.
+  // Entry: you receive fewer tokens (effective buy price > mid). Exit: proceeds
+  // are reduced (effective sell price < mark). When omitted, fills are
+  // frictionless (mid price, no fees) — the historical behavior.
+  costModel?: {
+    feeBps: number;
+    applyRouteSlippage: boolean;
+  };
 }
 
 export interface PaperBrokerState {
@@ -41,6 +53,7 @@ export class PaperBroker {
   private readonly positionSizeUsd: number;
   private readonly maxOpenPositions: number;
   private readonly maxDailyLossUsd?: number;
+  private readonly costModel?: PaperBrokerOptions['costModel'];
   private readonly openPositions = new Map<string, PaperPosition>();
   private readonly closedTrades: PaperTrade[] = [];
   // Realized PnL bucketed by UTC day so the daily breaker resets across day
@@ -54,6 +67,15 @@ export class PaperBroker {
     this.positionSizeUsd = options.positionSizeUsd;
     this.maxOpenPositions = options.maxOpenPositions;
     this.maxDailyLossUsd = options.maxDailyLossUsd;
+    this.costModel = options.costModel;
+  }
+
+  // Fraction of price lost to friction on a single leg (entry or exit). Clamped
+  // below 1 so an effective sell price stays positive and a buy price finite.
+  private legCostFraction(estimatedSlippageBps: number): number {
+    if (!this.costModel) return 0;
+    const slippageBps = this.costModel.applyRouteSlippage ? Math.max(0, estimatedSlippageBps) : 0;
+    return Math.min(0.99, (slippageBps + this.costModel.feeBps) / 10_000);
   }
 
   // Rebuild a broker from persisted state so cash, open positions, the daily
@@ -102,12 +124,18 @@ export class PaperBroker {
     }
 
     const id = `paper-${this.nextId++}`;
-    const quantity = this.positionSizeUsd / candidate.priceUsd;
+    // The effective buy price is the mid worsened by entry-leg friction, so the
+    // same positionSizeUsd buys fewer tokens. entryPriceUsd records this actual
+    // fill (exit-rule PnL is then measured against what we really paid), while
+    // the high-water and last marks track the observed mid for trailing stops.
+    const costFraction = this.legCostFraction(candidate.estimatedSlippageBps);
+    const effectiveEntryPriceUsd = candidate.priceUsd * (1 + costFraction);
+    const quantity = this.positionSizeUsd / effectiveEntryPriceUsd;
     const position: PaperPosition = {
       id,
       token: candidate,
       score,
-      entryPriceUsd: candidate.priceUsd,
+      entryPriceUsd: effectiveEntryPriceUsd,
       quantity,
       openedAt,
       highWaterMarkUsd: candidate.priceUsd,
@@ -140,6 +168,10 @@ export class PaperBroker {
     reason: PaperTrade['reason'],
     closedAt = new Date(),
     exitPriceSource: NonNullable<PaperTrade['exitPriceSource']> = 'fresh',
+    // Fresh sell-direction price impact (bps) for the exit leg. When provided it
+    // overrides the position's entry-time route estimate, which was a small
+    // buy-side probe and a poor proxy for selling the full position later.
+    exitSlippageBps?: number,
   ): PaperTrade {
     const position = this.openPositions.get(positionId);
     if (!position) {
@@ -149,8 +181,14 @@ export class PaperBroker {
       throw new Error('Cannot close position: exit price must be positive');
     }
 
+    // Worsen the realized sell price by exit-leg friction. The recorded
+    // exitPriceUsd is this net price, so persisted PnL and cash reflect what the
+    // position would actually have fetched, not the frictionless mark. A fresh
+    // sell-side slippage estimate is preferred over the stale entry probe.
+    const costFraction = this.legCostFraction(exitSlippageBps ?? position.token.estimatedSlippageBps);
+    const netExitPriceUsd = exitPriceUsd * (1 - costFraction);
     const entryValueUsd = position.entryPriceUsd * position.quantity;
-    const exitValueUsd = exitPriceUsd * position.quantity;
+    const exitValueUsd = netExitPriceUsd * position.quantity;
     const pnlUsd = exitValueUsd - entryValueUsd;
     const pnlPct = (pnlUsd / entryValueUsd) * 100;
 
@@ -158,7 +196,7 @@ export class PaperBroker {
       positionId,
       token: position.token,
       entryPriceUsd: position.entryPriceUsd,
-      exitPriceUsd,
+      exitPriceUsd: netExitPriceUsd,
       quantity: position.quantity,
       openedAt: position.openedAt,
       closedAt,

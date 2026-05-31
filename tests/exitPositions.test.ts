@@ -107,6 +107,50 @@ describe('processExits', () => {
     expect(store._closed[0].pnlUsd).toBeGreaterThan(0);
   });
 
+  it('prices the exit fill with a fresh sell-side slippage quote under the cost model', async () => {
+    const store = fakeStore([position({ id: 'paper-1', address: 'mint-1' })]);
+    let sawValueUsd = 0;
+
+    const result = await processExits({
+      store,
+      // Cost model active: 0.30% fee + route slippage from the fresh sell quote.
+      paper: { ...paper, costModel: { feeBps: 30, applyRouteSlippage: true } },
+      exits,
+      now,
+      fetchPrices: async () => new Map([['mint-1', 0.016]]), // +60% mid → take-profit
+      fetchExitSlippageBps: async (_mint, valueUsd) => {
+        sawValueUsd = valueUsd;
+        return 900; // 9% sell-side impact, far worse than the 100bps entry estimate
+      },
+    });
+
+    expect(result).toMatchObject({ closed: 1, takeProfit: 1 });
+    // Quote was sized to the position's mid value: 0.016 * 2500 = 40.
+    expect(sawValueUsd).toBeCloseTo(40);
+    // Net exit = 0.016 * (1 - (900 + 30)/10000) = 0.016 * 0.907.
+    expect(store._closed[0].exitPriceUsd).toBeCloseTo(0.016 * 0.907);
+  });
+
+  it('does not fetch a sell quote when no cost model applies route slippage', async () => {
+    const store = fakeStore([position({ id: 'paper-1', address: 'mint-1' })]);
+    let called = false;
+
+    await processExits({
+      store,
+      paper, // no cost model
+      exits,
+      now,
+      fetchPrices: async () => new Map([['mint-1', 0.016]]),
+      fetchExitSlippageBps: async () => {
+        called = true;
+        return 900;
+      },
+    });
+
+    expect(called).toBe(false);
+    expect(store._closed[0].exitPriceUsd).toBeCloseTo(0.016); // frictionless
+  });
+
   it('persists raised high-water and last marks when a position stays open', async () => {
     const store = fakeStore([position({ id: 'paper-1', address: 'mint-1', highWaterMarkUsd: 0.01 })]);
 

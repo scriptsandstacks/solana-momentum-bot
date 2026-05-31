@@ -8,9 +8,28 @@ import { processExits } from '../bot/exitPositions.js';
 import { runBotLoop } from '../bot/runLoop.js';
 import { loadConfigFromFile } from '../config/loadConfig.js';
 import { scanSolanaCandidates } from '../chains/solana/scanner.js';
+import { checkJupiterRoute } from '../discovery/jupiter.js';
 import { PaperBroker } from '../paper/paperBroker.js';
 import { scoreTokenCandidate } from '../scoring/scoreToken.js';
 import { SqliteStore } from '../storage/sqliteStore.js';
+import type { PaperBrokerOptions } from '../paper/paperBroker.js';
+import type { BotConfig } from '../config/schema.js';
+
+// Build the broker options shared by every real-trading command, including the
+// daily-loss breaker and the trading-cost model so paper fills carry realistic
+// slippage + fees.
+function paperBrokerOptions(config: BotConfig): PaperBrokerOptions {
+  return {
+    startingBalanceUsd: config.paper.startingBalanceUsd,
+    positionSizeUsd: config.paper.positionSizeUsd,
+    maxOpenPositions: config.paper.maxOpenPositions,
+    maxDailyLossUsd: config.paper.maxDailyLossUsd,
+    costModel: {
+      feeBps: config.fees.swapFeeBps,
+      applyRouteSlippage: config.fees.applyRouteSlippage,
+    },
+  };
+}
 
 const program = new Command();
 
@@ -44,17 +63,30 @@ program.command('scan').description('Scan enabled chains and print scored candid
   store.close();
 });
 
+program
+  .command('check-route')
+  .description('Smoke-test a Jupiter route for one token mint (read-only quote; no trade)')
+  .argument('<mint>', 'output token mint to quote a swap into')
+  .action(async (mint: string) => {
+    const usingKey = Boolean(process.env.JUPITER_API_KEY);
+    process.stdout.write(`Checking Jupiter route for ${mint} (host=${usingKey ? 'api.jup.ag (keyed)' : 'lite-api.jup.ag (keyless)'})...\n`);
+    const route = await checkJupiterRoute(mint);
+    if (route.routeAvailable) {
+      process.stdout.write(
+        `Route available via ${route.routeInputSymbol} (${route.routeInputMint}); estimatedSlippage=${route.estimatedSlippageBps}bps\n`,
+      );
+    } else {
+      process.stdout.write('No route available (token may be unswappable, illiquid, or the quote API is unreachable).\n');
+    }
+  });
+
 program.command('paper').description('Run one paper-trading scan cycle').action(async () => {
   const config = loadConfigFromFile(program.opts().config);
   const store = new SqliteStore();
   const candidates = config.chains.solana.enabled ? await scanSolanaCandidates(config.chains.solana) : [];
   const { broker, scored } = runPaperCycle({
     candidates,
-    paper: {
-      startingBalanceUsd: config.paper.startingBalanceUsd,
-      positionSizeUsd: config.paper.positionSizeUsd,
-      maxOpenPositions: config.paper.maxOpenPositions,
-    },
+    paper: paperBrokerOptions(config),
     minimumScoreToEnter: config.scoring.minimumScoreToEnter,
     store,
   });
@@ -121,12 +153,7 @@ program
     const result = await processPumpPortalEvents({
       store,
       solanaConfig: config.chains.solana,
-      paper: {
-        startingBalanceUsd: config.paper.startingBalanceUsd,
-        positionSizeUsd: config.paper.positionSizeUsd,
-        maxOpenPositions: config.paper.maxOpenPositions,
-        maxDailyLossUsd: config.paper.maxDailyLossUsd,
-      },
+      paper: paperBrokerOptions(config),
       minimumScoreToEnter: config.scoring.minimumScoreToEnter,
       limit,
     });
@@ -144,12 +171,7 @@ program
     const store = new SqliteStore();
     const result = await processExits({
       store,
-      paper: {
-        startingBalanceUsd: config.paper.startingBalanceUsd,
-        positionSizeUsd: config.paper.positionSizeUsd,
-        maxOpenPositions: config.paper.maxOpenPositions,
-        maxDailyLossUsd: config.paper.maxDailyLossUsd,
-      },
+      paper: paperBrokerOptions(config),
       exits: config.exits,
     });
     store.close();
@@ -198,12 +220,7 @@ program
         processLimit,
         store,
         solanaConfig: config.chains.solana,
-        paper: {
-          startingBalanceUsd: config.paper.startingBalanceUsd,
-          positionSizeUsd: config.paper.positionSizeUsd,
-          maxOpenPositions: config.paper.maxOpenPositions,
-          maxDailyLossUsd: config.paper.maxDailyLossUsd,
-        },
+        paper: paperBrokerOptions(config),
         minimumScoreToEnter: config.scoring.minimumScoreToEnter,
         exits: config.exits,
         stopSignal: stopController.signal,

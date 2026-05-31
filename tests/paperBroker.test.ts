@@ -46,6 +46,43 @@ describe('PaperBroker', () => {
     expect(broker.getClosedTrades()).toHaveLength(1);
   });
 
+  it('applies the cost model: entry buys fewer tokens and exit nets less', () => {
+    // 1% route slippage + 0.30% fee = 1.30% friction per leg.
+    const broker = new PaperBroker({
+      startingBalanceUsd: 100,
+      positionSizeUsd: 25,
+      maxOpenPositions: 3,
+      costModel: { feeBps: 30, applyRouteSlippage: true },
+    });
+
+    const position = broker.openPosition(candidate, 82, new Date('2026-01-01T00:00:00Z'));
+
+    // Effective buy price = 0.01 * 1.013; quantity = 25 / that.
+    expect(position.entryPriceUsd).toBeCloseTo(0.01013);
+    expect(position.quantity).toBeCloseTo(25 / 0.01013);
+    // Cash still deducts the full position size, preserving the restore invariant.
+    expect(broker.getCashUsd()).toBe(75);
+    // Marks track observed mid, not the worsened fill.
+    expect(position.highWaterMarkUsd).toBe(0.01);
+    expect(position.lastMarkUsd).toBe(0.01);
+
+    // Sell at a +30% mid; proceeds are reduced by the same 1.30% exit friction.
+    const trade = broker.closePosition(position.id, 0.013, 'take_profit', new Date('2026-01-01T00:05:00Z'));
+    expect(trade.exitPriceUsd).toBeCloseTo(0.013 * 0.987);
+    const expectedPnl = 0.013 * 0.987 * position.quantity - 0.01013 * position.quantity;
+    expect(trade.pnlUsd).toBeCloseTo(expectedPnl);
+  });
+
+  it('is frictionless when no cost model is configured', () => {
+    const broker = new PaperBroker({ startingBalanceUsd: 100, positionSizeUsd: 25, maxOpenPositions: 3 });
+    const position = broker.openPosition(candidate, 82, new Date('2026-01-01T00:00:00Z'));
+    expect(position.entryPriceUsd).toBe(0.01);
+    expect(position.quantity).toBe(2500);
+    const trade = broker.closePosition(position.id, 0.015, 'take_profit', new Date('2026-01-01T00:05:00Z'));
+    expect(trade.exitPriceUsd).toBe(0.015);
+    expect(trade.pnlUsd).toBeCloseTo(12.5);
+  });
+
   it('refuses to exceed max open positions', () => {
     const broker = new PaperBroker({ startingBalanceUsd: 100, positionSizeUsd: 25, maxOpenPositions: 1 });
     broker.openPosition(candidate, 82, new Date('2026-01-01T00:00:00Z'));

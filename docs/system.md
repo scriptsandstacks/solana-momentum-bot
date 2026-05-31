@@ -141,12 +141,14 @@ Raydium enrichment contributes:
 ```text
 pairAddress        Raydium pool id
 liquidityUsd       pool TVL
-volume5mUsd        day volume prorated to 5 minutes
-volume1hUsd        day volume prorated to 1 hour
+volume5mUsd        trailing-day volume prorated by the pool's active lifetime
+volume1hUsd        trailing-day volume prorated by the pool's active lifetime
 source             raydium
 ```
 
-DexScreener and Raydium candidates are merged by mint. If both sources return a candidate, the bot keeps the deeper-liquidity candidate while preserving both source labels.
+Raydium's `day.volume` is a trailing-24h total, not a recent rate. It is prorated by the pool's actual active lifetime (floored at 5 minutes, capped at one day) rather than a flat 24h split, so a fresh pool whose volume all accrued in its first minutes is not understated into failing the volume filter. For mature pools (≥ 1 day) this converges back to the flat day-split. Raydium does not report trade-level buy/sell counts or momentum, so those fields are left at zero on a Raydium candidate.
+
+DexScreener and Raydium candidates are merged by mint into a single best view: price, liquidity, and pair come from the deepest (most tradable) pool, but volume, buy/sell counts, and momentum come from a source that actually reports them (DexScreener). This keeps a deeper Raydium pool from blanking out DexScreener's live activity signal — otherwise fresh Raydium-led mints would be filtered or scored as if they were dead. Both source labels are preserved.
 
 ### Jupiter
 
@@ -188,6 +190,13 @@ Does this token have a Raydium pool, and what does that pool look like?
 ```
 
 The system uses Jupiter because it aggregates multiple venues and gives better route realism for paper trading. Raydium now complements that by adding direct pool discovery/enrichment, especially for fresh mints where DexScreener coverage can lag.
+
+Route checks call Jupiter's Swap API (the old `quote-api.jup.ag/v6` host was deprecated on 2025-10-01). The host is chosen automatically from whether a key is present, so the bot runs keyless out of the box and upgrades itself once a key is set:
+
+- no key → `https://lite-api.jup.ag/swap/v1/quote` (keyless; deprecation postponed indefinitely as of 2026);
+- `JUPITER_API_KEY` set → `https://api.jup.ag/swap/v1/quote` with the key sent as the `x-api-key` header (free key from <https://portal.jup.ag>).
+
+`JUPITER_QUOTE_URL` overrides the host explicitly. The key is only an HTTP quote-API access key — it is read-only, never signs anything, and is unrelated to the wallet private keys forbidden in paper mode.
 
 Current split:
 
@@ -278,7 +287,7 @@ Runs one paper-trading cycle:
 
 1. Scans candidates.
 2. Scores them.
-3. Opens simulated paper positions for candidates above `minimumScoreToEnter`, subject to paper broker limits.
+3. Opens simulated paper positions for candidates above `minimumScoreToEnter`, subject to paper broker limits. The broker is rehydrated from SQLite, so the position cap, cash, and the daily-loss breaker hold across runs (consistent with `pump-process`/`manage-exits`). Every candidate is still scored and persisted even when an open is blocked by capacity.
 4. Saves scored candidates and open positions.
 5. Prints a report.
 
@@ -345,6 +354,14 @@ Runs one exit pass:
 3. Applies the configured stop-loss / take-profit / trailing-stop / max-hold rules.
 4. Closes triggered positions, records the closed trade, and persists raised high-water marks for the rest.
 5. Prints a compact summary of what was checked and closed.
+
+### `check-route`
+
+```bash
+npm run bot -- check-route <mint>
+```
+
+Read-only smoke test: quotes a Jupiter route into the given token mint and prints whether a route exists, the chosen input asset, and the estimated slippage. Places no trade and touches no funds. Reports which host/key is in use, so it doubles as a quick way to confirm the Jupiter quote path is reachable before starting `run`.
 
 ### `run`
 
@@ -450,6 +467,21 @@ maxOpenPositions
 ```
 
 When a candidate is accepted for paper trading, the broker calculates simulated token quantity from the candidate price and configured position size. No on-chain transaction is created.
+
+### Trading-cost model
+
+Paper fills are not frictionless. The `fees` config block worsens both legs so PnL is closer to reality, which matters most for thin pump.fun liquidity:
+
+```yaml
+fees:
+  swapFeeBps: 30          # per-leg swap + priority fee, charged on entry and exit
+  applyRouteSlippage: true # also charge the candidate's estimatedSlippageBps per leg
+```
+
+- **Entry:** the effective buy price is the mid worsened by the per-leg cost, so the same `positionSizeUsd` buys fewer tokens. The position's `entryPriceUsd` records this actual fill (so exit-rule PnL is measured against what was really paid), while the high-water and last marks track the observed mid for trailing-stop math.
+- **Exit:** realized proceeds are reduced by the per-leg cost; the persisted `exitPriceUsd` is this net price, so reported PnL and cash reflect what the position would actually have fetched.
+
+Slippage sourcing differs by leg. The entry leg uses the candidate's Jupiter route estimate (a small fixed buy probe). The exit leg, when `applyRouteSlippage` is on, fetches a **fresh sell-direction quote sized to the position** — a Jupiter ExactOut quote (token → exactly the position's USD value in USDC, so no token decimals are needed) whose price impact reflects what unwinding the actual position would cost. This is best-effort: if no sell quote is available, the broker falls back to the entry estimate. The sell quote is only requested for positions that are actually closing and only when the cost model applies route slippage, so frictionless runs make no extra network calls. When the `fees` block is omitted, fills are frictionless (the historical behavior).
 
 Exit rules are enforced by the exit engine (`bot/exitPositions.ts`):
 
