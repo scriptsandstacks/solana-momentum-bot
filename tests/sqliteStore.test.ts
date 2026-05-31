@@ -93,6 +93,40 @@ describe('SqliteStore', () => {
     store.close();
   });
 
+  it('makes closing the same position idempotent', () => {
+    const store = createStore();
+    const position: PaperPosition = {
+      id: 'paper-1',
+      token: candidate,
+      score: 82,
+      entryPriceUsd: 0.01,
+      quantity: 2500,
+      openedAt: new Date('2026-01-01T00:00:00Z'),
+      highWaterMarkUsd: 0.012,
+    };
+    const trade: PaperTrade = {
+      positionId: position.id,
+      token: candidate,
+      entryPriceUsd: 0.01,
+      exitPriceUsd: 0.015,
+      quantity: 2500,
+      openedAt: position.openedAt,
+      closedAt: new Date('2026-01-01T00:05:00Z'),
+      reason: 'take_profit',
+      pnlUsd: 12.5,
+      pnlPct: 50,
+    };
+
+    store.saveOpenPosition(position);
+    store.saveClosedTrade(trade);
+    store.saveClosedTrade({ ...trade, closedAt: new Date('2026-01-01T00:06:00Z') });
+
+    expect(store.listOpenPositions()).toHaveLength(0);
+    expect(store.listClosedTrades()).toHaveLength(1);
+    expect(store.getRealizedPnlUsd()).toBeCloseTo(12.5);
+    store.close();
+  });
+
   it('rehydrates broker state: open positions, realized PnL, and the next id sequence', () => {
     const store = createStore();
     const position: PaperPosition = {

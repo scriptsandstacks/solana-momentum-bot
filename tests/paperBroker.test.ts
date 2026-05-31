@@ -101,14 +101,16 @@ describe('PaperBroker', () => {
         ],
         realizedPnlUsd: 12.5,
         dailyRealizedPnlUsd: -60,
+        dailyRealizedPnlAt: new Date('2026-01-01T12:00:00Z'),
         nextPositionSeq: 8,
       },
     );
 
-    // cash = start(1000) + realized(12.5) - size(25) * openCount(1)
+    // cash = start(1000) + realized(12.5) - actual persisted entry value(25)
     expect(restored.getCashUsd()).toBeCloseTo(987.5);
     expect(restored.getOpenPositions()).toHaveLength(1);
-    expect(restored.canOpenPosition().reason).toMatch(/daily loss/i);
+    expect(restored.canOpenPosition(new Date('2026-01-01T12:30:00Z')).reason).toMatch(/daily loss/i);
+    expect(restored.canOpenPosition(new Date('2026-01-02T00:00:00Z')).ok).toBe(true);
     // New positions continue the persisted sequence rather than colliding with paper-7.
     const next = restored.openPosition(
       { ...candidate, address: 'token-9', pairAddress: 'pair-9' },
@@ -116,5 +118,29 @@ describe('PaperBroker', () => {
       new Date('2026-01-02T00:00:00Z'),
     );
     expect(next.id).toBe('paper-8');
+  });
+
+  it('restores cash from actual persisted open position value when config size changes', () => {
+    const restored = PaperBroker.restore(
+      { startingBalanceUsd: 1000, positionSizeUsd: 100, maxOpenPositions: 3 },
+      {
+        openPositions: [
+          {
+            id: 'paper-7',
+            token: candidate,
+            score: 80,
+            entryPriceUsd: 0.01,
+            quantity: 2500,
+            openedAt: new Date('2026-01-01T00:00:00Z'),
+            highWaterMarkUsd: 0.012,
+          },
+        ],
+        realizedPnlUsd: 12.5,
+        dailyRealizedPnlUsd: 0,
+        nextPositionSeq: 8,
+      },
+    );
+
+    expect(restored.getCashUsd()).toBeCloseTo(987.5);
   });
 });

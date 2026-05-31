@@ -217,7 +217,7 @@ export class SqliteStore {
 
   saveClosedTrade(trade: PaperTrade): void {
     const insert = this.db.prepare(
-      `INSERT INTO closed_trades (
+      `INSERT OR IGNORE INTO closed_trades (
         position_id, chain, address, symbol, token_json, entry_price_usd, exit_price_usd,
         quantity, reason, pnl_usd, pnl_pct, opened_at, closed_at
       ) VALUES (
@@ -391,6 +391,14 @@ export class SqliteStore {
         opened_at TEXT NOT NULL,
         closed_at TEXT NOT NULL
       );
+
+      DELETE FROM closed_trades
+      WHERE id NOT IN (
+        SELECT MIN(id)
+        FROM closed_trades
+        GROUP BY position_id
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_closed_trades_position_id ON closed_trades(position_id);
 
       CREATE TABLE IF NOT EXISTS pumpportal_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

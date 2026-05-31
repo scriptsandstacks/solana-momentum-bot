@@ -38,6 +38,7 @@ export function restoreBrokerFromStore(
     openPositions: store.loadOpenPositions(),
     realizedPnlUsd: store.getRealizedPnlUsd(),
     dailyRealizedPnlUsd: store.getRealizedPnlUsdSince(startOfUtcDayIso(now)),
+    dailyRealizedPnlAt: now,
     nextPositionSeq: store.getNextPositionSeq(),
   });
 }
