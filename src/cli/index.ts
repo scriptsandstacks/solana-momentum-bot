@@ -2,6 +2,8 @@ import { Command } from 'commander';
 import { renderReport } from '../bot/report.js';
 import { runPaperCycle } from '../bot/paperCycle.js';
 import { renderStorageReport } from '../bot/storageReport.js';
+import { computeTradeAnalytics, renderAnalyticsReport, computeOutcomeAnalytics, renderOutcomeAnalytics } from '../bot/analytics.js';
+import { trackCandidateOutcomes } from '../bot/trackOutcomes.js';
 import { runPumpWatch } from '../bot/pumpWatch.js';
 import { processPumpPortalEvents } from '../bot/pumpProcess.js';
 import { processExits } from '../bot/exitPositions.js';
@@ -116,6 +118,79 @@ program.command('report').description('Print persisted scan, position, and trade
 });
 
 program
+  .command('stats')
+  .description('Aggregate paper-trade performance: expectancy, win rate, and PnL by reason / score / source')
+  .action(() => {
+    const store = new SqliteStore();
+    const analytics = computeTradeAnalytics(store.loadClosedTradeStats());
+    process.stdout.write(renderAnalyticsReport(analytics));
+    store.close();
+  });
+
+program
+  .command('track-outcomes')
+  .description('Re-price recently scored candidates to capture forward MFE/MAE for threshold tuning')
+  .option('--limit <limit>', 'maximum candidates to re-price this pass', '200')
+  .action(async (options: { limit: string }) => {
+    const limit = Number(options.limit);
+    if (!Number.isFinite(limit) || limit <= 0) {
+      throw new Error('--limit must be a positive number');
+    }
+    const config = loadConfigFromFile(program.opts().config);
+    const store = new SqliteStore();
+    const result = await trackCandidateOutcomes({
+      store,
+      horizonMinutes: config.exits.maxHoldMinutes,
+      limit,
+    });
+    store.close();
+    process.stdout.write(
+      `Outcome tracking complete. finalized=${result.finalized} tracked=${result.tracked} updated=${result.updated} completed=${result.completed} noPrice=${result.missingPrice}\n`,
+    );
+  });
+
+program
+  .command('outcomes')
+  .description('Counterfactual analytics: forward MFE/MAE of scored candidates by score bucket')
+  .action(() => {
+    const config = loadConfigFromFile(program.opts().config);
+    const store = new SqliteStore();
+    const thresholds = { takeProfitPct: config.exits.takeProfitPct, stopLossPct: config.exits.stopLossPct };
+    const analytics = computeOutcomeAnalytics(store.loadScoredOutcomeStats(), thresholds);
+    process.stdout.write(renderOutcomeAnalytics(analytics, thresholds));
+    store.close();
+  });
+
+program
+  .command('prune')
+  .description('Delete old scored candidates that never led to a position (trades are always kept)')
+  .option('--days <days>', 'retention window in days; defaults to config retention.scoredCandidateDays')
+  .option('--dry-run', 'report what would be deleted without deleting', false)
+  .option('--no-vacuum', 'skip reclaiming disk with VACUUM after deleting')
+  .action(async (options: { days?: string; dryRun: boolean; vacuum: boolean }) => {
+    const config = loadConfigFromFile(program.opts().config);
+    const days = options.days === undefined ? config.retention.scoredCandidateDays : Number(options.days);
+    if (!Number.isFinite(days) || days <= 0) {
+      throw new Error('--days must be a positive number');
+    }
+    const cutoffIso = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const store = new SqliteStore();
+    try {
+      const prunable = store.countPrunableScoredCandidates(cutoffIso);
+      if (options.dryRun) {
+        process.stdout.write(`Dry run: ${prunable} scored candidate(s) older than ${days}d (before ${cutoffIso}) would be deleted.\n`);
+        return;
+      }
+      const deleted = store.pruneScoredCandidates(cutoffIso);
+      if (deleted > 0 && options.vacuum) store.vacuum();
+      const reclaimed = deleted > 0 && options.vacuum ? ' (disk reclaimed)' : '';
+      process.stdout.write(`Pruned ${deleted} scored candidate(s) older than ${days}d.${reclaimed}\n`);
+    } finally {
+      store.close();
+    }
+  });
+
+program
   .command('pump-watch')
   .description('Watch free PumpPortal new-token and migration streams for a bounded duration')
   .option('--api-key <key>', 'PumpPortal API key; defaults to PUMPPORTAL_API_KEY')
@@ -227,7 +302,7 @@ program
         onLog: (message) => process.stdout.write(`${message}\n`),
       });
       process.stdout.write(
-        `Run complete. eventsSaved=${result.eventsSaved} processRuns=${result.processRuns} events=${result.eventsRead} enriched=${result.candidatesEnriched} scored=${result.scored} opened=${result.openedPositions} closed=${result.closedPositions} skipped=${result.skipped} failed=${result.failed}\n`,
+        `Run complete. eventsSaved=${result.eventsSaved} processRuns=${result.processRuns} events=${result.eventsRead} enriched=${result.candidatesEnriched} scored=${result.scored} opened=${result.openedPositions} closed=${result.closedPositions} outcomes=${result.outcomesUpdated} skipped=${result.skipped} failed=${result.failed}\n`,
       );
     } finally {
       process.off('SIGINT', stop);

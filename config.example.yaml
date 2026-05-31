@@ -46,3 +46,9 @@ fees:
 
 scoring:
   minimumScoreToEnter: 75
+
+# Data retention. `prune` deletes scored candidates older than this that never
+# led to a position (trades are always kept). Also the counterfactual window for
+# the `outcomes` report.
+retention:
+  scoredCandidateDays: 30

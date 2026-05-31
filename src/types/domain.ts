@@ -48,6 +48,10 @@ export interface PaperPosition {
 export interface PaperTrade {
   positionId: string;
   token: TokenCandidate;
+  // Entry score that opened the position, carried onto the closed trade so
+  // performance can be analyzed by score bucket. Optional for backward
+  // compatibility with older callers/tests; broker closes populate it.
+  score?: number;
   entryPriceUsd: number;
   exitPriceUsd: number;
   quantity: number;

@@ -44,6 +44,15 @@ export const botConfigSchema = z.object({
   scoring: z.object({
     minimumScoreToEnter: z.number().min(0).max(100),
   }),
+  // Data-retention policy. Defaulted so older configs stay valid. Bounds the
+  // growth of scored_candidates (the noisy "checked but not traded" rows) while
+  // preserving anything tied to a real position. This window doubles as the
+  // counterfactual-analysis horizon for the outcomes report.
+  retention: z
+    .object({
+      scoredCandidateDays: z.number().positive(),
+    })
+    .default({ scoredCandidateDays: 30 }),
 });
 
 export type ChainName = keyof z.infer<typeof botConfigSchema>['chains'];

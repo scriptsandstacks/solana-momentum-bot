@@ -49,6 +49,32 @@ Show persisted results:
 npm run bot -- report
 ```
 
+Check whether a token has a Jupiter route (read-only, no trade):
+
+```bash
+npm run bot -- check-route <mint>
+```
+
+Show paper-trade performance analytics (expectancy, win rate, PnL by reason / score / source):
+
+```bash
+npm run bot -- stats
+```
+
+Capture forward outcomes for scored candidates and report MFE/MAE by score bucket:
+
+```bash
+npm run bot -- track-outcomes
+npm run bot -- outcomes
+```
+
+Prune old scored candidates that never led to a trade (trades are always kept):
+
+```bash
+npm run bot -- prune --dry-run
+npm run bot -- prune
+```
+
 Watch PumpPortal free new-token/migration streams for a bounded duration:
 
 ```bash

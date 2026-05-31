@@ -1,92 +1,102 @@
-# Claude Handoff — Paper Exit Lifecycle
+# Claude Handoff — Trading Realism + Analytics
 
-**Last updated:** 2026-05-31 · **Branch:** `development`
+**Last updated:** 2026-05-31 · **Branch:** `feature-scrutinize` (PR #6 → `development`)
 **Reviewer:** Codex (review this doc after Claude sessions). Counterpart: `docs/codex-handoff.md`.
 
-This is a living handoff. It is rewritten at the end of each Claude session to reflect the
-**current** state of the paper-exit work, not a one-time changelog. The bot is paper-only,
-Solana-first.
+This is a living handoff, rewritten at the end of each Claude session to reflect the **current**
+state. The bot is paper-only, Solana-first.
 
 ---
 
 ## Current state
 
-The open → mark-to-market → exit lifecycle is implemented, hardened, and merged.
+Two review-driven sprints landed since the paper-exit lifecycle work:
 
-- Exit engine, broker rehydration, and the daily-loss breaker landed in `0655b6f` (Claude).
-- Lifecycle/accounting hardening landed in `6bcf1b9` (Codex) and merged to `development` via PR #3 (`6a0551c`).
-- Dedup regression test + handoff rename: `43d254c` (Claude).
-- This session (Claude): implemented the unpriceable-position timeout (resolves prior known item #1).
+1. **Trading blockers + paper-fill realism** — merged to `development` via **PR #5** (`feature-claude-review`).
+2. **Analytics, outcome capture, retention** — open in **PR #6** (`feature-scrutinize`), this session.
 
-**Health:** `npm test` → 67 passing · `npm run typecheck` → clean · `npm run bot -- manage-exits` smoke OK.
+**Health:** `npm test` → 91 passing · `npm run typecheck` → clean · all CLI commands smoke OK
+(`stats`, `outcomes`, `track-outcomes`, `prune --dry-run/--prune`, `check-route`, `manage-exits`).
 
----
-
-## Architecture recap (what exists today)
-
-- **`src/bot/exitPositions.ts`** — `decideExit()` (pure) applies exit priority
-  **take-profit > stop-loss > trailing-stop > timeout**. `processExits()` rehydrates the broker,
-  re-prices open positions (DexScreener + Raydium), closes triggered ones, persists raised
-  high-water marks for the rest. Unpriceable positions are left open and retried.
-- **`src/paper/paperBroker.ts`** — `PaperBroker.restore()` rebuilds cash, open positions, the
-  UTC-day daily-loss bucket, and the `paper-N` id sequence. Cash is **derived**, not persisted:
-  `startingBalance + realizedPnl − sum(open.entryPriceUsd × quantity)`. `recordMark()` (replaces
-  the old `updateHighWaterMark`) ratchets the high-water mark and always sets `lastMarkUsd`.
-- **`src/paper/restoreBroker.ts`** — `restoreBrokerFromStore()` + `isBrokerStateStore()`; threads
-  the caller's clock into the breaker bucket for determinism.
-- **`src/storage/sqliteStore.ts`** — broker-state reads, `high_water_mark_usd` column,
-  `INSERT OR IGNORE` + unique index on `closed_trades.position_id`, and a migrate-time dedup of
-  legacy duplicate closes (keeps lowest id).
-- **`src/bot/runLoop.ts`** — per-interval exit pass guarded by `canProcessExits()`; shutdown waits
-  for the in-flight pass (`activeProcess`) before closing the client/store.
-- **CLI** — `manage-exits` (single pass); `run` and `pump-process` thread `exits` + `maxDailyLossUsd`.
+The original end-to-end review lives in the conversation; the headline was that the bot **could not
+open trades** (dead Jupiter endpoint) and paper PnL was **frictionless fantasy**. Both are fixed,
+and the system can now be tuned from data.
 
 ---
 
-## Changes made this session (Claude)
+## What landed since the last handoff
 
-### Implemented: unpriceable-position timeout (resolves prior item #1)
+### Sprint 1 — realism (merged, PR #5)
 
-Previously a position with no fresh market data was skipped every pass, so a permanently
-unpriceable mint held its slot forever — `maxHoldMinutes` could never fire without a price.
+- **Jupiter migration.** Quote API V6 (`quote-api.jup.ag/v6`) was deprecated 2025-10-01, so every
+  route check failed → every candidate scored `no_route` → nothing traded. Now uses the Swap API
+  with auto host selection: keyless `lite-api.jup.ag` by default, keyed `api.jup.ag` when
+  `JUPITER_API_KEY` is set (`JUPITER_QUOTE_URL` overrides). Also fixed a mistyped USDT input mint.
+- **Cost model on paper fills.** New `fees` config (`swapFeeBps`, `applyRouteSlippage`) worsens both
+  legs: entry buys fewer tokens (`entryPriceUsd` records the real fill; marks still track mid), exit
+  nets less. Cash invariant preserved. Omitting `fees` keeps the frictionless path.
+- **Fresh exit sell-quote.** `quoteJupiterSellImpactBps` (Jupiter ExactOut, token → exact USD in
+  USDC, so no token decimals needed) prices the exit leg at the real position size/direction;
+  `closePosition` prefers it over the entry estimate. Best-effort with fallback.
+- **Raydium fresh-mint fixes.** (a) Volume was a flat `day/288` split that understated fresh pools
+  into failing the volume filter — now prorated by actual pool lifetime. (b) The mint merge
+  overwrote DexScreener's real volume/buy-sell/momentum with Raydium's zeros when the Raydium pool
+  was deeper — now merges field-wise (price/liquidity from the deepest pool, activity from a source
+  that reports it).
+- **`paper` command fix.** `runPaperCycle` used a fresh broker (could exceed the cap / double-count
+  cash) and `break`-ed on the first blocked open (dropped later scored rows). Now rehydrates from
+  SQLite like `pump-process`/`manage-exits` and continues past blocked opens.
+- **`check-route <mint>`** read-only smoke command.
 
-Fix: positions now carry a persisted **`lastMarkUsd`** (latest observed price; unlike the
-high-water mark it is not ratcheted). `processExits` now handles the missing-price branch:
-- if held ≥ `maxHoldMinutes` → close at `lastMarkUsd` (fallback to entry price if never marked),
-  reason `timeout`, freeing the slot and booking honest PnL against the last mark;
-- otherwise → leave open and retry next pass (unchanged).
+### Sprint 2 — analytics + retention (this session, PR #6)
 
-Price-based exits (stop-loss / take-profit / trailing-stop) **still require a fresh price** — they
-are never evaluated against a stale mark. Only the time-based timeout uses the last mark.
-
-Touched: `domain.ts` (`lastMarkUsd?`), `paperBroker.ts` (`recordMark` sets last-mark + ratchets HWM;
-`openPosition` seeds last-mark = entry), `sqliteStore.ts` (`last_mark_usd` column + migration +
-load/save with entry fallback), `exitPositions.ts` (missing-price timeout branch, `minutesHeld`
-helper). New tests cover the timeout-at-last-mark path, the entry-price fallback, the
-within-window no-op, and last-mark persistence/round-trip. Suite: 65 → 67.
-
-### Prior session (kept for context)
-
-- Reviewed Codex's `6bcf1b9` hardening — verdict: correct, no reverts (shutdown wait, cash from
-  persisted entry value, deterministic breaker bucket, `INSERT OR IGNORE` + dedup).
-- Added the legacy-duplicate `closed_trades` dedup regression test (`43d254c`).
+- **`src/bot/analytics.ts`** — pure aggregation.
+  - `computeTradeAnalytics` (realized trades): expectancy, win rate, avg win/loss, profit factor,
+    avg hold, bucketed by exit reason / exit-price source / score bucket / discovery source. Needs
+    the entry `score` + `source` now persisted on `closed_trades` (new columns).
+  - `computeOutcomeAnalytics` (counterfactual): MFE/MAE, avg final return, and take-profit/stop-loss
+    hit rates by score bucket and recommendation.
+- **`src/bot/trackOutcomes.ts`** — `trackCandidateOutcomes` re-prices recently scored candidates over
+  the trade horizon (`exits.maxHoldMinutes`), seeding excursion bounds from the scored price,
+  ratcheting high/low, finalizing past the horizon. Runs automatically each interval inside `run`
+  (guarded by `canTrackOutcomes`), and as the standalone `track-outcomes` command.
+- **New `scored_candidates` columns**: `outcome_high_usd`, `outcome_low_usd`, `outcome_last_usd`,
+  `outcome_samples`, `outcome_last_at`, `outcome_done` (+ migration + index).
+- **`prune` command + `retention.scoredCandidateDays`** (default 30). Deletes scored candidates
+  older than the window that never led to a position (mints in `open_positions`/`closed_trades` are
+  preserved); runs `VACUUM`; `--dry-run`/`--days`/`--no-vacuum`. Explicit, not automatic.
+- **New CLI**: `stats`, `outcomes`, `track-outcomes`, `prune`.
 
 ---
 
-## Known remaining items (not addressed)
+## Known remaining items
+
+Resolved since the prior handoff: ~~reporting lacks per-source/score-bucket breakdown~~ (now `stats`
++ `outcomes`); ~~`paper` rehydration bug~~; the realism gaps (#3/#4/#5 from the review).
+
+Still open:
 
 1. **Capacity-blocked candidates are marked `processed`, not retried** when capacity later frees.
-2. **Migrate-time dedup runs on every startup** — unconditional full scan of `closed_trades`.
-   Negligible for a paper bot; left as-is. Could be gated on index absence if it ever matters.
-3. **Package name** still `hermes-agent` in `package.json`.
+2. **Migrate-time `closed_trades` dedup runs on every startup** — negligible for a paper bot.
+3. **Package name** still `hermes-agent` in `package.json` (cosmetic).
 4. **No live trading** — paper-only by design.
-5. Reporting: no per-source / score-bucket performance breakdown yet.
+5. **Exits only fire on the process interval** — a position can move past its stop/target between
+   passes. Accepted for paper; needs real-time triggers before live.
+6. **Outcome-tracking selection bias** — unpriceable candidates aren't sampled, so `outcomes`
+   MFE/MAE skews toward names that stayed liquid (high "no price" rate is itself a rug signal).
+7. **No sellability/rug screening** — the biggest paper-vs-live realism gap for pump.fun.
 
 ---
 
 ## Suggested Codex review focus
 
-- The unpriceable-timeout policy: closing at `lastMarkUsd` (vs. entry, or refusing to close) — is
-  booking PnL against a possibly-stale last mark the right call, or should a stale-timeout be
-  flagged/booked differently (e.g. at entry to avoid fabricated PnL)?
-- Confirm price-based exits remaining gated on a fresh price is the intended safety boundary.
+- **Outcome MFE/MAE methodology** (`trackOutcomes.ts` + `computeOutcomeAnalytics`): we capture only
+  max/min/last over the horizon, not the path order, so "reached TP" and "hit SL" can both be true
+  for one candidate. Is max/min sufficient for threshold tuning, or should we record which came
+  first (path-dependent win/loss labeling)?
+- **Prune preservation rule**: keeping *all* historical scored rows for any mint ever traded (vs
+  time-correlating the scored row to the specific position). Over-preserves slightly — acceptable?
+- **Exit slippage fallback**: when no Jupiter sell-quote is available the exit reuses the entry
+  route estimate. Confirm that's the right degradation vs refusing to apply slippage.
+- **Cost model accounting**: entry cost is folded into `entryPriceUsd` (fill price) with quantity
+  reduced so the cash invariant holds — confirm that's the right place vs a separate fee ledger.
