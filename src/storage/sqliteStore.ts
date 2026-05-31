@@ -117,8 +117,10 @@ export class SqliteStore {
     this.db
       .prepare(
         `INSERT OR REPLACE INTO open_positions (
-          id, chain, address, symbol, token_json, score, entry_price_usd, quantity, opened_at
-        ) VALUES (@id, @chain, @address, @symbol, @tokenJson, @score, @entryPriceUsd, @quantity, @openedAt)`,
+          id, chain, address, symbol, token_json, score, entry_price_usd, quantity, opened_at,
+          high_water_mark_usd
+        ) VALUES (@id, @chain, @address, @symbol, @tokenJson, @score, @entryPriceUsd, @quantity, @openedAt,
+          @highWaterMarkUsd)`,
       )
       .run({
         id: position.id,
@@ -130,7 +132,76 @@ export class SqliteStore {
         entryPriceUsd: position.entryPriceUsd,
         quantity: position.quantity,
         openedAt: position.openedAt.toISOString(),
+        highWaterMarkUsd: position.highWaterMarkUsd,
       });
+  }
+
+  // Full reconstruction of open positions (including the embedded token and
+  // high-water mark) so the PaperBroker can be rehydrated across passes/restarts.
+  loadOpenPositions(): PaperPosition[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, token_json as tokenJson, score, entry_price_usd as entryPriceUsd,
+                quantity, opened_at as openedAt, high_water_mark_usd as highWaterMarkUsd
+         FROM open_positions
+         ORDER BY opened_at ASC`,
+      )
+      .all() as Array<{
+      id: string;
+      tokenJson: string;
+      score: number;
+      entryPriceUsd: number;
+      quantity: number;
+      openedAt: string;
+      highWaterMarkUsd: number | null;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      token: JSON.parse(row.tokenJson) as TokenCandidate,
+      score: row.score,
+      entryPriceUsd: row.entryPriceUsd,
+      quantity: row.quantity,
+      openedAt: new Date(row.openedAt),
+      // Older rows predating the column fall back to the entry price.
+      highWaterMarkUsd: row.highWaterMarkUsd ?? row.entryPriceUsd,
+    }));
+  }
+
+  getRealizedPnlUsd(): number {
+    const row = this.db.prepare('SELECT COALESCE(SUM(pnl_usd), 0) as total FROM closed_trades').get() as {
+      total: number;
+    };
+    return row.total;
+  }
+
+  // Realized PnL booked at or after the given ISO timestamp. closed_at is stored
+  // as an ISO-8601 string, so lexicographic comparison matches chronological order.
+  getRealizedPnlUsdSince(sinceIso: string): number {
+    const row = this.db
+      .prepare('SELECT COALESCE(SUM(pnl_usd), 0) as total FROM closed_trades WHERE closed_at >= ?')
+      .get(sinceIso) as { total: number };
+    return row.total;
+  }
+
+  // Next free `paper-N` sequence across both open and closed positions so a
+  // rehydrated broker never reuses an id that already exists in either table.
+  getNextPositionSeq(): number {
+    const rows = this.db
+      .prepare(
+        `SELECT id FROM open_positions
+         UNION ALL
+         SELECT position_id as id FROM closed_trades`,
+      )
+      .all() as Array<{ id: string }>;
+    let maxSeq = 0;
+    for (const { id } of rows) {
+      const match = /^paper-(\d+)$/.exec(id);
+      if (match) {
+        maxSeq = Math.max(maxSeq, Number(match[1]));
+      }
+    }
+    return maxSeq + 1;
   }
 
   listOpenPositions(): OpenPositionRow[] {
@@ -146,7 +217,7 @@ export class SqliteStore {
 
   saveClosedTrade(trade: PaperTrade): void {
     const insert = this.db.prepare(
-      `INSERT INTO closed_trades (
+      `INSERT OR IGNORE INTO closed_trades (
         position_id, chain, address, symbol, token_json, entry_price_usd, exit_price_usd,
         quantity, reason, pnl_usd, pnl_pct, opened_at, closed_at
       ) VALUES (
@@ -300,7 +371,8 @@ export class SqliteStore {
         score INTEGER NOT NULL,
         entry_price_usd REAL NOT NULL,
         quantity REAL NOT NULL,
-        opened_at TEXT NOT NULL
+        opened_at TEXT NOT NULL,
+        high_water_mark_usd REAL
       );
 
       CREATE TABLE IF NOT EXISTS closed_trades (
@@ -320,6 +392,14 @@ export class SqliteStore {
         closed_at TEXT NOT NULL
       );
 
+      DELETE FROM closed_trades
+      WHERE id NOT IN (
+        SELECT MIN(id)
+        FROM closed_trades
+        GROUP BY position_id
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_closed_trades_position_id ON closed_trades(position_id);
+
       CREATE TABLE IF NOT EXISTS pumpportal_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         event_type TEXT NOT NULL,
@@ -338,6 +418,7 @@ export class SqliteStore {
       CREATE INDEX IF NOT EXISTS idx_pumpportal_events_received_at ON pumpportal_events(received_at);
       CREATE INDEX IF NOT EXISTS idx_pumpportal_events_type_mint ON pumpportal_events(event_type, token_mint);
     `);
+    this.addColumnIfMissing('open_positions', 'high_water_mark_usd', 'REAL');
     this.addColumnIfMissing('scored_candidates', 'route_input_mint', 'TEXT');
     this.addColumnIfMissing('scored_candidates', 'route_input_symbol', 'TEXT');
     this.addColumnIfMissing('pumpportal_events', 'processing_status', "TEXT NOT NULL DEFAULT 'pending'");

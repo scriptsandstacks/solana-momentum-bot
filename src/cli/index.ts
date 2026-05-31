@@ -4,6 +4,7 @@ import { runPaperCycle } from '../bot/paperCycle.js';
 import { renderStorageReport } from '../bot/storageReport.js';
 import { runPumpWatch } from '../bot/pumpWatch.js';
 import { processPumpPortalEvents } from '../bot/pumpProcess.js';
+import { processExits } from '../bot/exitPositions.js';
 import { runBotLoop } from '../bot/runLoop.js';
 import { loadConfigFromFile } from '../config/loadConfig.js';
 import { scanSolanaCandidates } from '../chains/solana/scanner.js';
@@ -124,6 +125,7 @@ program
         startingBalanceUsd: config.paper.startingBalanceUsd,
         positionSizeUsd: config.paper.positionSizeUsd,
         maxOpenPositions: config.paper.maxOpenPositions,
+        maxDailyLossUsd: config.paper.maxDailyLossUsd,
       },
       minimumScoreToEnter: config.scoring.minimumScoreToEnter,
       limit,
@@ -131,6 +133,28 @@ program
     store.close();
     process.stdout.write(
       `PumpPortal process complete. events=${result.eventsRead} enriched=${result.candidatesEnriched} scored=${result.scored} opened=${result.openedPositions} skipped=${result.skipped} failed=${result.failed}\n`,
+    );
+  });
+
+program
+  .command('manage-exits')
+  .description('Re-price open paper positions and apply stop-loss / take-profit / trailing-stop / max-hold exits')
+  .action(async () => {
+    const config = loadConfigFromFile(program.opts().config);
+    const store = new SqliteStore();
+    const result = await processExits({
+      store,
+      paper: {
+        startingBalanceUsd: config.paper.startingBalanceUsd,
+        positionSizeUsd: config.paper.positionSizeUsd,
+        maxOpenPositions: config.paper.maxOpenPositions,
+        maxDailyLossUsd: config.paper.maxDailyLossUsd,
+      },
+      exits: config.exits,
+    });
+    store.close();
+    process.stdout.write(
+      `Exit pass complete. checked=${result.positionsChecked} repriced=${result.repriced} closed=${result.closed} stopLoss=${result.stopLoss} takeProfit=${result.takeProfit} trailingStop=${result.trailingStop} timeout=${result.timeout} noPrice=${result.missingPrice}\n`,
     );
   });
 
@@ -178,13 +202,15 @@ program
           startingBalanceUsd: config.paper.startingBalanceUsd,
           positionSizeUsd: config.paper.positionSizeUsd,
           maxOpenPositions: config.paper.maxOpenPositions,
+          maxDailyLossUsd: config.paper.maxDailyLossUsd,
         },
         minimumScoreToEnter: config.scoring.minimumScoreToEnter,
+        exits: config.exits,
         stopSignal: stopController.signal,
         onLog: (message) => process.stdout.write(`${message}\n`),
       });
       process.stdout.write(
-        `Run complete. eventsSaved=${result.eventsSaved} processRuns=${result.processRuns} events=${result.eventsRead} enriched=${result.candidatesEnriched} scored=${result.scored} opened=${result.openedPositions} skipped=${result.skipped} failed=${result.failed}\n`,
+        `Run complete. eventsSaved=${result.eventsSaved} processRuns=${result.processRuns} events=${result.eventsRead} enriched=${result.candidatesEnriched} scored=${result.scored} opened=${result.openedPositions} closed=${result.closedPositions} skipped=${result.skipped} failed=${result.failed}\n`,
       );
     } finally {
       process.off('SIGINT', stop);

@@ -68,6 +68,7 @@ describe('SqliteStore', () => {
       entryPriceUsd: 0.01,
       quantity: 2500,
       openedAt: new Date('2026-01-01T00:00:00Z'),
+      highWaterMarkUsd: 0.012,
     };
     const trade: PaperTrade = {
       positionId: position.id,
@@ -89,6 +90,82 @@ describe('SqliteStore', () => {
     expect(store.listOpenPositions()).toHaveLength(0);
     expect(store.listClosedTrades()).toHaveLength(1);
     expect(store.listClosedTrades()[0]).toMatchObject({ positionId: 'paper-1', pnlUsd: 12.5 });
+    store.close();
+  });
+
+  it('makes closing the same position idempotent', () => {
+    const store = createStore();
+    const position: PaperPosition = {
+      id: 'paper-1',
+      token: candidate,
+      score: 82,
+      entryPriceUsd: 0.01,
+      quantity: 2500,
+      openedAt: new Date('2026-01-01T00:00:00Z'),
+      highWaterMarkUsd: 0.012,
+    };
+    const trade: PaperTrade = {
+      positionId: position.id,
+      token: candidate,
+      entryPriceUsd: 0.01,
+      exitPriceUsd: 0.015,
+      quantity: 2500,
+      openedAt: position.openedAt,
+      closedAt: new Date('2026-01-01T00:05:00Z'),
+      reason: 'take_profit',
+      pnlUsd: 12.5,
+      pnlPct: 50,
+    };
+
+    store.saveOpenPosition(position);
+    store.saveClosedTrade(trade);
+    store.saveClosedTrade({ ...trade, closedAt: new Date('2026-01-01T00:06:00Z') });
+
+    expect(store.listOpenPositions()).toHaveLength(0);
+    expect(store.listClosedTrades()).toHaveLength(1);
+    expect(store.getRealizedPnlUsd()).toBeCloseTo(12.5);
+    store.close();
+  });
+
+  it('rehydrates broker state: open positions, realized PnL, and the next id sequence', () => {
+    const store = createStore();
+    const position: PaperPosition = {
+      id: 'paper-3',
+      token: candidate,
+      score: 82,
+      entryPriceUsd: 0.01,
+      quantity: 2500,
+      openedAt: new Date('2026-01-01T00:00:00Z'),
+      highWaterMarkUsd: 0.018,
+    };
+    const closed: PaperTrade = {
+      positionId: 'paper-1',
+      token: candidate,
+      entryPriceUsd: 0.01,
+      exitPriceUsd: 0.015,
+      quantity: 2500,
+      openedAt: new Date('2026-01-01T00:00:00Z'),
+      closedAt: new Date('2026-01-01T00:05:00Z'),
+      reason: 'take_profit',
+      pnlUsd: 12.5,
+      pnlPct: 50,
+    };
+
+    store.saveOpenPosition(position);
+    store.saveOpenPosition({ ...position, id: 'paper-1' });
+    store.saveClosedTrade(closed); // closes paper-1, leaving paper-3 open
+
+    const loaded = store.loadOpenPositions();
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]).toMatchObject({ id: 'paper-3', highWaterMarkUsd: 0.018 });
+    expect(loaded[0].token).toMatchObject({ address: 'token-1', symbol: 'MOCK' });
+    expect(loaded[0].openedAt).toBeInstanceOf(Date);
+
+    expect(store.getRealizedPnlUsd()).toBeCloseTo(12.5);
+    expect(store.getRealizedPnlUsdSince('2026-01-01T00:00:00.000Z')).toBeCloseTo(12.5);
+    expect(store.getRealizedPnlUsdSince('2026-01-02T00:00:00.000Z')).toBe(0);
+    // Highest used seq is paper-3 (open) — paper-1 lives in closed_trades.
+    expect(store.getNextPositionSeq()).toBe(4);
     store.close();
   });
 
@@ -214,6 +291,57 @@ describe('SqliteStore', () => {
     store.markPumpPortalEventProcessed(row.id, 'processed', 'final');
     expect(store.listPumpPortalEvents(1)[0].processingAttempts).toBe(2);
 
+    store.close();
+  });
+
+  it('dedupes legacy duplicate closed_trades on migrate and builds the unique index', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hermes-paper-bot-dedup-'));
+    const dbPath = path.join(dir, 'legacy.sqlite');
+
+    // A pre-index DB could hold duplicate closes for one position_id. migrate()
+    // must drop the extras (keeping the lowest id) before creating the unique
+    // index, otherwise CREATE UNIQUE INDEX would throw on open.
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE closed_trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        position_id TEXT NOT NULL, chain TEXT NOT NULL, address TEXT NOT NULL, symbol TEXT NOT NULL,
+        token_json TEXT NOT NULL, entry_price_usd REAL NOT NULL, exit_price_usd REAL NOT NULL,
+        quantity REAL NOT NULL, reason TEXT NOT NULL, pnl_usd REAL NOT NULL, pnl_pct REAL NOT NULL,
+        opened_at TEXT NOT NULL, closed_at TEXT NOT NULL
+      );
+    `);
+    const insert = legacy.prepare(
+      `INSERT INTO closed_trades
+        (position_id, chain, address, symbol, token_json, entry_price_usd, exit_price_usd,
+         quantity, reason, pnl_usd, pnl_pct, opened_at, closed_at)
+       VALUES ('paper-1','solana','t','S','{}',0.01,0.015,2500,'take_profit',@pnl,50,
+               '2026-01-01T00:00:00Z','2026-01-01T00:05:00Z')`,
+    );
+    insert.run({ pnl: 12.5 }); // lowest id — kept
+    insert.run({ pnl: 99.9 });
+    insert.run({ pnl: 12.5 });
+    legacy.close();
+
+    // Opening through SqliteStore runs migrate(); it must not throw.
+    const store = new SqliteStore(dbPath);
+    expect(store.listClosedTrades(50)).toHaveLength(1);
+    expect(store.getRealizedPnlUsd()).toBeCloseTo(12.5);
+
+    // The unique index is now in force: a duplicate close is ignored, not added.
+    store.saveClosedTrade({
+      positionId: 'paper-1',
+      token: candidate,
+      entryPriceUsd: 0.01,
+      exitPriceUsd: 0.02,
+      quantity: 2500,
+      openedAt: new Date('2026-01-01T00:00:00Z'),
+      closedAt: new Date('2026-01-01T00:10:00Z'),
+      reason: 'take_profit',
+      pnlUsd: 25,
+      pnlPct: 100,
+    });
+    expect(store.listClosedTrades(50)).toHaveLength(1);
     store.close();
   });
 });

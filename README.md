@@ -61,6 +61,12 @@ Process pending PumpPortal events into enriched/scored paper candidates:
 npm run bot -- pump-process --limit 50
 ```
 
+Re-price open paper positions and apply stop-loss / take-profit / trailing-stop / max-hold exits:
+
+```bash
+npm run bot -- manage-exits
+```
+
 Continuously watch PumpPortal and process pending events in one loop:
 
 ```bash

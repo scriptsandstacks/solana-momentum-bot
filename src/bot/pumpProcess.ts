@@ -1,6 +1,7 @@
 import { fetchPumpPortalMarketCandidates } from './pumpCandidates.js';
 import { checkJupiterRoute, type JupiterRouteCheck } from '../discovery/jupiter.js';
-import { PaperBroker } from '../paper/paperBroker.js';
+import { PaperBroker, type PaperBrokerOptions } from '../paper/paperBroker.js';
+import { restoreBrokerFromStore, isBrokerStateStore } from '../paper/restoreBroker.js';
 import { scoreTokenCandidate } from '../scoring/scoreToken.js';
 import type { ChainConfig } from '../config/schema.js';
 import type { OpportunityScore, PaperPosition, TokenCandidate } from '../types/domain.js';
@@ -32,11 +33,7 @@ interface PumpProcessStore {
 interface PumpProcessOptions {
   store: PumpProcessStore;
   solanaConfig: ChainConfig;
-  paper: {
-    startingBalanceUsd: number;
-    positionSizeUsd: number;
-    maxOpenPositions: number;
-  };
+  paper: PaperBrokerOptions;
   minimumScoreToEnter: number;
   limit?: number;
   maxPendingAttempts?: number;
@@ -73,7 +70,12 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
   const candidatesByMint = new Map(candidates.map((candidate) => [candidate.address, candidate]));
   result.candidatesEnriched = candidates.length;
 
-  const broker = new PaperBroker(options.paper);
+  // Rehydrate the broker from persisted state so cash, the position cap, and the
+  // daily-loss breaker stay correct across passes/restarts. Fall back to a fresh
+  // broker for minimal stores (e.g. unit tests) that don't expose state reads.
+  const broker = isBrokerStateStore(options.store)
+    ? restoreBrokerFromStore(options.store, options.paper)
+    : new PaperBroker(options.paper);
 
   for (const event of events) {
     if (!event.tokenMint) {
@@ -122,17 +124,22 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
       options.store.saveScoredCandidate(enriched, score);
       result.scored += 1;
 
+      let note = `score=${score.total} recommendation=${score.recommendation}`;
       if (score.total >= options.minimumScoreToEnter && score.recommendation === 'paper_trade') {
-        const position = broker.openPosition(enriched, score.total);
-        options.store.saveOpenPosition(position);
-        result.openedPositions += 1;
+        // A blocked entry (cap/cash/daily-loss) is an expected outcome, not a
+        // failure: still mark the event processed, just note why we held off.
+        const capacity = broker.canOpenPosition();
+        if (capacity.ok) {
+          const position = broker.openPosition(enriched, score.total);
+          options.store.saveOpenPosition(position);
+          result.openedPositions += 1;
+          note += ' opened';
+        } else {
+          note += ` not opened (${capacity.reason})`;
+        }
       }
 
-      options.store.markPumpPortalEventProcessed(
-        event.id,
-        'processed',
-        `score=${score.total} recommendation=${score.recommendation}`,
-      );
+      options.store.markPumpPortalEventProcessed(event.id, 'processed', note);
     } catch (error) {
       options.store.markPumpPortalEventProcessed(
         event.id,

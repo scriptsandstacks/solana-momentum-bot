@@ -72,6 +72,103 @@ describe('runBotLoop', () => {
     expect(logs.join('\n')).toContain('[run] stopped');
   });
 
+  it('runs an exit pass each interval when exit rules and a stateful store are provided', async () => {
+    FakePumpClient.closes = 0;
+    const exitCalls: number[] = [];
+
+    const result = await runBotLoop({
+      apiKey: 'abc123',
+      durationMs: 25,
+      processIntervalMs: 10,
+      processLimit: 5,
+      store: {
+        savePumpPortalEvent: () => undefined,
+        // Stateful store surface so runLoop's isBrokerStateStore guard passes.
+        loadOpenPositions: () => [],
+        getRealizedPnlUsd: () => 0,
+        getRealizedPnlUsdSince: () => 0,
+        getNextPositionSeq: () => 1,
+        saveClosedTrade: () => undefined,
+        saveOpenPosition: () => undefined,
+      },
+      solanaConfig: { enabled: true, minLiquidityUsd: 10_000, minVolume5mUsd: 5_000, maxSlippageBps: 500 },
+      paper: { startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 3 },
+      minimumScoreToEnter: 75,
+      exits: { stopLossPct: 20, takeProfitPct: 50, trailingStopPct: 20, maxHoldMinutes: 45 },
+      ClientCtor: FakePumpClient,
+      processPumpEvents: async () => ({
+        eventsRead: 0,
+        candidatesEnriched: 0,
+        scored: 0,
+        openedPositions: 0,
+        skipped: 0,
+        failed: 0,
+      }),
+      processExits: async () => {
+        exitCalls.push(1);
+        return {
+          positionsChecked: 1,
+          repriced: 1,
+          missingPrice: 0,
+          closed: 1,
+          stopLoss: 0,
+          takeProfit: 1,
+          trailingStop: 0,
+          timeout: 0,
+        };
+      },
+    });
+
+    expect(exitCalls.length).toBeGreaterThanOrEqual(1);
+    expect(result.closedPositions).toBe(exitCalls.length);
+  });
+
+  it('does not run exits when the store lacks exit write methods', async () => {
+    let exitCalls = 0;
+
+    await runBotLoop({
+      apiKey: 'abc123',
+      durationMs: 15,
+      processIntervalMs: 5,
+      processLimit: 5,
+      store: {
+        savePumpPortalEvent: () => undefined,
+        loadOpenPositions: () => [],
+        getRealizedPnlUsd: () => 0,
+        getRealizedPnlUsdSince: () => 0,
+        getNextPositionSeq: () => 1,
+      },
+      solanaConfig: { enabled: true, minLiquidityUsd: 10_000, minVolume5mUsd: 5_000, maxSlippageBps: 500 },
+      paper: { startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 3 },
+      minimumScoreToEnter: 75,
+      exits: { stopLossPct: 20, takeProfitPct: 50, trailingStopPct: 20, maxHoldMinutes: 45 },
+      ClientCtor: FakePumpClient,
+      processPumpEvents: async () => ({
+        eventsRead: 0,
+        candidatesEnriched: 0,
+        scored: 0,
+        openedPositions: 0,
+        skipped: 0,
+        failed: 0,
+      }),
+      processExits: async () => {
+        exitCalls += 1;
+        return {
+          positionsChecked: 0,
+          repriced: 0,
+          missingPrice: 0,
+          closed: 0,
+          stopLoss: 0,
+          takeProfit: 0,
+          trailingStop: 0,
+          timeout: 0,
+        };
+      },
+    });
+
+    expect(exitCalls).toBe(0);
+  });
+
   it('skips overlapping process passes when the previous pass is still running', async () => {
     FakePumpClient.closes = 0;
     const logs: string[] = [];
@@ -120,6 +217,55 @@ describe('runBotLoop', () => {
 
     expect(maxConcurrent).toBe(1);
     expect(logs.some((m) => m.includes('skipped (previous pass still running)'))).toBe(true);
+  });
+
+  it('waits for an in-flight interval pass before resolving on shutdown', async () => {
+    FakePumpClient.closes = 0;
+    let callCount = 0;
+    let slowPassStarted = false;
+    let releaseSlowPass: (() => void) | undefined;
+    let resolved = false;
+
+    const promise = runBotLoop({
+      apiKey: 'abc123',
+      durationMs: 20,
+      processIntervalMs: 5,
+      processLimit: 10,
+      store: { savePumpPortalEvent: () => undefined },
+      solanaConfig: {
+        enabled: true,
+        minLiquidityUsd: 10_000,
+        minVolume5mUsd: 5_000,
+        maxSlippageBps: 500,
+      },
+      paper: { startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 3 },
+      minimumScoreToEnter: 75,
+      ClientCtor: FakePumpClient,
+      processPumpEvents: async () => {
+        callCount += 1;
+        if (callCount === 2) {
+          slowPassStarted = true;
+          await new Promise<void>((resolve) => {
+            releaseSlowPass = resolve;
+          });
+        }
+        return { eventsRead: 0, candidatesEnriched: 0, scored: 0, openedPositions: 0, skipped: 0, failed: 0 };
+      },
+    }).then((result) => {
+      resolved = true;
+      return result;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    expect(slowPassStarted).toBe(true);
+    expect(resolved).toBe(false);
+
+    releaseSlowPass?.();
+    const result = await promise;
+
+    expect(resolved).toBe(true);
+    expect(FakePumpClient.closes).toBe(1);
+    expect(result.processRuns).toBe(2);
   });
 
   it('terminates cleanly when stopSignal aborts mid-run', async () => {
