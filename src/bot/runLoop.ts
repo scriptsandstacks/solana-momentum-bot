@@ -36,6 +36,10 @@ type ProcessExits = (options: {
   exits: ExitRules;
 }) => Promise<ProcessExitsResult>;
 
+function canProcessExits(store: RunLoopStore): boolean {
+  return isBrokerStateStore(store) && typeof store.saveOpenPosition === 'function' && typeof store.saveClosedTrade === 'function';
+}
+
 type PumpPortalClientLike = {
   connectFreeStreams(): Promise<void>;
   close(): void;
@@ -141,15 +145,10 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
   let interval: NodeJS.Timeout | undefined;
   let stopped = false;
   let processInFlight = false;
+  let activeProcess: Promise<void> | undefined;
 
   const processOnce = async () => {
     if (stopped) return;
-    if (processInFlight) {
-      // Skip overlapping passes: a long pass + short interval would otherwise
-      // fan out duplicate enrichment requests and double-write scored rows.
-      options.onLog?.('[run:process] skipped (previous pass still running)');
-      return;
-    }
     processInFlight = true;
     try {
       const processResult = await processPumpEvents({
@@ -173,7 +172,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
       // After ingesting/opening, re-price open positions and apply exit rules so
       // positions actually close instead of accumulating until the cap blocks
       // every new entry.
-      if (options.exits && isBrokerStateStore(options.store)) {
+      if (options.exits && canProcessExits(options.store)) {
         const exitResult = await processExits({
           store: options.store,
           paper: options.paper,
@@ -189,15 +188,30 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
     }
   };
 
+  const startProcessPass = async () => {
+    if (processInFlight) {
+      // Skip overlapping passes: a long pass + short interval would otherwise
+      // fan out duplicate enrichment requests and double-write scored rows.
+      options.onLog?.('[run:process] skipped (previous pass still running)');
+      return;
+    }
+    activeProcess = processOnce().finally(() => {
+      activeProcess = undefined;
+    });
+    await activeProcess;
+  };
+
+  const logProcessError = (error: unknown) => {
+    options.onLog?.(`[run:error] ${error instanceof Error ? error.message : String(error)}`);
+  };
+
   options.onLog?.('[run] started');
   try {
     await client.connectFreeStreams();
-    await processOnce();
+    await startProcessPass();
     await new Promise<void>((resolve) => {
       interval = setInterval(() => {
-        processOnce().catch((error: unknown) =>
-          options.onLog?.(`[run:error] ${error instanceof Error ? error.message : String(error)}`),
-        );
+        startProcessPass().catch(logProcessError);
       }, options.processIntervalMs);
 
       let timeout: NodeJS.Timeout | undefined;
@@ -221,6 +235,9 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
   } finally {
     stopped = true;
     if (interval) clearInterval(interval);
+    if (activeProcess) {
+      await activeProcess.catch(logProcessError);
+    }
     client.close();
     options.onLog?.('[run] stopped');
   }

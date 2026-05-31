@@ -13,12 +13,16 @@ export interface PaperBrokerOptions {
 export interface PaperBrokerState {
   openPositions: PaperPosition[];
   // Total realized PnL across every closed trade so far. Used to reconstruct
-  // cash without persisting cash directly: every open deducts positionSizeUsd
-  // and every close returns exit value, so cash collapses to
-  // startingBalance + realizedPnl - positionSizeUsd * openCount.
+  // cash without persisting cash directly: every open deducts its actual
+  // persisted entry value and every close returns exit value, so cash collapses to
+  // startingBalance + realizedPnl - sum(open entryPriceUsd * quantity).
   realizedPnlUsd: number;
   // Realized PnL booked during the current UTC day, used to seed the breaker.
   dailyRealizedPnlUsd: number;
+  // Day associated with dailyRealizedPnlUsd. restoreBrokerFromStore passes the
+  // same clock used to compute the since-start-of-day query so restored breaker
+  // state is deterministic in tests and across timezones/processes.
+  dailyRealizedPnlAt?: Date;
   // Next sequence number for generated position ids, so restored ids never collide.
   nextPositionSeq: number;
 }
@@ -57,14 +61,17 @@ export class PaperBroker {
   static restore(options: PaperBrokerOptions, state: PaperBrokerState): PaperBroker {
     const broker = new PaperBroker(options);
     broker.realizedPnlUsd = state.realizedPnlUsd;
-    broker.cashUsd =
-      options.startingBalanceUsd + state.realizedPnlUsd - options.positionSizeUsd * state.openPositions.length;
+    const openPositionValueUsd = state.openPositions.reduce(
+      (total, position) => total + position.entryPriceUsd * position.quantity,
+      0,
+    );
+    broker.cashUsd = options.startingBalanceUsd + state.realizedPnlUsd - openPositionValueUsd;
     broker.nextId = Math.max(1, state.nextPositionSeq);
     for (const position of state.openPositions) {
       broker.openPositions.set(position.id, position);
     }
     if (state.dailyRealizedPnlUsd !== 0) {
-      broker.dailyPnlByDay.set(utcDayKey(new Date()), state.dailyRealizedPnlUsd);
+      broker.dailyPnlByDay.set(utcDayKey(state.dailyRealizedPnlAt ?? new Date()), state.dailyRealizedPnlUsd);
     }
     return broker;
   }
