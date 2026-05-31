@@ -111,6 +111,7 @@ export class PaperBroker {
       quantity,
       openedAt,
       highWaterMarkUsd: candidate.priceUsd,
+      lastMarkUsd: candidate.priceUsd,
     };
 
     this.cashUsd -= this.positionSizeUsd;
@@ -118,13 +119,15 @@ export class PaperBroker {
     return position;
   }
 
-  // Raise the recorded high-water mark when a fresh price exceeds it. Returns
-  // the (possibly updated) position so callers can persist the new mark.
-  updateHighWaterMark(positionId: string, priceUsd: number): PaperPosition {
+  // Record a fresh observed price: always update the last-mark, and ratchet the
+  // high-water mark up when the price exceeds it. Returns the position so callers
+  // can persist the new marks.
+  recordMark(positionId: string, priceUsd: number): PaperPosition {
     const position = this.openPositions.get(positionId);
     if (!position) {
       throw new Error(`Cannot update position: unknown position ${positionId}`);
     }
+    position.lastMarkUsd = priceUsd;
     if (priceUsd > position.highWaterMarkUsd) {
       position.highWaterMarkUsd = priceUsd;
     }

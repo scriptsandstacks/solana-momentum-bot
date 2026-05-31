@@ -460,7 +460,9 @@ trailingStopPct    once price rose above entry, close on a drop of this % from t
 maxHoldMinutes     close when the position has been held longer than this
 ```
 
-Each open position carries a `highWaterMarkUsd` (initialized to the entry price and ratcheted up on every higher print) so trailing stops measure the drop from the peak, not from entry. Exit priority is take-profit > stop-loss > trailing-stop > timeout. Positions with no fresh price are left open and retried on the next pass rather than closed at a stale price.
+Each open position carries a `highWaterMarkUsd` (initialized to the entry price and ratcheted up on every higher print) so trailing stops measure the drop from the peak, not from entry, plus a `lastMarkUsd` (the most recent observed price, not ratcheted). Exit priority is take-profit > stop-loss > trailing-stop > timeout.
+
+When a pass has no fresh price for a position, the price-based exits (stop-loss, take-profit, trailing-stop) are skipped — they must react to a real current price. The time-based `maxHoldMinutes` timeout still fires, closing the position at its `lastMarkUsd` (or the entry price if it was never marked), so an unpriceable position cannot hold its slot indefinitely. A position that is neither priceable nor timed out is left open and retried on the next pass.
 
 The exit engine rehydrates the `PaperBroker` from SQLite (open positions, cash, the daily-loss breaker, and the position-id sequence) so state is correct across passes and restarts. The same rehydration is used when opening positions, so `maxOpenPositions`, cash, and `maxDailyLossUsd` are enforced across passes — not just within a single process run.
 
@@ -472,15 +474,14 @@ The exit engine rehydrates the `PaperBroker` from SQLite (open positions, cash, 
 
 - Base and Ethereum modules are config placeholders only.
 - No live trading exists.
-- Exit re-pricing reuses the DexScreener + Raydium lookup; positions with no current market data are left open and retried rather than force-closed, so a permanently unpriceable mint will not hit its `maxHoldMinutes` timeout.
+- Exit re-pricing reuses the DexScreener + Raydium lookup. Price-based exits need a fresh price, so a position with no current market data is only acted on once it hits its `maxHoldMinutes` timeout (closed at its last known mark); until then it is left open and retried.
 - Route checks depend on public Jupiter availability and may fail or rate-limit.
 - DexScreener search can return older tokens; PumpPortal and Raydium should improve freshness.
 
 ## Recommended next steps
 
 1. Improve reports with historical performance by source and score bucket.
-2. Add a fallback exit price (e.g. last known mark) so unpriceable positions can still time out and free their slot.
-3. Add Base paper support only after Solana paper results are useful.
+2. Add Base paper support only after Solana paper results are useful.
 
 ## Development checks
 

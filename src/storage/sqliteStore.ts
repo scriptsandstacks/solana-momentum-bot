@@ -118,9 +118,9 @@ export class SqliteStore {
       .prepare(
         `INSERT OR REPLACE INTO open_positions (
           id, chain, address, symbol, token_json, score, entry_price_usd, quantity, opened_at,
-          high_water_mark_usd
+          high_water_mark_usd, last_mark_usd
         ) VALUES (@id, @chain, @address, @symbol, @tokenJson, @score, @entryPriceUsd, @quantity, @openedAt,
-          @highWaterMarkUsd)`,
+          @highWaterMarkUsd, @lastMarkUsd)`,
       )
       .run({
         id: position.id,
@@ -133,6 +133,7 @@ export class SqliteStore {
         quantity: position.quantity,
         openedAt: position.openedAt.toISOString(),
         highWaterMarkUsd: position.highWaterMarkUsd,
+        lastMarkUsd: position.lastMarkUsd ?? position.entryPriceUsd,
       });
   }
 
@@ -142,7 +143,8 @@ export class SqliteStore {
     const rows = this.db
       .prepare(
         `SELECT id, token_json as tokenJson, score, entry_price_usd as entryPriceUsd,
-                quantity, opened_at as openedAt, high_water_mark_usd as highWaterMarkUsd
+                quantity, opened_at as openedAt, high_water_mark_usd as highWaterMarkUsd,
+                last_mark_usd as lastMarkUsd
          FROM open_positions
          ORDER BY opened_at ASC`,
       )
@@ -154,6 +156,7 @@ export class SqliteStore {
       quantity: number;
       openedAt: string;
       highWaterMarkUsd: number | null;
+      lastMarkUsd: number | null;
     }>;
 
     return rows.map((row) => ({
@@ -163,8 +166,9 @@ export class SqliteStore {
       entryPriceUsd: row.entryPriceUsd,
       quantity: row.quantity,
       openedAt: new Date(row.openedAt),
-      // Older rows predating the column fall back to the entry price.
+      // Older rows predating the columns fall back to the entry price.
       highWaterMarkUsd: row.highWaterMarkUsd ?? row.entryPriceUsd,
+      lastMarkUsd: row.lastMarkUsd ?? row.entryPriceUsd,
     }));
   }
 
@@ -372,7 +376,8 @@ export class SqliteStore {
         entry_price_usd REAL NOT NULL,
         quantity REAL NOT NULL,
         opened_at TEXT NOT NULL,
-        high_water_mark_usd REAL
+        high_water_mark_usd REAL,
+        last_mark_usd REAL
       );
 
       CREATE TABLE IF NOT EXISTS closed_trades (
@@ -419,6 +424,7 @@ export class SqliteStore {
       CREATE INDEX IF NOT EXISTS idx_pumpportal_events_type_mint ON pumpportal_events(event_type, token_mint);
     `);
     this.addColumnIfMissing('open_positions', 'high_water_mark_usd', 'REAL');
+    this.addColumnIfMissing('open_positions', 'last_mark_usd', 'REAL');
     this.addColumnIfMissing('scored_candidates', 'route_input_mint', 'TEXT');
     this.addColumnIfMissing('scored_candidates', 'route_input_symbol', 'TEXT');
     this.addColumnIfMissing('pumpportal_events', 'processing_status', "TEXT NOT NULL DEFAULT 'pending'");

@@ -137,6 +137,7 @@ describe('SqliteStore', () => {
       quantity: 2500,
       openedAt: new Date('2026-01-01T00:00:00Z'),
       highWaterMarkUsd: 0.018,
+      lastMarkUsd: 0.016,
     };
     const closed: PaperTrade = {
       positionId: 'paper-1',
@@ -157,7 +158,7 @@ describe('SqliteStore', () => {
 
     const loaded = store.loadOpenPositions();
     expect(loaded).toHaveLength(1);
-    expect(loaded[0]).toMatchObject({ id: 'paper-3', highWaterMarkUsd: 0.018 });
+    expect(loaded[0]).toMatchObject({ id: 'paper-3', highWaterMarkUsd: 0.018, lastMarkUsd: 0.016 });
     expect(loaded[0].token).toMatchObject({ address: 'token-1', symbol: 'MOCK' });
     expect(loaded[0].openedAt).toBeInstanceOf(Date);
 

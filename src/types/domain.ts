@@ -38,6 +38,11 @@ export interface PaperPosition {
   // Highest price observed since entry, used to evaluate trailing stops.
   // Initialized to the entry price when the position is opened.
   highWaterMarkUsd: number;
+  // Most recent observed price (unlike the high-water mark, this is not
+  // ratcheted — it always reflects the latest reprice). Used as the exit price
+  // when a max-hold timeout fires on a pass where no fresh price is available.
+  // Optional for backward compatibility; reads fall back to the entry price.
+  lastMarkUsd?: number;
 }
 
 export interface PaperTrade {

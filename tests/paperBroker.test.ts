@@ -53,14 +53,21 @@ describe('PaperBroker', () => {
     expect(() => broker.openPosition({ ...candidate, address: 'token-2', pairAddress: 'pair-2' }, 80, new Date('2026-01-01T00:01:00Z'))).toThrow(/max open/i);
   });
 
-  it('initializes the high-water mark to entry and only ratchets upward', () => {
+  it('records marks: high-water ratchets up only, last-mark always tracks latest', () => {
     const broker = new PaperBroker({ startingBalanceUsd: 100, positionSizeUsd: 25, maxOpenPositions: 3 });
     const position = broker.openPosition(candidate, 82, new Date('2026-01-01T00:00:00Z'));
 
     expect(position.highWaterMarkUsd).toBe(0.01);
-    expect(broker.updateHighWaterMark(position.id, 0.02).highWaterMarkUsd).toBe(0.02);
-    // A lower print must not lower the mark.
-    expect(broker.updateHighWaterMark(position.id, 0.015).highWaterMarkUsd).toBe(0.02);
+    expect(position.lastMarkUsd).toBe(0.01);
+
+    const up = broker.recordMark(position.id, 0.02);
+    expect(up.highWaterMarkUsd).toBe(0.02);
+    expect(up.lastMarkUsd).toBe(0.02);
+
+    // A lower print must not lower the high-water mark, but is the new last-mark.
+    const down = broker.recordMark(position.id, 0.015);
+    expect(down.highWaterMarkUsd).toBe(0.02);
+    expect(down.lastMarkUsd).toBe(0.015);
   });
 
   it('blocks new entries once the daily loss limit is reached, but still allows exits', () => {

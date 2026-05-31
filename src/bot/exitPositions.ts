@@ -38,6 +38,10 @@ export interface ProcessExitsResult {
   timeout: number;
 }
 
+function minutesHeld(openedAt: Date, now: Date): number {
+  return (now.getTime() - openedAt.getTime()) / 60_000;
+}
+
 // Decide whether a position should exit given a fresh price. Pure and exported
 // so the priority order and trailing-stop math are unit-testable in isolation.
 //
@@ -61,8 +65,7 @@ export function decideExit(
     if (priceUsd <= trailingFloor) return 'trailing_stop';
   }
 
-  const heldMinutes = (now.getTime() - position.openedAt.getTime()) / 60_000;
-  if (heldMinutes >= exits.maxHoldMinutes) return 'timeout';
+  if (minutesHeld(position.openedAt, now) >= exits.maxHoldMinutes) return 'timeout';
 
   return undefined;
 }
@@ -79,8 +82,11 @@ async function defaultFetchPrices(tokenMints: string[]): Promise<Map<string, num
 }
 
 // Re-price open paper positions and close any that hit a configured exit rule.
-// Positions with no fresh price are left untouched (they remain open and are
-// retried on the next pass) rather than being closed at a stale price.
+// When no fresh price is available, stop-loss / take-profit / trailing exits are
+// skipped (they must react to a real current price), but a max-hold timeout still
+// fires — closing at the last known mark — so an unpriceable position cannot hold
+// its slot forever. Positions that are neither priceable nor timed out are left
+// open and retried next pass.
 export async function processExits(options: ProcessExitsOptions): Promise<ProcessExitsResult> {
   const now = options.now ?? new Date();
   const broker = restoreBrokerFromStore(options.store, options.paper, now);
@@ -103,31 +109,44 @@ export async function processExits(options: ProcessExitsOptions): Promise<Proces
   const fetchPrices = options.fetchPrices ?? defaultFetchPrices;
   const prices = await fetchPrices(mints);
 
-  for (const position of open) {
-    const price = prices.get(position.token.address);
-    if (price === undefined || price <= 0) {
-      result.missingPrice += 1;
-      continue;
-    }
-    result.repriced += 1;
-
-    // Ratchet the high-water mark first so trailing-stop math uses the latest peak.
-    const updated = broker.updateHighWaterMark(position.id, price);
-    const reason = decideExit(position, price, updated.highWaterMarkUsd, options.exits, now);
-
-    if (!reason) {
-      // No exit: persist the (possibly raised) high-water mark for next pass.
-      options.store.saveOpenPosition(updated);
-      continue;
-    }
-
-    const trade = broker.closePosition(position.id, price, reason, now);
+  const recordClose = (positionId: string, exitPriceUsd: number, reason: ExitReason) => {
+    const trade = broker.closePosition(positionId, exitPriceUsd, reason, now);
     options.store.saveClosedTrade(trade);
     result.closed += 1;
     if (reason === 'stop_loss') result.stopLoss += 1;
     else if (reason === 'take_profit') result.takeProfit += 1;
     else if (reason === 'trailing_stop') result.trailingStop += 1;
     else if (reason === 'timeout') result.timeout += 1;
+  };
+
+  for (const position of open) {
+    const price = prices.get(position.token.address);
+
+    if (price === undefined || price <= 0) {
+      // No fresh price. Time-based exits still apply: close an over-held position
+      // at its last known mark (entry price if it was never marked) so it frees
+      // its slot. Price-based exits are skipped until a real price returns.
+      if (minutesHeld(position.openedAt, now) >= options.exits.maxHoldMinutes) {
+        recordClose(position.id, position.lastMarkUsd ?? position.entryPriceUsd, 'timeout');
+      } else {
+        result.missingPrice += 1;
+      }
+      continue;
+    }
+    result.repriced += 1;
+
+    // Record the mark (ratchets the high-water mark) before evaluating exits so
+    // trailing-stop math uses the latest peak.
+    const updated = broker.recordMark(position.id, price);
+    const reason = decideExit(position, price, updated.highWaterMarkUsd, options.exits, now);
+
+    if (!reason) {
+      // No exit: persist the updated marks for the next pass.
+      options.store.saveOpenPosition(updated);
+      continue;
+    }
+
+    recordClose(position.id, price, reason);
   }
 
   return result;

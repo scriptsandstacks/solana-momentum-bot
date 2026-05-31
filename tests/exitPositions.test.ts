@@ -107,7 +107,7 @@ describe('processExits', () => {
     expect(store._closed[0].pnlUsd).toBeGreaterThan(0);
   });
 
-  it('persists a raised high-water mark when a position stays open', async () => {
+  it('persists raised high-water and last marks when a position stays open', async () => {
     const store = fakeStore([position({ id: 'paper-1', address: 'mint-1', highWaterMarkUsd: 0.01 })]);
 
     const result = await processExits({
@@ -122,21 +122,58 @@ describe('processExits', () => {
     expect(store._closed).toHaveLength(0);
     expect(store._saved).toHaveLength(1);
     expect(store._saved[0].highWaterMarkUsd).toBeCloseTo(0.011);
+    expect(store._saved[0].lastMarkUsd).toBeCloseTo(0.011);
   });
 
-  it('leaves positions open when no fresh price is available', async () => {
+  it('leaves an unpriceable position open when it is within its max-hold window', async () => {
     const store = fakeStore([position({ id: 'paper-1', address: 'mint-1' })]);
 
     const result = await processExits({
       store,
       paper,
       exits,
-      now,
+      now, // openedAt + 10 min < 45 min max-hold
       fetchPrices: async () => new Map(),
     });
 
     expect(result).toMatchObject({ positionsChecked: 1, missingPrice: 1, closed: 0 });
     expect(store._closed).toHaveLength(0);
     expect(store._saved).toHaveLength(0);
+  });
+
+  it('times out an unpriceable position at its last known mark once max-hold passes', async () => {
+    const store = fakeStore([position({ id: 'paper-1', address: 'mint-1', lastMarkUsd: 0.013 })]);
+    const late = new Date('2026-01-01T01:00:00Z'); // openedAt + 60 min >= 45 min max-hold
+
+    const result = await processExits({
+      store,
+      paper,
+      exits,
+      now: late,
+      fetchPrices: async () => new Map(), // no fresh price at all
+    });
+
+    expect(result).toMatchObject({ positionsChecked: 1, missingPrice: 0, closed: 1, timeout: 1 });
+    expect(store._closed).toHaveLength(1);
+    expect(store._closed[0]).toMatchObject({ positionId: 'paper-1', reason: 'timeout', exitPriceUsd: 0.013 });
+    // PnL is booked against the last mark, not entry: (0.013 - 0.01) * 2500 = 7.5
+    expect(store._closed[0].pnlUsd).toBeCloseTo(7.5);
+  });
+
+  it('falls back to the entry price when an unpriceable position has no last mark', async () => {
+    const store = fakeStore([position({ id: 'paper-1', address: 'mint-1', lastMarkUsd: undefined })]);
+    const late = new Date('2026-01-01T01:00:00Z');
+
+    const result = await processExits({
+      store,
+      paper,
+      exits,
+      now: late,
+      fetchPrices: async () => new Map(),
+    });
+
+    expect(result).toMatchObject({ closed: 1, timeout: 1 });
+    expect(store._closed[0]).toMatchObject({ reason: 'timeout', exitPriceUsd: 0.01 });
+    expect(store._closed[0].pnlUsd).toBeCloseTo(0);
   });
 });
