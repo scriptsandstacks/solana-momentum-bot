@@ -30,6 +30,17 @@ export const botConfigSchema = z.object({
     trailingStopPct: z.number().positive().max(100),
     maxHoldMinutes: z.number().int().positive(),
   }),
+  // Trading-cost model for paper fills. Defaulted so older configs stay valid;
+  // when omitted the bot still applies these realistic defaults rather than
+  // frictionless fills.
+  fees: z
+    .object({
+      // Per-leg swap + priority fee assumption, charged on both entry and exit.
+      swapFeeBps: z.number().nonnegative().max(10_000),
+      // Also charge the candidate's estimated route price impact on each leg.
+      applyRouteSlippage: z.boolean(),
+    })
+    .default({ swapFeeBps: 30, applyRouteSlippage: true }),
   scoring: z.object({
     minimumScoreToEnter: z.number().min(0).max(100),
   }),

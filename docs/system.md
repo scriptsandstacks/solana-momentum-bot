@@ -189,6 +189,8 @@ Does this token have a Raydium pool, and what does that pool look like?
 
 The system uses Jupiter because it aggregates multiple venues and gives better route realism for paper trading. Raydium now complements that by adding direct pool discovery/enrichment, especially for fresh mints where DexScreener coverage can lag.
 
+Route checks call Jupiter's Swap API at `https://api.jup.ag/swap/v1/quote` (the old `quote-api.jup.ag/v6` host was deprecated on 2025-10-01). A free API key from <https://portal.jup.ag> should be set as `JUPITER_API_KEY` (sent as the `x-api-key` header). The host can be overridden with `JUPITER_QUOTE_URL` (e.g. the keyless `lite-api.jup.ag` during the migration grace period).
+
 Current split:
 
 ```text
@@ -450,6 +452,21 @@ maxOpenPositions
 ```
 
 When a candidate is accepted for paper trading, the broker calculates simulated token quantity from the candidate price and configured position size. No on-chain transaction is created.
+
+### Trading-cost model
+
+Paper fills are not frictionless. The `fees` config block worsens both legs so PnL is closer to reality, which matters most for thin pump.fun liquidity:
+
+```yaml
+fees:
+  swapFeeBps: 30          # per-leg swap + priority fee, charged on entry and exit
+  applyRouteSlippage: true # also charge the candidate's estimatedSlippageBps per leg
+```
+
+- **Entry:** the effective buy price is the mid worsened by the per-leg cost, so the same `positionSizeUsd` buys fewer tokens. The position's `entryPriceUsd` records this actual fill (so exit-rule PnL is measured against what was really paid), while the high-water and last marks track the observed mid for trailing-stop math.
+- **Exit:** realized proceeds are reduced by the per-leg cost; the persisted `exitPriceUsd` is this net price, so reported PnL and cash reflect what the position would actually have fetched.
+
+The per-leg slippage uses the candidate's Jupiter-estimated route price impact. When the `fees` block is omitted, fills are frictionless (the historical behavior). A future improvement is to source the exit slippage from a fresh Jupiter sell-quote for the position size rather than reusing the entry estimate.
 
 Exit rules are enforced by the exit engine (`bot/exitPositions.ts`):
 

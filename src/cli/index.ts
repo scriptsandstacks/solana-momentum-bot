@@ -11,6 +11,24 @@ import { scanSolanaCandidates } from '../chains/solana/scanner.js';
 import { PaperBroker } from '../paper/paperBroker.js';
 import { scoreTokenCandidate } from '../scoring/scoreToken.js';
 import { SqliteStore } from '../storage/sqliteStore.js';
+import type { PaperBrokerOptions } from '../paper/paperBroker.js';
+import type { BotConfig } from '../config/schema.js';
+
+// Build the broker options shared by every real-trading command, including the
+// daily-loss breaker and the trading-cost model so paper fills carry realistic
+// slippage + fees.
+function paperBrokerOptions(config: BotConfig): PaperBrokerOptions {
+  return {
+    startingBalanceUsd: config.paper.startingBalanceUsd,
+    positionSizeUsd: config.paper.positionSizeUsd,
+    maxOpenPositions: config.paper.maxOpenPositions,
+    maxDailyLossUsd: config.paper.maxDailyLossUsd,
+    costModel: {
+      feeBps: config.fees.swapFeeBps,
+      applyRouteSlippage: config.fees.applyRouteSlippage,
+    },
+  };
+}
 
 const program = new Command();
 
@@ -50,11 +68,7 @@ program.command('paper').description('Run one paper-trading scan cycle').action(
   const candidates = config.chains.solana.enabled ? await scanSolanaCandidates(config.chains.solana) : [];
   const { broker, scored } = runPaperCycle({
     candidates,
-    paper: {
-      startingBalanceUsd: config.paper.startingBalanceUsd,
-      positionSizeUsd: config.paper.positionSizeUsd,
-      maxOpenPositions: config.paper.maxOpenPositions,
-    },
+    paper: paperBrokerOptions(config),
     minimumScoreToEnter: config.scoring.minimumScoreToEnter,
     store,
   });
@@ -121,12 +135,7 @@ program
     const result = await processPumpPortalEvents({
       store,
       solanaConfig: config.chains.solana,
-      paper: {
-        startingBalanceUsd: config.paper.startingBalanceUsd,
-        positionSizeUsd: config.paper.positionSizeUsd,
-        maxOpenPositions: config.paper.maxOpenPositions,
-        maxDailyLossUsd: config.paper.maxDailyLossUsd,
-      },
+      paper: paperBrokerOptions(config),
       minimumScoreToEnter: config.scoring.minimumScoreToEnter,
       limit,
     });
@@ -144,12 +153,7 @@ program
     const store = new SqliteStore();
     const result = await processExits({
       store,
-      paper: {
-        startingBalanceUsd: config.paper.startingBalanceUsd,
-        positionSizeUsd: config.paper.positionSizeUsd,
-        maxOpenPositions: config.paper.maxOpenPositions,
-        maxDailyLossUsd: config.paper.maxDailyLossUsd,
-      },
+      paper: paperBrokerOptions(config),
       exits: config.exits,
     });
     store.close();
@@ -198,12 +202,7 @@ program
         processLimit,
         store,
         solanaConfig: config.chains.solana,
-        paper: {
-          startingBalanceUsd: config.paper.startingBalanceUsd,
-          positionSizeUsd: config.paper.positionSizeUsd,
-          maxOpenPositions: config.paper.maxOpenPositions,
-          maxDailyLossUsd: config.paper.maxDailyLossUsd,
-        },
+        paper: paperBrokerOptions(config),
         minimumScoreToEnter: config.scoring.minimumScoreToEnter,
         exits: config.exits,
         stopSignal: stopController.signal,

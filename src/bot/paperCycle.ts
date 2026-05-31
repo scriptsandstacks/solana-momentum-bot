@@ -1,4 +1,4 @@
-import { PaperBroker } from '../paper/paperBroker.js';
+import { PaperBroker, type PaperBrokerOptions } from '../paper/paperBroker.js';
 import { scoreTokenCandidate } from '../scoring/scoreToken.js';
 import type { OpportunityScore, PaperPosition, TokenCandidate } from '../types/domain.js';
 
@@ -9,11 +9,7 @@ interface PaperCycleStore {
 
 interface PaperCycleInput {
   candidates: TokenCandidate[];
-  paper: {
-    startingBalanceUsd: number;
-    positionSizeUsd: number;
-    maxOpenPositions: number;
-  };
+  paper: PaperBrokerOptions;
   minimumScoreToEnter: number;
   store?: PaperCycleStore;
 }
