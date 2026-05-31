@@ -287,7 +287,7 @@ Runs one paper-trading cycle:
 
 1. Scans candidates.
 2. Scores them.
-3. Opens simulated paper positions for candidates above `minimumScoreToEnter`, subject to paper broker limits.
+3. Opens simulated paper positions for candidates above `minimumScoreToEnter`, subject to paper broker limits. The broker is rehydrated from SQLite, so the position cap, cash, and the daily-loss breaker hold across runs (consistent with `pump-process`/`manage-exits`). Every candidate is still scored and persisted even when an open is blocked by capacity.
 4. Saves scored candidates and open positions.
 5. Prints a report.
 
