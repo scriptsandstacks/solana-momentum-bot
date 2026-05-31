@@ -39,22 +39,41 @@ describe('Jupiter route check', () => {
     expect(quote.estimatedSlippageBps).toBe(50);
   });
 
-  it('queries the migrated api.jup.ag Swap API with the canonical USDT mint', async () => {
+  it('defaults to the keyless lite-api host and never uses the deprecated v6 host', async () => {
+    const savedKey = process.env.JUPITER_API_KEY;
+    delete process.env.JUPITER_API_KEY;
+    const seenUrls: string[] = [];
+    try {
+      await checkJupiterRoute('token-abc', {
+        fetchJson: async (url) => {
+          seenUrls.push(url);
+          return { outAmount: '1000', priceImpactPct: '0.01' };
+        },
+      });
+    } finally {
+      if (savedKey !== undefined) process.env.JUPITER_API_KEY = savedKey;
+    }
+
+    expect(seenUrls).toHaveLength(3);
+    expect(seenUrls.every((url) => url.startsWith('https://lite-api.jup.ag/swap/v1/quote?'))).toBe(true);
+    // The deprecated quote-api.jup.ag/v6 host must no longer be used.
+    expect(seenUrls.some((url) => url.includes('quote-api.jup.ag'))).toBe(false);
+    // Canonical Solana USDT mint, not the previous mistyped value.
+    const usdtUrl = seenUrls.find((url) => new URL(url).searchParams.get('inputMint') === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY2Sr6MGt9RktwD');
+    expect(usdtUrl).toBeDefined();
+  });
+
+  it('upgrades to the keyed api.jup.ag host when an API key is provided', async () => {
     const seenUrls: string[] = [];
     await checkJupiterRoute('token-abc', {
+      apiKey: 'test-key',
       fetchJson: async (url) => {
         seenUrls.push(url);
         return { outAmount: '1000', priceImpactPct: '0.01' };
       },
     });
 
-    expect(seenUrls).toHaveLength(3);
     expect(seenUrls.every((url) => url.startsWith('https://api.jup.ag/swap/v1/quote?'))).toBe(true);
-    // The deprecated quote-api.jup.ag/v6 host must no longer be used.
-    expect(seenUrls.some((url) => url.includes('quote-api.jup.ag'))).toBe(false);
-    // Canonical Solana USDT mint, not the previous mistyped value.
-    const usdtUrl = seenUrls.find((url) => new URL(url).searchParams.get('inputMint') === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY2Sr6MGt9RktwD');
-    expect(usdtUrl).toBeDefined();
   });
 
   it('returns unavailable route when every quote fetch fails', async () => {

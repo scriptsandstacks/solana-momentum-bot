@@ -16,11 +16,14 @@ export interface JupiterRouteCheck {
 }
 
 // Quote API V6 (`quote-api.jup.ag/v6`) was deprecated on 2025-10-01. The forward
-// path is the Swap API on api.jup.ag; the query params are unchanged, only the
-// host moved. Free usage requires an API key (x-api-key header) generated at
-// https://portal.jup.ag. The keyless lite-api.jup.ag still works during the
-// grace period and can be selected via JUPITER_QUOTE_URL.
-const DEFAULT_QUOTE_URL = 'https://api.jup.ag/swap/v1/quote';
+// path is the Swap API; the query params are unchanged, only the host moved.
+//   - api.jup.ag      requires a free API key (x-api-key from https://portal.jup.ag)
+//   - lite-api.jup.ag is keyless (deprecation postponed indefinitely as of 2026)
+// We pick the host from whether a key is present, so the bot runs keyless out of
+// the box and automatically upgrades to the keyed host once JUPITER_API_KEY is
+// set. JUPITER_QUOTE_URL overrides the host explicitly.
+const KEYED_QUOTE_URL = 'https://api.jup.ag/swap/v1/quote';
+const KEYLESS_QUOTE_URL = 'https://lite-api.jup.ag/swap/v1/quote';
 
 const ROUTE_INPUTS = [
   {
@@ -42,7 +45,7 @@ const ROUTE_INPUTS = [
 
 export async function checkJupiterRoute(outputMint: string, deps: JupiterDeps = {}): Promise<JupiterRouteCheck> {
   const apiKey = deps.apiKey ?? process.env.JUPITER_API_KEY;
-  const baseUrl = deps.baseUrl ?? process.env.JUPITER_QUOTE_URL ?? DEFAULT_QUOTE_URL;
+  const baseUrl = deps.baseUrl ?? process.env.JUPITER_QUOTE_URL ?? (apiKey ? KEYED_QUOTE_URL : KEYLESS_QUOTE_URL);
   const fetchJson = deps.fetchJson ?? ((url: string) => defaultFetchJson(url, apiKey));
   const availableRoutes: JupiterRouteCheck[] = [];
 

@@ -189,7 +189,12 @@ Does this token have a Raydium pool, and what does that pool look like?
 
 The system uses Jupiter because it aggregates multiple venues and gives better route realism for paper trading. Raydium now complements that by adding direct pool discovery/enrichment, especially for fresh mints where DexScreener coverage can lag.
 
-Route checks call Jupiter's Swap API at `https://api.jup.ag/swap/v1/quote` (the old `quote-api.jup.ag/v6` host was deprecated on 2025-10-01). A free API key from <https://portal.jup.ag> should be set as `JUPITER_API_KEY` (sent as the `x-api-key` header). The host can be overridden with `JUPITER_QUOTE_URL` (e.g. the keyless `lite-api.jup.ag` during the migration grace period).
+Route checks call Jupiter's Swap API (the old `quote-api.jup.ag/v6` host was deprecated on 2025-10-01). The host is chosen automatically from whether a key is present, so the bot runs keyless out of the box and upgrades itself once a key is set:
+
+- no key → `https://lite-api.jup.ag/swap/v1/quote` (keyless; deprecation postponed indefinitely as of 2026);
+- `JUPITER_API_KEY` set → `https://api.jup.ag/swap/v1/quote` with the key sent as the `x-api-key` header (free key from <https://portal.jup.ag>).
+
+`JUPITER_QUOTE_URL` overrides the host explicitly. The key is only an HTTP quote-API access key — it is read-only, never signs anything, and is unrelated to the wallet private keys forbidden in paper mode.
 
 Current split:
 
