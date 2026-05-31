@@ -68,6 +68,7 @@ describe('SqliteStore', () => {
       entryPriceUsd: 0.01,
       quantity: 2500,
       openedAt: new Date('2026-01-01T00:00:00Z'),
+      highWaterMarkUsd: 0.012,
     };
     const trade: PaperTrade = {
       positionId: position.id,
@@ -89,6 +90,48 @@ describe('SqliteStore', () => {
     expect(store.listOpenPositions()).toHaveLength(0);
     expect(store.listClosedTrades()).toHaveLength(1);
     expect(store.listClosedTrades()[0]).toMatchObject({ positionId: 'paper-1', pnlUsd: 12.5 });
+    store.close();
+  });
+
+  it('rehydrates broker state: open positions, realized PnL, and the next id sequence', () => {
+    const store = createStore();
+    const position: PaperPosition = {
+      id: 'paper-3',
+      token: candidate,
+      score: 82,
+      entryPriceUsd: 0.01,
+      quantity: 2500,
+      openedAt: new Date('2026-01-01T00:00:00Z'),
+      highWaterMarkUsd: 0.018,
+    };
+    const closed: PaperTrade = {
+      positionId: 'paper-1',
+      token: candidate,
+      entryPriceUsd: 0.01,
+      exitPriceUsd: 0.015,
+      quantity: 2500,
+      openedAt: new Date('2026-01-01T00:00:00Z'),
+      closedAt: new Date('2026-01-01T00:05:00Z'),
+      reason: 'take_profit',
+      pnlUsd: 12.5,
+      pnlPct: 50,
+    };
+
+    store.saveOpenPosition(position);
+    store.saveOpenPosition({ ...position, id: 'paper-1' });
+    store.saveClosedTrade(closed); // closes paper-1, leaving paper-3 open
+
+    const loaded = store.loadOpenPositions();
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]).toMatchObject({ id: 'paper-3', highWaterMarkUsd: 0.018 });
+    expect(loaded[0].token).toMatchObject({ address: 'token-1', symbol: 'MOCK' });
+    expect(loaded[0].openedAt).toBeInstanceOf(Date);
+
+    expect(store.getRealizedPnlUsd()).toBeCloseTo(12.5);
+    expect(store.getRealizedPnlUsdSince('2026-01-01T00:00:00.000Z')).toBeCloseTo(12.5);
+    expect(store.getRealizedPnlUsdSince('2026-01-02T00:00:00.000Z')).toBe(0);
+    // Highest used seq is paper-3 (open) — paper-1 lives in closed_trades.
+    expect(store.getNextPositionSeq()).toBe(4);
     store.close();
   });
 

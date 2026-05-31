@@ -332,6 +332,20 @@ Processes pending PumpPortal events:
 7. Opens a simulated paper position only if the score passes `minimumScoreToEnter`.
 8. Marks each event as `processed`, `skipped`, or `failed` with a note. Events with no market data yet remain `pending` so they can be retried later.
 
+### `manage-exits`
+
+```bash
+npm run bot -- manage-exits
+```
+
+Runs one exit pass:
+
+1. Rehydrates the paper broker from SQLite.
+2. Re-prices every open position via DexScreener + Raydium.
+3. Applies the configured stop-loss / take-profit / trailing-stop / max-hold rules.
+4. Closes triggered positions, records the closed trade, and persists raised high-water marks for the rest.
+5. Prints a compact summary of what was checked and closed.
+
 ### `run`
 
 ```bash
@@ -344,8 +358,9 @@ Runs continuously until Ctrl-C/SIGTERM:
 2. Saves incoming free-stream events immediately.
 3. Processes pending PumpPortal events every `--process-interval-seconds`.
 4. Enriches, route-checks, scores, and paper-trades qualifying candidates.
-5. Prints a compact processing summary each pass.
-6. Closes the websocket and SQLite store on shutdown.
+5. Runs an exit pass on the same interval, closing positions that hit their exit rules.
+6. Prints a compact processing + exit summary each pass.
+7. Closes the websocket and SQLite store on shutdown.
 
 Useful options:
 
@@ -436,34 +451,36 @@ maxOpenPositions
 
 When a candidate is accepted for paper trading, the broker calculates simulated token quantity from the candidate price and configured position size. No on-chain transaction is created.
 
-Exit rules are present in config:
+Exit rules are enforced by the exit engine (`bot/exitPositions.ts`):
 
 ```text
-stopLossPct
-takeProfitPct
-trailingStopPct
-maxHoldMinutes
+stopLossPct        close when PnL <= -stopLossPct
+takeProfitPct      close when PnL >= takeProfitPct
+trailingStopPct    once price rose above entry, close on a drop of this % from the peak
+maxHoldMinutes     close when the position has been held longer than this
 ```
 
-The current implementation is still an MVP; exit automation and richer mark-to-market behavior should be expanded as the next paper-trading layer.
+Each open position carries a `highWaterMarkUsd` (initialized to the entry price and ratcheted up on every higher print) so trailing stops measure the drop from the peak, not from entry. Exit priority is take-profit > stop-loss > trailing-stop > timeout. Positions with no fresh price are left open and retried on the next pass rather than closed at a stale price.
+
+The exit engine rehydrates the `PaperBroker` from SQLite (open positions, cash, the daily-loss breaker, and the position-id sequence) so state is correct across passes and restarts. The same rehydration is used when opening positions, so `maxOpenPositions`, cash, and `maxDailyLossUsd` are enforced across passes — not just within a single process run.
+
+### `maxDailyLossUsd` circuit breaker
+
+`paper.maxDailyLossUsd` blocks new entries once the current UTC day's net realized PnL reaches `-maxDailyLossUsd`. The breaker is scoped per UTC day, so it resets at the day boundary even during a long-running `run`. Exits are never blocked by the breaker.
 
 ## Current limitations
 
-- PumpPortal watch/process is now available as a continuous `run` command, but exit automation and cleanup still need to be expanded.
-- Raydium discovery/enrichment is not implemented yet.
 - Base and Ethereum modules are config placeholders only.
 - No live trading exists.
-- The paper broker is still a simple MVP and needs better exit/price-update loops.
+- Exit re-pricing reuses the DexScreener + Raydium lookup; positions with no current market data are left open and retried rather than force-closed, so a permanently unpriceable mint will not hit its `maxHoldMinutes` timeout.
 - Route checks depend on public Jupiter availability and may fail or rate-limit.
 - DexScreener search can return older tokens; PumpPortal and Raydium should improve freshness.
 
 ## Recommended next steps
 
-1. Add Raydium pool discovery/enrichment.
-2. Keep Jupiter route checks as the execution realism gate.
-3. Add exit processing using updated prices and configured stop/take-profit/timeout rules.
-4. Improve reports with historical performance by source and score bucket.
-5. Add Base paper support only after Solana paper results are useful.
+1. Improve reports with historical performance by source and score bucket.
+2. Add a fallback exit price (e.g. last known mark) so unpriceable positions can still time out and free their slot.
+3. Add Base paper support only after Solana paper results are useful.
 
 ## Development checks
 

@@ -72,6 +72,56 @@ describe('runBotLoop', () => {
     expect(logs.join('\n')).toContain('[run] stopped');
   });
 
+  it('runs an exit pass each interval when exit rules and a stateful store are provided', async () => {
+    FakePumpClient.closes = 0;
+    const exitCalls: number[] = [];
+
+    const result = await runBotLoop({
+      apiKey: 'abc123',
+      durationMs: 25,
+      processIntervalMs: 10,
+      processLimit: 5,
+      store: {
+        savePumpPortalEvent: () => undefined,
+        // Stateful store surface so runLoop's isBrokerStateStore guard passes.
+        loadOpenPositions: () => [],
+        getRealizedPnlUsd: () => 0,
+        getRealizedPnlUsdSince: () => 0,
+        getNextPositionSeq: () => 1,
+        saveClosedTrade: () => undefined,
+      },
+      solanaConfig: { enabled: true, minLiquidityUsd: 10_000, minVolume5mUsd: 5_000, maxSlippageBps: 500 },
+      paper: { startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 3 },
+      minimumScoreToEnter: 75,
+      exits: { stopLossPct: 20, takeProfitPct: 50, trailingStopPct: 20, maxHoldMinutes: 45 },
+      ClientCtor: FakePumpClient,
+      processPumpEvents: async () => ({
+        eventsRead: 0,
+        candidatesEnriched: 0,
+        scored: 0,
+        openedPositions: 0,
+        skipped: 0,
+        failed: 0,
+      }),
+      processExits: async () => {
+        exitCalls.push(1);
+        return {
+          positionsChecked: 1,
+          repriced: 1,
+          missingPrice: 0,
+          closed: 1,
+          stopLoss: 0,
+          takeProfit: 1,
+          trailingStop: 0,
+          timeout: 0,
+        };
+      },
+    });
+
+    expect(exitCalls.length).toBeGreaterThanOrEqual(1);
+    expect(result.closedPositions).toBe(exitCalls.length);
+  });
+
   it('skips overlapping process passes when the previous pass is still running', async () => {
     FakePumpClient.closes = 0;
     const logs: string[] = [];

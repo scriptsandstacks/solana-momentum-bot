@@ -35,6 +35,9 @@ export interface PaperPosition {
   entryPriceUsd: number;
   quantity: number;
   openedAt: Date;
+  // Highest price observed since entry, used to evaluate trailing stops.
+  // Initialized to the entry price when the position is opened.
+  highWaterMarkUsd: number;
 }
 
 export interface PaperTrade {
