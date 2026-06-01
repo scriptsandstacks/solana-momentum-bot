@@ -27,6 +27,10 @@ interface TrackOutcomesOptions {
   // Returns a current USD price per mint. Defaults to the same DexScreener +
   // Raydium lookup used by the exit engine.
   fetchPrices?: (tokenMints: string[]) => Promise<Map<string, number>>;
+  thresholds?: {
+    takeProfitPct: number;
+    stopLossPct: number;
+  };
   now?: Date;
 }
 
@@ -49,6 +53,14 @@ async function defaultFetchPrices(tokenMints: string[]): Promise<Map<string, num
 
 function minutesSince(createdAtIso: string, now: Date): number {
   return (now.getTime() - new Date(createdAtIso).getTime()) / 60_000;
+}
+
+function crossesTakeProfit(scoredPriceUsd: number, price: number, takeProfitPct: number): boolean {
+  return price >= scoredPriceUsd * (1 + takeProfitPct / 100);
+}
+
+function crossesStopLoss(scoredPriceUsd: number, price: number, stopLossPct: number): boolean {
+  return price <= scoredPriceUsd * (1 - stopLossPct / 100);
 }
 
 export async function trackCandidateOutcomes(options: TrackOutcomesOptions): Promise<TrackOutcomesResult> {
@@ -86,13 +98,27 @@ export async function trackCandidateOutcomes(options: TrackOutcomesOptions): Pro
     const prevHigh = row.outcomeHighUsd ?? row.scoredPriceUsd;
     const prevLow = row.outcomeLowUsd ?? row.scoredPriceUsd;
     const done = minutesSince(row.createdAt, now) >= options.horizonMinutes;
+    const nowIso = now.toISOString();
+    const outcomeFirstTakeProfitAt =
+      row.outcomeFirstTakeProfitAt ??
+      (options.thresholds?.takeProfitPct !== undefined &&
+      crossesTakeProfit(row.scoredPriceUsd, price, options.thresholds.takeProfitPct)
+        ? nowIso
+        : null);
+    const outcomeFirstStopLossAt =
+      row.outcomeFirstStopLossAt ??
+      (options.thresholds?.stopLossPct !== undefined && crossesStopLoss(row.scoredPriceUsd, price, options.thresholds.stopLossPct)
+        ? nowIso
+        : null);
 
     options.store.recordScoredOutcome({
       id: row.id,
       outcomeHighUsd: Math.max(prevHigh, price),
       outcomeLowUsd: Math.min(prevLow, price),
       outcomeLastUsd: price,
-      outcomeLastAt: now.toISOString(),
+      outcomeLastAt: nowIso,
+      outcomeFirstTakeProfitAt,
+      outcomeFirstStopLossAt,
       done,
     });
     result.updated += 1;

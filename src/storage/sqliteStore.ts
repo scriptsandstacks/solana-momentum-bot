@@ -80,6 +80,8 @@ export interface TrackableScoredCandidateRow {
   createdAt: string;
   outcomeHighUsd: number | null;
   outcomeLowUsd: number | null;
+  outcomeFirstTakeProfitAt: string | null;
+  outcomeFirstStopLossAt: string | null;
 }
 
 export interface ScoredOutcomeUpdate {
@@ -88,6 +90,8 @@ export interface ScoredOutcomeUpdate {
   outcomeLowUsd: number;
   outcomeLastUsd: number;
   outcomeLastAt: string;
+  outcomeFirstTakeProfitAt: string | null;
+  outcomeFirstStopLossAt: string | null;
   done: boolean;
 }
 
@@ -98,6 +102,8 @@ export interface ScoredOutcomeStatRow {
   outcomeHighUsd: number;
   outcomeLowUsd: number;
   outcomeLastUsd: number;
+  outcomeFirstTakeProfitAt: string | null;
+  outcomeFirstStopLossAt: string | null;
 }
 
 export class SqliteStore {
@@ -328,7 +334,8 @@ export class SqliteStore {
     return this.db
       .prepare(
         `SELECT id, address, price_usd as scoredPriceUsd, created_at as createdAt,
-                outcome_high_usd as outcomeHighUsd, outcome_low_usd as outcomeLowUsd
+                outcome_high_usd as outcomeHighUsd, outcome_low_usd as outcomeLowUsd,
+                outcome_first_tp_at as outcomeFirstTakeProfitAt, outcome_first_sl_at as outcomeFirstStopLossAt
          FROM scored_candidates
          WHERE outcome_done = 0 AND address != '' AND price_usd > 0
          ORDER BY created_at ASC
@@ -354,6 +361,8 @@ export class SqliteStore {
              outcome_low_usd = @outcomeLowUsd,
              outcome_last_usd = @outcomeLastUsd,
              outcome_last_at = @outcomeLastAt,
+             outcome_first_tp_at = @outcomeFirstTakeProfitAt,
+             outcome_first_sl_at = @outcomeFirstStopLossAt,
              outcome_samples = outcome_samples + 1,
              outcome_done = @done
          WHERE id = @id`,
@@ -364,6 +373,8 @@ export class SqliteStore {
         outcomeLowUsd: update.outcomeLowUsd,
         outcomeLastUsd: update.outcomeLastUsd,
         outcomeLastAt: update.outcomeLastAt,
+        outcomeFirstTakeProfitAt: update.outcomeFirstTakeProfitAt,
+        outcomeFirstStopLossAt: update.outcomeFirstStopLossAt,
         done: update.done ? 1 : 0,
       });
   }
@@ -375,7 +386,8 @@ export class SqliteStore {
       .prepare(
         `SELECT score, recommendation, price_usd as scoredPriceUsd,
                 outcome_high_usd as outcomeHighUsd, outcome_low_usd as outcomeLowUsd,
-                outcome_last_usd as outcomeLastUsd
+                outcome_last_usd as outcomeLastUsd,
+                outcome_first_tp_at as outcomeFirstTakeProfitAt, outcome_first_sl_at as outcomeFirstStopLossAt
          FROM scored_candidates
          WHERE outcome_samples > 0 AND outcome_high_usd IS NOT NULL AND price_usd > 0`,
       )
@@ -512,6 +524,8 @@ export class SqliteStore {
         outcome_last_usd REAL,
         outcome_samples INTEGER NOT NULL DEFAULT 0,
         outcome_last_at TEXT,
+        outcome_first_tp_at TEXT,
+        outcome_first_sl_at TEXT,
         outcome_done INTEGER NOT NULL DEFAULT 0
       );
 
@@ -590,6 +604,8 @@ export class SqliteStore {
     this.addColumnIfMissing('scored_candidates', 'outcome_last_usd', 'REAL');
     this.addColumnIfMissing('scored_candidates', 'outcome_samples', 'INTEGER NOT NULL DEFAULT 0');
     this.addColumnIfMissing('scored_candidates', 'outcome_last_at', 'TEXT');
+    this.addColumnIfMissing('scored_candidates', 'outcome_first_tp_at', 'TEXT');
+    this.addColumnIfMissing('scored_candidates', 'outcome_first_sl_at', 'TEXT');
     this.addColumnIfMissing('scored_candidates', 'outcome_done', 'INTEGER NOT NULL DEFAULT 0');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_scored_candidates_outcome_done ON scored_candidates(outcome_done, created_at)');
     this.addColumnIfMissing('pumpportal_events', 'processing_status', "TEXT NOT NULL DEFAULT 'pending'");

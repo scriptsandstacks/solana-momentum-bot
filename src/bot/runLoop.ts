@@ -55,7 +55,11 @@ function canTrackOutcomes(store: RunLoopStore): boolean {
   );
 }
 
-type TrackOutcomes = (options: { store: RunLoopStore; horizonMinutes: number }) => Promise<TrackOutcomesResult>;
+type TrackOutcomes = (options: {
+  store: RunLoopStore;
+  horizonMinutes: number;
+  thresholds?: { takeProfitPct: number; stopLossPct: number };
+}) => Promise<TrackOutcomesResult>;
 
 type PumpPortalClientLike = {
   connectFreeStreams(): Promise<void>;
@@ -212,6 +216,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
         const outcomeResult = await trackOutcomes({
           store: options.store,
           horizonMinutes: options.exits.maxHoldMinutes,
+          thresholds: { takeProfitPct: options.exits.takeProfitPct, stopLossPct: options.exits.stopLossPct },
         });
         result.outcomesUpdated += outcomeResult.updated;
         options.onLog?.(

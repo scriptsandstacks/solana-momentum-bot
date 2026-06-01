@@ -113,6 +113,32 @@ describe('computeOutcomeAnalytics', () => {
     expect(o.hitSlRatePct).toBeCloseTo(50); // 1 of 2 hit -20%
   });
 
+  it('uses first TP/SL crossing timestamps to report path-dependent outcomes', () => {
+    const analytics = computeOutcomeAnalytics(
+      [
+        outcome({
+          outcomeHighUsd: 0.016,
+          outcomeLowUsd: 0.007,
+          outcomeFirstTakeProfitAt: '2026-01-01T00:03:00.000Z',
+          outcomeFirstStopLossAt: '2026-01-01T00:05:00.000Z',
+        }),
+        outcome({
+          outcomeHighUsd: 0.016,
+          outcomeLowUsd: 0.007,
+          outcomeFirstTakeProfitAt: '2026-01-01T00:08:00.000Z',
+          outcomeFirstStopLossAt: '2026-01-01T00:04:00.000Z',
+        }),
+        outcome({ outcomeHighUsd: 0.016, outcomeLowUsd: 0.007 }), // legacy/unknown ordering
+      ],
+      thresholds,
+    );
+
+    expect(analytics.overall.tpFirstRatePct).toBeCloseTo(100 / 3);
+    expect(analytics.overall.slFirstRatePct).toBeCloseTo(100 / 3);
+    expect(analytics.overall.ambiguousRatePct).toBeCloseTo(100 / 3);
+    expect(renderOutcomeAnalytics(analytics, thresholds)).toContain('tpFirst= 33.3% slFirst= 33.3% ambiguous= 33.3%');
+  });
+
   it('buckets outcomes by score and reports an empty state', () => {
     const analytics = computeOutcomeAnalytics(
       [outcome({ score: 92, outcomeHighUsd: 0.02 }), outcome({ score: 77, outcomeHighUsd: 0.0105 })],
