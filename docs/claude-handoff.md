@@ -1,6 +1,6 @@
 # Claude Handoff — Trading Realism + Analytics
 
-**Last updated:** 2026-05-31 · **Branch:** `feature-scrutinize` (PR #6 → `development`)
+**Last updated:** 2026-06-01 · **Branch:** `development` (post-PR #7)
 **Reviewer:** Codex (review this doc after Claude sessions). Counterpart: `docs/codex-handoff.md`.
 
 This is a living handoff, rewritten at the end of each Claude session to reflect the **current**
@@ -10,69 +10,39 @@ state. The bot is paper-only, Solana-first.
 
 ## Current state
 
-Two review-driven sprints landed since the paper-exit lifecycle work:
+Three review-driven sprints have landed since the paper-exit lifecycle work:
 
-1. **Trading blockers + paper-fill realism** — merged to `development` via **PR #5** (`feature-claude-review`).
-2. **Analytics, outcome capture, retention** — open in **PR #6** (`feature-scrutinize`), this session.
+1. **Trading blockers + paper-fill realism** — merged via **PR #5** (`feature-claude-review`).
+2. **Analytics, outcome capture, retention** — merged via **PR #6** (`feature-scrutinize`).
+3. **Path-dependent outcome thresholds** — merged via **PR #7** (`feature/outcome-path-order`).
 
-**Health:** `npm test` → 91 passing · `npm run typecheck` → clean · all CLI commands smoke OK
-(`stats`, `outcomes`, `track-outcomes`, `prune --dry-run/--prune`, `check-route`, `manage-exits`).
-
-The original end-to-end review lives in the conversation; the headline was that the bot **could not
-open trades** (dead Jupiter endpoint) and paper PnL was **frictionless fantasy**. Both are fixed,
-and the system can now be tuned from data.
+**Health:** `npm test` → 93 passing · `npm run typecheck` → clean · all CLI commands smoke OK.
 
 ---
 
 ## What landed since the last handoff
 
-### Sprint 1 — realism (merged, PR #5)
+### Sprint 3 — path-dependent outcomes (PR #7)
 
-- **Jupiter migration.** Quote API V6 (`quote-api.jup.ag/v6`) was deprecated 2025-10-01, so every
-  route check failed → every candidate scored `no_route` → nothing traded. Now uses the Swap API
-  with auto host selection: keyless `lite-api.jup.ag` by default, keyed `api.jup.ag` when
-  `JUPITER_API_KEY` is set (`JUPITER_QUOTE_URL` overrides). Also fixed a mistyped USDT input mint.
-- **Cost model on paper fills.** New `fees` config (`swapFeeBps`, `applyRouteSlippage`) worsens both
-  legs: entry buys fewer tokens (`entryPriceUsd` records the real fill; marks still track mid), exit
-  nets less. Cash invariant preserved. Omitting `fees` keeps the frictionless path.
-- **Fresh exit sell-quote.** `quoteJupiterSellImpactBps` (Jupiter ExactOut, token → exact USD in
-  USDC, so no token decimals needed) prices the exit leg at the real position size/direction;
-  `closePosition` prefers it over the entry estimate. Best-effort with fallback.
-- **Raydium fresh-mint fixes.** (a) Volume was a flat `day/288` split that understated fresh pools
-  into failing the volume filter — now prorated by actual pool lifetime. (b) The mint merge
-  overwrote DexScreener's real volume/buy-sell/momentum with Raydium's zeros when the Raydium pool
-  was deeper — now merges field-wise (price/liquidity from the deepest pool, activity from a source
-  that reports it).
-- **`paper` command fix.** `runPaperCycle` used a fresh broker (could exceed the cap / double-count
-  cash) and `break`-ed on the first blocked open (dropped later scored rows). Now rehydrates from
-  SQLite like `pump-process`/`manage-exits` and continues past blocked opens.
-- **`check-route <mint>`** read-only smoke command.
+Resolved the open review item from PR #6: `outcomes` MFE/MAE captured *whether* TP/SL were hit,
+but not *which crossed first*, so "reached TP" and "hit SL" could both be true for the same row,
+making the rates misleading for win/loss labeling and threshold tuning.
 
-### Sprint 2 — analytics + retention (this session, PR #6)
-
-- **`src/bot/analytics.ts`** — pure aggregation.
-  - `computeTradeAnalytics` (realized trades): expectancy, win rate, avg win/loss, profit factor,
-    avg hold, bucketed by exit reason / exit-price source / score bucket / discovery source. Needs
-    the entry `score` + `source` now persisted on `closed_trades` (new columns).
-  - `computeOutcomeAnalytics` (counterfactual): MFE/MAE, avg final return, and take-profit/stop-loss
-    hit rates by score bucket and recommendation.
-- **`src/bot/trackOutcomes.ts`** — `trackCandidateOutcomes` re-prices recently scored candidates over
-  the trade horizon (`exits.maxHoldMinutes`), seeding excursion bounds from the scored price,
-  ratcheting high/low, finalizing past the horizon. Runs automatically each interval inside `run`
-  (guarded by `canTrackOutcomes`), and as the standalone `track-outcomes` command.
-- **New `scored_candidates` columns**: `outcome_high_usd`, `outcome_low_usd`, `outcome_last_usd`,
-  `outcome_samples`, `outcome_last_at`, `outcome_done` (+ migration + index).
-- **`prune` command + `retention.scoredCandidateDays`** (default 30). Deletes scored candidates
-  older than the window that never led to a position (mints in `open_positions`/`closed_trades` are
-  preserved); runs `VACUUM`; `--dry-run`/`--days`/`--no-vacuum`. Explicit, not automatic.
-- **New CLI**: `stats`, `outcomes`, `track-outcomes`, `prune`.
+- **New `scored_candidates` columns**: `outcome_first_tp_at TEXT` and `outcome_first_sl_at TEXT`
+  record the first time price crossed each threshold. Stamped once; never overwritten on later passes.
+- **`trackCandidateOutcomes`** now accepts optional `thresholds: { takeProfitPct, stopLossPct }`.
+  Both the `run` loop and the `track-outcomes` CLI command pass the exits config thresholds in.
+- **`firstCrossing()`** in `analytics.ts`: if both timestamps exist and differ, whichever is earlier
+  wins; if equal (same-millisecond), outcome is `ambiguous`; if no timestamps but both flags set,
+  also `ambiguous`; if only one flag is set, that side wins; if neither, `none`.
+- **`OutcomeBucket`** gains `tpFirstRatePct`, `slFirstRatePct`, `ambiguousRatePct`; the `outcomes`
+  display now shows all three alongside the existing `hitTP`/`hitSL` columns.
 
 ---
 
 ## Known remaining items
 
-Resolved since the prior handoff: ~~reporting lacks per-source/score-bucket breakdown~~ (now `stats`
-+ `outcomes`); ~~`paper` rehydration bug~~; the realism gaps (#3/#4/#5 from the review).
+Resolved since the prior handoff: ~~path-dependent outcome win/loss labeling~~ (now PR #7).
 
 Still open:
 
@@ -90,10 +60,14 @@ Still open:
 
 ## Suggested Codex review focus
 
-- **Outcome MFE/MAE methodology** (`trackOutcomes.ts` + `computeOutcomeAnalytics`): we capture only
-  max/min/last over the horizon, not the path order, so "reached TP" and "hit SL" can both be true
-  for one candidate. Is max/min sufficient for threshold tuning, or should we record which came
-  first (path-dependent win/loss labeling)?
+- **`ambiguous` vs `unknown` in path-order outcomes**: legacy rows without timestamps but with both
+  TP and SL flags are currently bucketed as `ambiguous`. A separate `unknown` category would
+  distinguish "we genuinely don't know order" (no timestamps, pre-PR #7 data) from "both thresholds
+  were crossed within the same millisecond" (extremely rare but technically distinct). Worth the
+  added complexity, or is `ambiguous` sufficient for both cases?
+- **Silent skip when thresholds absent**: if `trackCandidateOutcomes` is called without `thresholds`
+  (possible from tests or future callers), crossing times are simply never stamped. The null guard
+  is silent. Should it warn, or is the silent fallback acceptable?
 - **Prune preservation rule**: keeping *all* historical scored rows for any mint ever traded (vs
   time-correlating the scored row to the specific position). Over-preserves slightly — acceptable?
 - **Exit slippage fallback**: when no Jupiter sell-quote is available the exit reuses the entry
