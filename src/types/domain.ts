@@ -19,6 +19,9 @@ export interface TokenCandidate {
   estimatedSlippageBps: number;
   routeInputMint?: string;
   routeInputSymbol?: string;
+  // Populated after a Jupiter sell probe; absent on raw DexScreener/Raydium candidates.
+  // false means the sell route was checked and failed — strong honeypot signal.
+  sellRouteAvailable?: boolean;
 }
 
 export interface OpportunityScore {

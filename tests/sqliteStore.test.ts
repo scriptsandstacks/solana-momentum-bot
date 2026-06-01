@@ -59,6 +59,22 @@ describe('SqliteStore', () => {
     store.close();
   });
 
+  it('persists sellRouteAvailable as a tristate: true=1, false=0, undefined=null', () => {
+    const store = createStore();
+
+    store.saveScoredCandidate({ ...candidate, address: 'mint-sell-ok', sellRouteAvailable: true }, score);
+    store.saveScoredCandidate({ ...candidate, address: 'mint-honeypot', sellRouteAvailable: false }, score);
+    store.saveScoredCandidate({ ...candidate, address: 'mint-unchecked' }, score);
+
+    const rows = store.listRecentScores(10);
+    const byMint = Object.fromEntries(rows.map((r) => [r.address, r.sellRouteAvailable]));
+
+    expect(byMint['mint-sell-ok']).toBe(1);
+    expect(byMint['mint-honeypot']).toBe(0);
+    expect(byMint['mint-unchecked']).toBeNull();
+    store.close();
+  });
+
   it('saves paper positions and closed trades', () => {
     const store = createStore();
     const position: PaperPosition = {
@@ -388,6 +404,32 @@ describe('SqliteStore', () => {
       pnlPct: 100,
     });
     expect(store.listClosedTrades(50)).toHaveLength(1);
+    store.close();
+  });
+
+  it('listRetriableScoredCandidates returns fresh high-scoring untouched candidates deduplicated by address', () => {
+    const store = createStore();
+    const cutoff = '2026-01-01T00:00:00.000Z';
+
+    // scored twice — only the highest score should come back
+    store.saveScoredCandidate({ ...candidate, address: 'mint-a' }, { ...score, total: 80 });
+    store.saveScoredCandidate({ ...candidate, address: 'mint-a' }, { ...score, total: 90 });
+    // below threshold
+    store.saveScoredCandidate({ ...candidate, address: 'mint-low' }, { ...score, total: 70 });
+    // open position exists — should be excluded
+    store.saveScoredCandidate({ ...candidate, address: 'mint-open' }, score);
+    store.saveOpenPosition({ id: 'paper-x', token: { ...candidate, address: 'mint-open' }, score: 82, entryPriceUsd: 0.01, quantity: 100, openedAt: new Date('2026-01-01T00:01:00Z'), highWaterMarkUsd: 0.01 });
+
+    const rows = store.listRetriableScoredCandidates({ minScore: 75, cutoffIso: cutoff });
+
+    const addresses = rows.map((r) => r.address);
+    expect(addresses).toContain('mint-a');
+    expect(addresses).not.toContain('mint-low');
+    expect(addresses).not.toContain('mint-open');
+    // deduplication: mint-a appears only once
+    expect(addresses.filter((a) => a === 'mint-a')).toHaveLength(1);
+    // the row for mint-a has the higher score
+    expect(rows.find((r) => r.address === 'mint-a')?.score).toBe(90);
     store.close();
   });
 });

@@ -1,6 +1,6 @@
 # Claude Handoff — Trading Realism + Analytics
 
-**Last updated:** 2026-05-31 · **Branch:** `feature-scrutinize` (PR #6 → `development`)
+**Last updated:** 2026-06-01 · **Branch:** `development` (post-session)
 **Reviewer:** Codex (review this doc after Claude sessions). Counterpart: `docs/codex-handoff.md`.
 
 This is a living handoff, rewritten at the end of each Claude session to reflect the **current**
@@ -10,90 +10,92 @@ state. The bot is paper-only, Solana-first.
 
 ## Current state
 
-Two review-driven sprints landed since the paper-exit lifecycle work:
+Four review-driven sprints plus one Claude follow-up session have landed since the paper-exit
+lifecycle work:
 
-1. **Trading blockers + paper-fill realism** — merged to `development` via **PR #5** (`feature-claude-review`).
-2. **Analytics, outcome capture, retention** — open in **PR #6** (`feature-scrutinize`), this session.
+1. **Trading blockers + paper-fill realism** — merged via **PR #5** (`feature-claude-review`).
+2. **Analytics, outcome capture, retention** — merged via **PR #6** (`feature-scrutinize`).
+3. **Path-dependent outcome thresholds** — merged via **PR #7** (`feature/outcome-path-order`).
+4. **Rug screening + capacity retry** — Claude follow-up session, committed directly to `development`.
 
-**Health:** `npm test` → 91 passing · `npm run typecheck` → clean · all CLI commands smoke OK
-(`stats`, `outcomes`, `track-outcomes`, `prune --dry-run/--prune`, `check-route`, `manage-exits`).
-
-The original end-to-end review lives in the conversation; the headline was that the bot **could not
-open trades** (dead Jupiter endpoint) and paper PnL was **frictionless fantasy**. Both are fixed,
-and the system can now be tuned from data.
+**Health:** `npm test` → 104 passing · `npm run typecheck` → clean · all CLI commands smoke OK.
 
 ---
 
 ## What landed since the last handoff
 
-### Sprint 1 — realism (merged, PR #5)
+### Session 4 — rug screening + capacity retry (direct commits, `development`)
 
-- **Jupiter migration.** Quote API V6 (`quote-api.jup.ag/v6`) was deprecated 2025-10-01, so every
-  route check failed → every candidate scored `no_route` → nothing traded. Now uses the Swap API
-  with auto host selection: keyless `lite-api.jup.ag` by default, keyed `api.jup.ag` when
-  `JUPITER_API_KEY` is set (`JUPITER_QUOTE_URL` overrides). Also fixed a mistyped USDT input mint.
-- **Cost model on paper fills.** New `fees` config (`swapFeeBps`, `applyRouteSlippage`) worsens both
-  legs: entry buys fewer tokens (`entryPriceUsd` records the real fill; marks still track mid), exit
-  nets less. Cash invariant preserved. Omitting `fees` keeps the frictionless path.
-- **Fresh exit sell-quote.** `quoteJupiterSellImpactBps` (Jupiter ExactOut, token → exact USD in
-  USDC, so no token decimals needed) prices the exit leg at the real position size/direction;
-  `closePosition` prefers it over the entry estimate. Best-effort with fallback.
-- **Raydium fresh-mint fixes.** (a) Volume was a flat `day/288` split that understated fresh pools
-  into failing the volume filter — now prorated by actual pool lifetime. (b) The mint merge
-  overwrote DexScreener's real volume/buy-sell/momentum with Raydium's zeros when the Raydium pool
-  was deeper — now merges field-wise (price/liquidity from the deepest pool, activity from a source
-  that reports it).
-- **`paper` command fix.** `runPaperCycle` used a fresh broker (could exceed the cap / double-count
-  cash) and `break`-ed on the first blocked open (dropped later scored rows). Now rehydrates from
-  SQLite like `pump-process`/`manage-exits` and continues past blocked opens.
-- **`check-route <mint>`** read-only smoke command.
+Six commits; all on `development`:
 
-### Sprint 2 — analytics + retention (this session, PR #6)
+**Outcome analytics cleanup**
+- `ambiguous` vs `unknown` split in path-order outcomes: legacy rows (no timestamps, both TP/SL
+  hit) are now `unknown`; same-millisecond ties remain `ambiguous`. `OutcomeBucket` gains
+  `unknownRatePct`; display shows `ambig=` and `unkn=` as separate columns. New test covers the
+  same-millisecond tie case.
 
-- **`src/bot/analytics.ts`** — pure aggregation.
-  - `computeTradeAnalytics` (realized trades): expectancy, win rate, avg win/loss, profit factor,
-    avg hold, bucketed by exit reason / exit-price source / score bucket / discovery source. Needs
-    the entry `score` + `source` now persisted on `closed_trades` (new columns).
-  - `computeOutcomeAnalytics` (counterfactual): MFE/MAE, avg final return, and take-profit/stop-loss
-    hit rates by score bucket and recommendation.
-- **`src/bot/trackOutcomes.ts`** — `trackCandidateOutcomes` re-prices recently scored candidates over
-  the trade horizon (`exits.maxHoldMinutes`), seeding excursion bounds from the scored price,
-  ratcheting high/low, finalizing past the horizon. Runs automatically each interval inside `run`
-  (guarded by `canTrackOutcomes`), and as the standalone `track-outcomes` command.
-- **New `scored_candidates` columns**: `outcome_high_usd`, `outcome_low_usd`, `outcome_last_usd`,
-  `outcome_samples`, `outcome_last_at`, `outcome_done` (+ migration + index).
-- **`prune` command + `retention.scoredCandidateDays`** (default 30). Deletes scored candidates
-  older than the window that never led to a position (mints in `open_positions`/`closed_trades` are
-  preserved); runs `VACUUM`; `--dry-run`/`--days`/`--no-vacuum`. Explicit, not automatic.
-- **New CLI**: `stats`, `outcomes`, `track-outcomes`, `prune`.
+**Honeypot / sell-route screening**
+- `checkJupiterRoute` now probes the sell direction (token→USDC ExactOut, $5) after the buy-route
+  check. `JupiterRouteCheck` and `TokenCandidate` gain `sellRouteAvailable: boolean` (optional on
+  raw DexScreener/Raydium candidates). Scoring applies a −50 penalty and `no_sell_route` risk tag
+  when the sell probe explicitly fails; `undefined` (not checked) is neutral.
+- `sell_route_available INTEGER` column added to `scored_candidates` (NULL = not checked, 0 = no
+  sell route, 1 = ok). Migration adds the column to existing databases.
+- `report` output annotates scored-candidate lines with `sell=ok` / `sell=NO`; old rows without the
+  field are silently clean.
+
+**Capacity-blocked retry**
+- `listRetriableScoredCandidates` — new `SqliteStore` query using a CTE with `ROW_NUMBER` to
+  return the best-scored, most-recent row per address for candidates that are within the trade
+  horizon, above the score threshold, and have no open position or recent closed trade.
+- `retryBlockedOpens` — opens positions for retriable candidates using the scored price as the
+  paper entry (no re-fetch; only called within `maxHoldMinutes` so the price is a reasonable
+  approximation). Stops as soon as the broker is at capacity.
+- `runLoop` calls `retryBlockedOpens` after each exit pass (capacity is most likely to have freed
+  there), accumulates `retriedPositions` in the result, and logs only when positions are actually
+  opened to avoid per-tick noise.
 
 ---
 
 ## Known remaining items
 
-Resolved since the prior handoff: ~~reporting lacks per-source/score-bucket breakdown~~ (now `stats`
-+ `outcomes`); ~~`paper` rehydration bug~~; the realism gaps (#3/#4/#5 from the review).
+Resolved since the prior handoff:
+- ~~path-dependent outcome win/loss labeling~~ (PR #7)
+- ~~ambiguous vs unknown outcome classification~~ (session 4)
+- ~~No sellability/rug screening~~ (sell-route honeypot check, session 4 — partial; on-chain
+  mint/freeze authority still missing)
+- ~~Capacity-blocked candidates not retried~~ (session 4)
 
 Still open:
 
-1. **Capacity-blocked candidates are marked `processed`, not retried** when capacity later frees.
+1. **On-chain mint/freeze authority check** — sell-route screening catches honeypots; mint
+   authority (creator can dilute) and freeze authority (creator can lock accounts) require a
+   Solana RPC call not yet in the pipeline.
 2. **Migrate-time `closed_trades` dedup runs on every startup** — negligible for a paper bot.
 3. **Package name** still `hermes-agent` in `package.json` (cosmetic).
 4. **No live trading** — paper-only by design.
 5. **Exits only fire on the process interval** — a position can move past its stop/target between
    passes. Accepted for paper; needs real-time triggers before live.
 6. **Outcome-tracking selection bias** — unpriceable candidates aren't sampled, so `outcomes`
-   MFE/MAE skews toward names that stayed liquid (high "no price" rate is itself a rug signal).
-7. **No sellability/rug screening** — the biggest paper-vs-live realism gap for pump.fun.
+   MFE/MAE skews toward names that stayed liquid.
+7. **Retry uses scored price, not re-fetched price** — acceptable for paper within the horizon
+   window; should be noted if ever ported to live.
 
 ---
 
 ## Suggested Codex review focus
 
-- **Outcome MFE/MAE methodology** (`trackOutcomes.ts` + `computeOutcomeAnalytics`): we capture only
-  max/min/last over the horizon, not the path order, so "reached TP" and "hit SL" can both be true
-  for one candidate. Is max/min sufficient for threshold tuning, or should we record which came
-  first (path-dependent win/loss labeling)?
+- **Retry query correctness**: `listRetriableScoredCandidates` uses `ROW_NUMBER() OVER (PARTITION
+  BY address ORDER BY score DESC, id DESC)` to deduplicate. The `NOT IN (SELECT address FROM
+  closed_trades WHERE opened_at >= @cutoffIso)` guard prevents re-entering recently exited
+  positions. Confirm the cutoff semantics are right — should "recently" be `maxHoldMinutes` (trade
+  horizon) or something shorter?
+- **Retry fires every tick, not just after closes**: `retryBlockedOpens` runs after every exit
+  pass, not only when `exitResult.closed > 0`. The broker's `canOpenPosition()` check makes it a
+  no-op at capacity, but it does hit SQLite on every pass. Acceptable overhead?
+- **Silent thresholds skip confirmed acceptable**: both real callers (`run` loop and `track-outcomes`
+  CLI) pass thresholds from the exits config, so crossing times are always stamped in production.
+  Test-only callers without thresholds correctly produce `unknownRatePct` rather than silent zeros.
 - **Prune preservation rule**: keeping *all* historical scored rows for any mint ever traded (vs
   time-correlating the scored row to the specific position). Over-preserves slightly — acceptable?
 - **Exit slippage fallback**: when no Jupiter sell-quote is available the exit reuses the entry

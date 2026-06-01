@@ -145,7 +145,10 @@ export interface OutcomeBucket {
   hitSlRatePct: number;
   tpFirstRatePct: number;
   slFirstRatePct: number;
+  // same-millisecond timestamp tie — extremely rare but distinct from unknown
   ambiguousRatePct: number;
+  // both TP and SL hit but no crossing timestamps (pre-PR#7 legacy rows)
+  unknownRatePct: number;
 }
 
 export interface OutcomeAnalytics {
@@ -154,18 +157,19 @@ export interface OutcomeAnalytics {
   byRecommendation: OutcomeBucket[];
 }
 
-function firstCrossing(row: OutcomeRow, reachedTp: boolean, hitSl: boolean): 'tp' | 'sl' | 'ambiguous' | 'none' {
+function firstCrossing(row: OutcomeRow, reachedTp: boolean, hitSl: boolean): 'tp' | 'sl' | 'ambiguous' | 'unknown' | 'none' {
   const tpAt = row.outcomeFirstTakeProfitAt;
   const slAt = row.outcomeFirstStopLossAt;
   if (tpAt && slAt) {
     const tpTime = new Date(tpAt).getTime();
     const slTime = new Date(slAt).getTime();
     if (Number.isFinite(tpTime) && Number.isFinite(slTime) && tpTime !== slTime) return tpTime < slTime ? 'tp' : 'sl';
-    return 'ambiguous';
+    return 'ambiguous'; // same-millisecond tie
   }
   if (tpAt && reachedTp) return 'tp';
   if (slAt && hitSl) return 'sl';
-  return reachedTp && hitSl ? 'ambiguous' : 'none';
+  // both flags set but no timestamps — legacy rows collected before crossing-time tracking
+  return reachedTp && hitSl ? 'unknown' : 'none';
 }
 
 function summarizeOutcomes(label: string, rows: OutcomeRow[], thresholds: OutcomeThresholds): OutcomeBucket {
@@ -189,6 +193,7 @@ function summarizeOutcomes(label: string, rows: OutcomeRow[], thresholds: Outcom
   const tpFirst = excursions.filter((e) => e.first === 'tp').length;
   const slFirst = excursions.filter((e) => e.first === 'sl').length;
   const ambiguous = excursions.filter((e) => e.first === 'ambiguous').length;
+  const unknown = excursions.filter((e) => e.first === 'unknown').length;
 
   return {
     label,
@@ -201,6 +206,7 @@ function summarizeOutcomes(label: string, rows: OutcomeRow[], thresholds: Outcom
     tpFirstRatePct: n === 0 ? 0 : (tpFirst / n) * 100,
     slFirstRatePct: n === 0 ? 0 : (slFirst / n) * 100,
     ambiguousRatePct: n === 0 ? 0 : (ambiguous / n) * 100,
+    unknownRatePct: n === 0 ? 0 : (unknown / n) * 100,
   };
 }
 
@@ -236,7 +242,7 @@ function outcomeBucketLine(bucket: OutcomeBucket): string {
     `final=${bucket.avgFinalPct.toFixed(1).padStart(7)}% ` +
     `hitTP=${bucket.reachedTpRatePct.toFixed(1).padStart(5)}% hitSL=${bucket.hitSlRatePct.toFixed(1).padStart(5)}% ` +
     `tpFirst=${bucket.tpFirstRatePct.toFixed(1).padStart(5)}% slFirst=${bucket.slFirstRatePct.toFixed(1).padStart(5)}% ` +
-    `ambiguous=${bucket.ambiguousRatePct.toFixed(1).padStart(5)}%`
+    `ambig=${bucket.ambiguousRatePct.toFixed(1).padStart(5)}% unkn=${bucket.unknownRatePct.toFixed(1).padStart(5)}%`
   );
 }
 

@@ -69,6 +69,22 @@ describe('renderStorageReport', () => {
     expect(report).toContain('PnL: $12.50');
   });
 
+  it('annotates scored candidates with sell route status', () => {
+    const report = renderStorageReport({
+      recentScores: [
+        { chain: 'solana', symbol: 'OK', priceUsd: 0.01, liquidityUsd: 50_000, volume5mUsd: 10_000, score: 80, recommendation: 'paper_trade', createdAt: '2026-01-01T00:00:00Z', sellRouteAvailable: 1 },
+        { chain: 'solana', symbol: 'TRAP', priceUsd: 0.01, liquidityUsd: 50_000, volume5mUsd: 10_000, score: 20, recommendation: 'ignore', createdAt: '2026-01-01T00:00:00Z', sellRouteAvailable: 0 },
+        { chain: 'solana', symbol: 'OLD', priceUsd: 0.01, liquidityUsd: 50_000, volume5mUsd: 10_000, score: 75, recommendation: 'paper_trade', createdAt: '2026-01-01T00:00:00Z' },
+      ],
+      openPositions: [],
+      closedTrades: [],
+    });
+
+    expect(report).toContain('OK score=80 rec=paper_trade route=none sell=ok');
+    expect(report).toContain('TRAP score=20 rec=ignore route=none sell=NO');
+    expect(report).not.toContain('OLD score=75 rec=paper_trade route=none sell=');
+  });
+
   it('renders stale timeout price source for closed trades', () => {
     const report = renderStorageReport({
       recentScores: [],

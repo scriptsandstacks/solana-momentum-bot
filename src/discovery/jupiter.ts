@@ -13,6 +13,9 @@ export interface JupiterRouteCheck {
   estimatedSlippageBps: number;
   routeInputMint?: string;
   routeInputSymbol?: string;
+  // Whether a token→USDC sell route exists. false = honeypot signal.
+  // undefined only if the sell probe was skipped (should not happen via checkJupiterRoute).
+  sellRouteAvailable: boolean;
 }
 
 // Quote API V6 (`quote-api.jup.ag/v6`) was deprecated on 2025-10-01. The forward
@@ -89,9 +92,11 @@ export async function quoteJupiterSellImpactBps(
   }
 }
 
+type BuyRoute = Omit<JupiterRouteCheck, 'sellRouteAvailable'>;
+
 export async function checkJupiterRoute(outputMint: string, deps: JupiterDeps = {}): Promise<JupiterRouteCheck> {
   const { baseUrl, fetchJson } = resolveQuoteEndpoint(deps);
-  const availableRoutes: JupiterRouteCheck[] = [];
+  const availableRoutes: BuyRoute[] = [];
 
   for (const input of ROUTE_INPUTS) {
     const params = new URLSearchParams({
@@ -117,7 +122,12 @@ export async function checkJupiterRoute(outputMint: string, deps: JupiterDeps = 
   }
 
   availableRoutes.sort((a, b) => a.estimatedSlippageBps - b.estimatedSlippageBps);
-  return availableRoutes[0] ?? { routeAvailable: false, estimatedSlippageBps: 10_000 };
+  const best: BuyRoute = availableRoutes[0] ?? { routeAvailable: false, estimatedSlippageBps: 10_000 };
+
+  // Probe the sell direction: a token we can buy but cannot sell is a honeypot.
+  // Uses a small fixed $5 ExactOut probe so no token decimals are needed.
+  const sellImpact = await quoteJupiterSellImpactBps(outputMint, 5, deps);
+  return { ...best, sellRouteAvailable: sellImpact !== undefined };
 }
 
 async function defaultFetchJson(url: string, apiKey?: string): Promise<any> {

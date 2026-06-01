@@ -8,6 +8,8 @@ interface RecentScoreRow {
   liquidityUsd: number;
   volume5mUsd: number;
   routeInputSymbol?: string;
+  // SQLite INTEGER tristate: 1=ok, 0=no sell route, null=not checked
+  sellRouteAvailable?: number | null;
   score: number;
   recommendation: string;
   createdAt: string;
@@ -76,8 +78,10 @@ export function renderStorageReport(input: StorageReportInput): string {
 
   lines.push('', 'Top recent scores:');
   for (const row of input.recentScores.slice(0, 10)) {
+    const sellTag =
+      row.sellRouteAvailable === 1 ? ' sell=ok' : row.sellRouteAvailable === 0 ? ' sell=NO' : '';
     lines.push(
-      `${row.chain.toUpperCase()} ${row.symbol} score=${row.score} rec=${row.recommendation} route=${row.routeInputSymbol ?? 'none'} price=$${row.priceUsd} liq=$${Math.round(row.liquidityUsd)} vol5m=$${Math.round(row.volume5mUsd)} at=${row.createdAt}`,
+      `${row.chain.toUpperCase()} ${row.symbol} score=${row.score} rec=${row.recommendation} route=${row.routeInputSymbol ?? 'none'}${sellTag} price=$${row.priceUsd} liq=$${Math.round(row.liquidityUsd)} vol5m=$${Math.round(row.volume5mUsd)} at=${row.createdAt}`,
     );
   }
 

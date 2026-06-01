@@ -2,11 +2,12 @@ import { PumpPortalClient, type PumpPortalRawEvent } from '../discovery/pumpPort
 import { processPumpPortalEvents, type PumpProcessResult } from './pumpProcess.js';
 import { processExits as processExitsImpl, type ExitRules, type ProcessExitsResult } from './exitPositions.js';
 import { trackCandidateOutcomes as trackCandidateOutcomesImpl, type TrackOutcomesResult } from './trackOutcomes.js';
+import { retryBlockedOpens as retryBlockedOpensImpl, canRetryBlockedOpens, type RetryBlockedOpensResult } from './retryBlockedOpens.js';
 import { isBrokerStateStore } from '../paper/restoreBroker.js';
 import type { ChainConfig } from '../config/schema.js';
 import type { PaperBrokerOptions } from '../paper/paperBroker.js';
 import type { OpportunityScore, PaperPosition, PaperTrade, TokenCandidate } from '../types/domain.js';
-import type { ScoredOutcomeUpdate, TrackableScoredCandidateRow } from '../storage/sqliteStore.js';
+import type { ScoredOutcomeUpdate, TrackableScoredCandidateRow, RetriableScoredCandidateRow } from '../storage/sqliteStore.js';
 
 interface RunLoopStore {
   savePumpPortalEvent(event: PumpPortalRawEvent): void;
@@ -35,6 +36,8 @@ interface RunLoopStore {
   listTrackableScoredCandidates?(limit?: number): TrackableScoredCandidateRow[];
   markStaleScoredOutcomesDone?(cutoffIso: string): number;
   recordScoredOutcome?(update: ScoredOutcomeUpdate): void;
+  // Retry pass: re-opens positions for capacity-blocked scored candidates.
+  listRetriableScoredCandidates?(options: { minScore: number; cutoffIso: string; limit?: number }): RetriableScoredCandidateRow[];
 }
 
 type ProcessExits = (options: {
@@ -60,6 +63,13 @@ type TrackOutcomes = (options: {
   horizonMinutes: number;
   thresholds?: { takeProfitPct: number; stopLossPct: number };
 }) => Promise<TrackOutcomesResult>;
+
+type RetryBlockedOpens = (options: {
+  store: RunLoopStore;
+  paper: PaperBrokerOptions;
+  minimumScoreToEnter: number;
+  cutoffIso: string;
+}) => Promise<RetryBlockedOpensResult>;
 
 type PumpPortalClientLike = {
   connectFreeStreams(): Promise<void>;
@@ -98,6 +108,7 @@ interface RunBotLoopOptions {
   processPumpEvents?: ProcessPumpEvents;
   processExits?: ProcessExits;
   trackOutcomes?: TrackOutcomes;
+  retryBlockedOpens?: RetryBlockedOpens;
   stopSignal?: AbortSignal;
   onLog?: (message: string) => void;
 }
@@ -112,6 +123,7 @@ export interface RunBotLoopResult {
   skipped: number;
   failed: number;
   closedPositions: number;
+  retriedPositions: number;
   outcomesUpdated: number;
 }
 
@@ -140,6 +152,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
 
   const processExits = options.processExits ?? (processExitsImpl as unknown as ProcessExits);
   const trackOutcomes = options.trackOutcomes ?? (trackCandidateOutcomesImpl as unknown as TrackOutcomes);
+  const retryBlockedOpens = options.retryBlockedOpens ?? (retryBlockedOpensImpl as unknown as RetryBlockedOpens);
 
   let eventsSaved = 0;
   const result: RunBotLoopResult = {
@@ -152,6 +165,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
     skipped: 0,
     failed: 0,
     closedPositions: 0,
+    retriedPositions: 0,
     outcomesUpdated: 0,
   };
 
@@ -207,6 +221,23 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
         options.onLog?.(
           `[run:exits] checked=${exitResult.positionsChecked} repriced=${exitResult.repriced} closed=${exitResult.closed} sl=${exitResult.stopLoss} tp=${exitResult.takeProfit} trail=${exitResult.trailingStop} timeout=${exitResult.timeout} noPrice=${exitResult.missingPrice}`,
         );
+
+        // If the exit pass freed capacity, try to fill it with recently scored
+        // candidates that were blocked when they were first processed.
+        if (canRetryBlockedOpens(options.store)) {
+          const cutoffIso = new Date(Date.now() - options.exits.maxHoldMinutes * 60_000).toISOString();
+          const retryResult = await retryBlockedOpens({
+            store: options.store,
+            paper: options.paper,
+            minimumScoreToEnter: options.minimumScoreToEnter,
+            cutoffIso,
+          });
+          result.openedPositions += retryResult.openedPositions;
+          result.retriedPositions += retryResult.openedPositions;
+          if (retryResult.openedPositions > 0) {
+            options.onLog?.(`[run:retry] candidates=${retryResult.candidates} opened=${retryResult.openedPositions}`);
+          }
+        }
       }
 
       // Capture forward outcomes for recently scored candidates (traded or not)

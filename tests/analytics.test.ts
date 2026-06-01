@@ -128,15 +128,35 @@ describe('computeOutcomeAnalytics', () => {
           outcomeFirstTakeProfitAt: '2026-01-01T00:08:00.000Z',
           outcomeFirstStopLossAt: '2026-01-01T00:04:00.000Z',
         }),
-        outcome({ outcomeHighUsd: 0.016, outcomeLowUsd: 0.007 }), // legacy/unknown ordering
+        outcome({ outcomeHighUsd: 0.016, outcomeLowUsd: 0.007 }), // legacy: both hit, no timestamps
       ],
       thresholds,
     );
 
     expect(analytics.overall.tpFirstRatePct).toBeCloseTo(100 / 3);
     expect(analytics.overall.slFirstRatePct).toBeCloseTo(100 / 3);
-    expect(analytics.overall.ambiguousRatePct).toBeCloseTo(100 / 3);
-    expect(renderOutcomeAnalytics(analytics, thresholds)).toContain('tpFirst= 33.3% slFirst= 33.3% ambiguous= 33.3%');
+    expect(analytics.overall.ambiguousRatePct).toBeCloseTo(0);
+    expect(analytics.overall.unknownRatePct).toBeCloseTo(100 / 3);
+    expect(renderOutcomeAnalytics(analytics, thresholds)).toContain(
+      'tpFirst= 33.3% slFirst= 33.3% ambig=  0.0% unkn= 33.3%',
+    );
+  });
+
+  it('classifies same-millisecond timestamp tie as ambiguous (not unknown)', () => {
+    const analytics = computeOutcomeAnalytics(
+      [
+        outcome({
+          outcomeHighUsd: 0.016,
+          outcomeLowUsd: 0.007,
+          outcomeFirstTakeProfitAt: '2026-01-01T00:05:00.000Z',
+          outcomeFirstStopLossAt: '2026-01-01T00:05:00.000Z',
+        }),
+      ],
+      thresholds,
+    );
+
+    expect(analytics.overall.ambiguousRatePct).toBeCloseTo(100);
+    expect(analytics.overall.unknownRatePct).toBeCloseTo(0);
   });
 
   it('buckets outcomes by score and reports an empty state', () => {

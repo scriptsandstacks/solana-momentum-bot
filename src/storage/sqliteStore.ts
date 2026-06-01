@@ -15,6 +15,7 @@ interface RecentScoreRow {
   volume5mUsd: number;
   routeInputMint?: string;
   routeInputSymbol?: string;
+  sellRouteAvailable: number | null;
   score: number;
   recommendation: string;
   createdAt: string;
@@ -106,6 +107,31 @@ export interface ScoredOutcomeStatRow {
   outcomeFirstStopLossAt: string | null;
 }
 
+// A recently scored candidate that was never opened into a position. Used by the
+// retry pass to fill broker capacity that opened up after an exit.
+export interface RetriableScoredCandidateRow {
+  chain: string;
+  address: string;
+  symbol: string;
+  name: string;
+  pairAddress: string;
+  priceUsd: number;
+  liquidityUsd: number;
+  volume5mUsd: number;
+  volume1hUsd: number;
+  priceChange5mPct: number;
+  buys5m: number;
+  sells5m: number;
+  ageMinutes: number;
+  source: string;
+  routeAvailable: number;
+  estimatedSlippageBps: number;
+  routeInputMint: string | null;
+  routeInputSymbol: string | null;
+  sellRouteAvailable: number | null;
+  score: number;
+}
+
 export class SqliteStore {
   private readonly db: Database.Database;
 
@@ -123,11 +149,13 @@ export class SqliteStore {
           chain, address, symbol, name, pair_address, price_usd, liquidity_usd, volume_5m_usd,
           volume_1h_usd, price_change_5m_pct, buys_5m, sells_5m, age_minutes, source,
           route_available, estimated_slippage_bps, route_input_mint, route_input_symbol,
+          sell_route_available,
           score, recommendation, reasons_json, risks_json, created_at
         ) VALUES (
           @chain, @address, @symbol, @name, @pairAddress, @priceUsd, @liquidityUsd, @volume5mUsd,
           @volume1hUsd, @priceChange5mPct, @buys5m, @sells5m, @ageMinutes, @source,
           @routeAvailable, @estimatedSlippageBps, @routeInputMint, @routeInputSymbol,
+          @sellRouteAvailable,
           @score, @recommendation, @reasonsJson, @risksJson, @createdAt
         )`,
       )
@@ -136,6 +164,7 @@ export class SqliteStore {
         routeAvailable: candidate.routeAvailable ? 1 : 0,
         routeInputMint: candidate.routeInputMint ?? null,
         routeInputSymbol: candidate.routeInputSymbol ?? null,
+        sellRouteAvailable: candidate.sellRouteAvailable === undefined ? null : candidate.sellRouteAvailable ? 1 : 0,
         score: score.total,
         recommendation: score.recommendation,
         reasonsJson: JSON.stringify(score.reasons),
@@ -150,12 +179,52 @@ export class SqliteStore {
         `SELECT chain, address, symbol, name, pair_address as pairAddress, price_usd as priceUsd,
                 liquidity_usd as liquidityUsd, volume_5m_usd as volume5mUsd,
                 route_input_mint as routeInputMint, route_input_symbol as routeInputSymbol,
+                sell_route_available as sellRouteAvailable,
                 score, recommendation, created_at as createdAt
          FROM scored_candidates
          ORDER BY id DESC
          LIMIT ?`,
       )
       .all(limit) as RecentScoreRow[];
+  }
+
+  listRetriableScoredCandidates(options: { minScore: number; cutoffIso: string; limit?: number }): RetriableScoredCandidateRow[] {
+    // Return the best-scored (most recent tie-break) row per address for candidates
+    // that (a) scored high enough, (b) are still within the trade horizon, (c) have
+    // no open position, and (d) have no position that was opened after the cutoff.
+    // ROW_NUMBER deduplicates addresses so a token scored multiple times is only
+    // offered once (highest score wins).
+    return this.db
+      .prepare(
+        `WITH ranked AS (
+           SELECT chain, address, symbol, name, pair_address as pairAddress,
+                  price_usd as priceUsd, liquidity_usd as liquidityUsd,
+                  volume_5m_usd as volume5mUsd, volume_1h_usd as volume1hUsd,
+                  price_change_5m_pct as priceChange5mPct, buys_5m as buys5m, sells_5m as sells5m,
+                  age_minutes as ageMinutes, source,
+                  route_available as routeAvailable, estimated_slippage_bps as estimatedSlippageBps,
+                  route_input_mint as routeInputMint, route_input_symbol as routeInputSymbol,
+                  sell_route_available as sellRouteAvailable, score,
+                  ROW_NUMBER() OVER (PARTITION BY address ORDER BY score DESC, id DESC) as rn
+           FROM scored_candidates
+           WHERE score >= @minScore
+             AND recommendation = 'paper_trade'
+             AND created_at >= @cutoffIso
+             AND address NOT IN (SELECT address FROM open_positions)
+             AND address NOT IN (
+               SELECT address FROM closed_trades WHERE opened_at >= @cutoffIso
+             )
+         )
+         SELECT chain, address, symbol, name, pairAddress,
+                priceUsd, liquidityUsd, volume5mUsd, volume1hUsd,
+                priceChange5mPct, buys5m, sells5m, ageMinutes, source,
+                routeAvailable, estimatedSlippageBps, routeInputMint, routeInputSymbol,
+                sellRouteAvailable, score
+         FROM ranked WHERE rn = 1
+         ORDER BY score DESC
+         LIMIT @limit`,
+      )
+      .all({ minScore: options.minScore, cutoffIso: options.cutoffIso, limit: options.limit ?? 10 }) as RetriableScoredCandidateRow[];
   }
 
   saveOpenPosition(position: PaperPosition): void {
@@ -514,6 +583,7 @@ export class SqliteStore {
         estimated_slippage_bps INTEGER NOT NULL,
         route_input_mint TEXT,
         route_input_symbol TEXT,
+        sell_route_available INTEGER,
         score INTEGER NOT NULL,
         recommendation TEXT NOT NULL,
         reasons_json TEXT NOT NULL,
@@ -599,6 +669,7 @@ export class SqliteStore {
     this.addColumnIfMissing('closed_trades', 'source', "TEXT NOT NULL DEFAULT ''");
     this.addColumnIfMissing('scored_candidates', 'route_input_mint', 'TEXT');
     this.addColumnIfMissing('scored_candidates', 'route_input_symbol', 'TEXT');
+    this.addColumnIfMissing('scored_candidates', 'sell_route_available', 'INTEGER');
     this.addColumnIfMissing('scored_candidates', 'outcome_high_usd', 'REAL');
     this.addColumnIfMissing('scored_candidates', 'outcome_low_usd', 'REAL');
     this.addColumnIfMissing('scored_candidates', 'outcome_last_usd', 'REAL');
