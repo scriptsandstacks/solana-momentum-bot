@@ -1,0 +1,84 @@
+import { restoreBrokerFromStore, isBrokerStateStore, type BrokerStateStore } from '../paper/restoreBroker.js';
+import type { PaperBrokerOptions } from '../paper/paperBroker.js';
+import type { PaperPosition, TokenCandidate } from '../types/domain.js';
+import type { RetriableScoredCandidateRow } from '../storage/sqliteStore.js';
+import type { ChainName } from '../config/schema.js';
+
+// Minimal store interface required to run the retry pass.
+export interface RetryBlockedOpensStore extends BrokerStateStore {
+  listRetriableScoredCandidates(options: { minScore: number; cutoffIso: string; limit?: number }): RetriableScoredCandidateRow[];
+  saveOpenPosition(position: PaperPosition): void;
+}
+
+export interface RetryBlockedOpensResult {
+  candidates: number;
+  openedPositions: number;
+}
+
+// After the exit pass frees broker capacity, try to fill it with recently
+// scored candidates that were never opened (most likely blocked by the cap at
+// scoring time). Uses the scored price as the paper entry — no re-fetch — so
+// this is only called within the trade horizon window (cutoffIso derived from
+// maxHoldMinutes) where the price is still a reasonable approximation.
+export async function retryBlockedOpens(options: {
+  store: RetryBlockedOpensStore;
+  paper: PaperBrokerOptions;
+  minimumScoreToEnter: number;
+  cutoffIso: string;
+  limit?: number;
+}): Promise<RetryBlockedOpensResult> {
+  const rows = options.store.listRetriableScoredCandidates({
+    minScore: options.minimumScoreToEnter,
+    cutoffIso: options.cutoffIso,
+    limit: options.limit ?? 10,
+  });
+
+  const result: RetryBlockedOpensResult = { candidates: rows.length, openedPositions: 0 };
+  if (rows.length === 0) return result;
+
+  const broker = restoreBrokerFromStore(options.store, options.paper);
+
+  for (const row of rows) {
+    const capacity = broker.canOpenPosition();
+    if (!capacity.ok) break; // still at capacity — no point continuing
+
+    const candidate = rowToCandidate(row);
+    const position = broker.openPosition(candidate, row.score);
+    options.store.saveOpenPosition(position);
+    result.openedPositions += 1;
+  }
+
+  return result;
+}
+
+export function canRetryBlockedOpens(store: unknown): store is RetryBlockedOpensStore {
+  return (
+    isBrokerStateStore(store) &&
+    typeof (store as RetryBlockedOpensStore).listRetriableScoredCandidates === 'function' &&
+    typeof (store as RetryBlockedOpensStore).saveOpenPosition === 'function'
+  );
+}
+
+function rowToCandidate(row: RetriableScoredCandidateRow): TokenCandidate {
+  return {
+    chain: row.chain as ChainName,
+    address: row.address,
+    symbol: row.symbol,
+    name: row.name,
+    pairAddress: row.pairAddress,
+    priceUsd: row.priceUsd,
+    liquidityUsd: row.liquidityUsd,
+    volume5mUsd: row.volume5mUsd,
+    volume1hUsd: row.volume1hUsd,
+    priceChange5mPct: row.priceChange5mPct,
+    buys5m: row.buys5m,
+    sells5m: row.sells5m,
+    ageMinutes: row.ageMinutes,
+    source: row.source,
+    routeAvailable: row.routeAvailable === 1,
+    estimatedSlippageBps: row.estimatedSlippageBps,
+    routeInputMint: row.routeInputMint ?? undefined,
+    routeInputSymbol: row.routeInputSymbol ?? undefined,
+    sellRouteAvailable: row.sellRouteAvailable === null ? undefined : row.sellRouteAvailable === 1,
+  };
+}
