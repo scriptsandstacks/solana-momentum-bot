@@ -80,6 +80,12 @@ export function scoreTokenCandidate(candidate: TokenCandidate): OpportunityScore
     risks.push('high_slippage');
   }
 
+  // Explicit false = sell probe ran and found no route (honeypot). undefined = not checked; no penalty.
+  if (candidate.sellRouteAvailable === false) {
+    total -= 50;
+    risks.push('no_sell_route');
+  }
+
   const bounded = clampScore(total);
   const recommendation = bounded >= 75 ? 'paper_trade' : bounded >= 50 ? 'watch' : 'ignore';
 

@@ -63,6 +63,7 @@ describe('processPumpPortalEvents', () => {
         estimatedSlippageBps: 100,
         routeInputMint: 'usdc-mint',
         routeInputSymbol: 'USDC',
+        sellRouteAvailable: true,
       }),
     });
 

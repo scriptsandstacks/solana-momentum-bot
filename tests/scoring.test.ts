@@ -45,4 +45,19 @@ describe('scoreTokenCandidate', () => {
     expect(score.total).toBeLessThan(65);
     expect(score.risks).toContain('low_liquidity');
   });
+
+  it('heavily penalizes candidates with no sell route (honeypot signal)', () => {
+    const score = scoreTokenCandidate({ ...baseCandidate, sellRouteAvailable: false });
+
+    expect(score.total).toBeLessThan(50);
+    expect(score.risks).toContain('no_sell_route');
+  });
+
+  it('does not penalize candidates where sell route was not checked (undefined)', () => {
+    const withoutCheck = scoreTokenCandidate({ ...baseCandidate });
+    const withUndefined = scoreTokenCandidate({ ...baseCandidate, sellRouteAvailable: undefined });
+
+    expect(withUndefined.total).toBe(withoutCheck.total);
+    expect(withUndefined.risks).not.toContain('no_sell_route');
+  });
 });

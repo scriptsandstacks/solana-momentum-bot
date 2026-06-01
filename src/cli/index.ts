@@ -78,8 +78,9 @@ program
         `Route available via ${route.routeInputSymbol} (${route.routeInputMint}); estimatedSlippage=${route.estimatedSlippageBps}bps\n`,
       );
     } else {
-      process.stdout.write('No route available (token may be unswappable, illiquid, or the quote API is unreachable).\n');
+      process.stdout.write('No buy route available (token may be unswappable, illiquid, or the quote API is unreachable).\n');
     }
+    process.stdout.write(`Sell route (token→USDC): ${route.sellRouteAvailable ? 'available' : 'UNAVAILABLE — possible honeypot'}\n`);
   });
 
 program.command('paper').description('Run one paper-trading scan cycle').action(async () => {
