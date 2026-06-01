@@ -15,6 +15,7 @@ interface RecentScoreRow {
   volume5mUsd: number;
   routeInputMint?: string;
   routeInputSymbol?: string;
+  sellRouteAvailable: number | null;
   score: number;
   recommendation: string;
   createdAt: string;
@@ -123,11 +124,13 @@ export class SqliteStore {
           chain, address, symbol, name, pair_address, price_usd, liquidity_usd, volume_5m_usd,
           volume_1h_usd, price_change_5m_pct, buys_5m, sells_5m, age_minutes, source,
           route_available, estimated_slippage_bps, route_input_mint, route_input_symbol,
+          sell_route_available,
           score, recommendation, reasons_json, risks_json, created_at
         ) VALUES (
           @chain, @address, @symbol, @name, @pairAddress, @priceUsd, @liquidityUsd, @volume5mUsd,
           @volume1hUsd, @priceChange5mPct, @buys5m, @sells5m, @ageMinutes, @source,
           @routeAvailable, @estimatedSlippageBps, @routeInputMint, @routeInputSymbol,
+          @sellRouteAvailable,
           @score, @recommendation, @reasonsJson, @risksJson, @createdAt
         )`,
       )
@@ -136,6 +139,7 @@ export class SqliteStore {
         routeAvailable: candidate.routeAvailable ? 1 : 0,
         routeInputMint: candidate.routeInputMint ?? null,
         routeInputSymbol: candidate.routeInputSymbol ?? null,
+        sellRouteAvailable: candidate.sellRouteAvailable === undefined ? null : candidate.sellRouteAvailable ? 1 : 0,
         score: score.total,
         recommendation: score.recommendation,
         reasonsJson: JSON.stringify(score.reasons),
@@ -150,6 +154,7 @@ export class SqliteStore {
         `SELECT chain, address, symbol, name, pair_address as pairAddress, price_usd as priceUsd,
                 liquidity_usd as liquidityUsd, volume_5m_usd as volume5mUsd,
                 route_input_mint as routeInputMint, route_input_symbol as routeInputSymbol,
+                sell_route_available as sellRouteAvailable,
                 score, recommendation, created_at as createdAt
          FROM scored_candidates
          ORDER BY id DESC
@@ -514,6 +519,7 @@ export class SqliteStore {
         estimated_slippage_bps INTEGER NOT NULL,
         route_input_mint TEXT,
         route_input_symbol TEXT,
+        sell_route_available INTEGER,
         score INTEGER NOT NULL,
         recommendation TEXT NOT NULL,
         reasons_json TEXT NOT NULL,
@@ -599,6 +605,7 @@ export class SqliteStore {
     this.addColumnIfMissing('closed_trades', 'source', "TEXT NOT NULL DEFAULT ''");
     this.addColumnIfMissing('scored_candidates', 'route_input_mint', 'TEXT');
     this.addColumnIfMissing('scored_candidates', 'route_input_symbol', 'TEXT');
+    this.addColumnIfMissing('scored_candidates', 'sell_route_available', 'INTEGER');
     this.addColumnIfMissing('scored_candidates', 'outcome_high_usd', 'REAL');
     this.addColumnIfMissing('scored_candidates', 'outcome_low_usd', 'REAL');
     this.addColumnIfMissing('scored_candidates', 'outcome_last_usd', 'REAL');

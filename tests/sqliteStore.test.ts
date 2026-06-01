@@ -59,6 +59,22 @@ describe('SqliteStore', () => {
     store.close();
   });
 
+  it('persists sellRouteAvailable as a tristate: true=1, false=0, undefined=null', () => {
+    const store = createStore();
+
+    store.saveScoredCandidate({ ...candidate, address: 'mint-sell-ok', sellRouteAvailable: true }, score);
+    store.saveScoredCandidate({ ...candidate, address: 'mint-honeypot', sellRouteAvailable: false }, score);
+    store.saveScoredCandidate({ ...candidate, address: 'mint-unchecked' }, score);
+
+    const rows = store.listRecentScores(10);
+    const byMint = Object.fromEntries(rows.map((r) => [r.address, r.sellRouteAvailable]));
+
+    expect(byMint['mint-sell-ok']).toBe(1);
+    expect(byMint['mint-honeypot']).toBe(0);
+    expect(byMint['mint-unchecked']).toBeNull();
+    store.close();
+  });
+
   it('saves paper positions and closed trades', () => {
     const store = createStore();
     const position: PaperPosition = {
