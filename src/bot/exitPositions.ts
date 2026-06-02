@@ -2,6 +2,7 @@ import { fetchPumpPortalMarketCandidates } from './pumpCandidates.js';
 import { quoteJupiterSellImpactBps } from '../discovery/jupiter.js';
 import { restoreBrokerFromStore, type BrokerStateStore } from '../paper/restoreBroker.js';
 import type { PaperBrokerOptions } from '../paper/paperBroker.js';
+import type { Reporter } from './reporter.js';
 import type { PaperPosition, PaperTrade } from '../types/domain.js';
 
 export interface ExitRules {
@@ -31,6 +32,7 @@ interface ProcessExitsOptions {
   // route slippage, so frictionless runs make no extra network calls.
   fetchExitSlippageBps?: (tokenMint: string, positionValueUsd: number) => Promise<number | undefined>;
   now?: Date;
+  reporter?: Reporter;
 }
 
 export interface ProcessExitsResult {
@@ -132,6 +134,7 @@ export async function processExits(options: ProcessExitsOptions): Promise<Proces
   ) => {
     const trade = broker.closePosition(positionId, exitPriceUsd, reason, now, exitPriceSource, exitSlippageBps);
     options.store.saveClosedTrade(trade);
+    options.reporter?.onPositionClosed?.({ trade });
     result.closed += 1;
     if (reason === 'stop_loss') result.stopLoss += 1;
     else if (reason === 'take_profit') result.takeProfit += 1;

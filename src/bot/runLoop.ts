@@ -3,7 +3,8 @@ import { processPumpPortalEvents, type PumpProcessResult } from './pumpProcess.j
 import { processExits as processExitsImpl, type ExitRules, type ProcessExitsResult } from './exitPositions.js';
 import { trackCandidateOutcomes as trackCandidateOutcomesImpl, type TrackOutcomesResult } from './trackOutcomes.js';
 import { retryBlockedOpens as retryBlockedOpensImpl, canRetryBlockedOpens, type RetryBlockedOpensResult } from './retryBlockedOpens.js';
-import { isBrokerStateStore } from '../paper/restoreBroker.js';
+import { isBrokerStateStore, restoreBrokerFromStore } from '../paper/restoreBroker.js';
+import type { Reporter } from './reporter.js';
 import type { ChainConfig } from '../config/schema.js';
 import type { PaperBrokerOptions } from '../paper/paperBroker.js';
 import type { OpportunityScore, PaperPosition, PaperTrade, TokenCandidate } from '../types/domain.js';
@@ -44,6 +45,7 @@ type ProcessExits = (options: {
   store: RunLoopStore;
   paper: PaperBrokerOptions;
   exits: ExitRules;
+  reporter?: Reporter;
 }) => Promise<ProcessExitsResult>;
 
 function canProcessExits(store: RunLoopStore): boolean {
@@ -89,6 +91,7 @@ type ProcessPumpEvents = (options: {
   paper: PaperBrokerOptions;
   minimumScoreToEnter: number;
   limit?: number;
+  reporter?: Reporter;
 }) => Promise<PumpProcessResult>;
 
 interface RunBotLoopOptions {
@@ -111,6 +114,7 @@ interface RunBotLoopOptions {
   retryBlockedOpens?: RetryBlockedOpens;
   stopSignal?: AbortSignal;
   onLog?: (message: string) => void;
+  reporter?: Reporter;
 }
 
 export interface RunBotLoopResult {
@@ -196,6 +200,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
         paper: options.paper,
         minimumScoreToEnter: options.minimumScoreToEnter,
         limit: options.processLimit,
+        reporter: options.reporter,
       });
       result.processRuns += 1;
       result.eventsRead += processResult.eventsRead;
@@ -216,6 +221,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
           store: options.store,
           paper: options.paper,
           exits: options.exits,
+          reporter: options.reporter,
         });
         result.closedPositions += exitResult.closed;
         options.onLog?.(
@@ -253,6 +259,19 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
         options.onLog?.(
           `[run:outcomes] finalized=${outcomeResult.finalized} tracked=${outcomeResult.tracked} updated=${outcomeResult.updated} completed=${outcomeResult.completed} noPrice=${outcomeResult.missingPrice}`,
         );
+      }
+
+      // Emit a structured cycle summary after every full pass so the reporter
+      // can surface cash / open count / trade activity without parsing log lines.
+      if (options.reporter?.onCycleSummary && isBrokerStateStore(options.store)) {
+        const broker = restoreBrokerFromStore(options.store, options.paper);
+        options.reporter.onCycleSummary({
+          cashUsd: broker.getCashUsd(),
+          openPositions: broker.getOpenPositions().length,
+          closedThisCycle: result.closedPositions,
+          openedThisCycle: processResult.openedPositions,
+          eventsProcessed: processResult.eventsRead,
+        });
       }
     } finally {
       processInFlight = false;

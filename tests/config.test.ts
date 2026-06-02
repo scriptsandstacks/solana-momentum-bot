@@ -56,8 +56,9 @@ describe('config loading', () => {
     expect(config.paper.positionSizeUsd).toBe(25);
   });
 
-  it('rejects live mode until explicitly implemented', () => {
-    expect(() => parseConfig({ ...validConfig, mode: 'live' })).toThrow(/mode/i);
+  it('accepts live mode in config (CLI guards against running it)', () => {
+    const config = parseConfig({ ...validConfig, mode: 'live' });
+    expect(config.mode).toBe('live');
   });
 
   it('loads config.yaml from disk', () => {

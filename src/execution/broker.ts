@@ -1,0 +1,25 @@
+import type { PaperPosition, PaperTrade, TokenCandidate } from '../types/domain.js';
+
+// The contract between bot logic (entry decisions, exit rules) and an execution
+// engine. PaperBroker implements this for simulation. A future LiveBroker will
+// implement it by submitting real on-chain transactions so the bot logic is
+// identical in both modes — only the broker swaps out.
+export interface ExecutionBroker {
+  readonly mode: 'paper' | 'live';
+  canOpenPosition(now?: Date): { ok: boolean; reason?: string };
+  openPosition(candidate: TokenCandidate, score: number, openedAt?: Date): PaperPosition;
+  recordMark(positionId: string, priceUsd: number): PaperPosition;
+  closePosition(
+    positionId: string,
+    exitPriceUsd: number,
+    reason: PaperTrade['reason'],
+    closedAt?: Date,
+    exitPriceSource?: NonNullable<PaperTrade['exitPriceSource']>,
+    exitSlippageBps?: number,
+  ): PaperTrade;
+  getCashUsd(): number;
+  getRealizedPnlUsd(): number;
+  getDailyRealizedPnlUsd(now?: Date): number;
+  getOpenPositions(): PaperPosition[];
+  getClosedTrades(): PaperTrade[];
+}

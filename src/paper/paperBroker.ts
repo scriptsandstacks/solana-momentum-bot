@@ -1,3 +1,4 @@
+import type { ExecutionBroker } from '../execution/broker.js';
 import type { PaperPosition, PaperTrade, TokenCandidate } from '../types/domain.js';
 
 export interface PaperBrokerOptions {
@@ -48,7 +49,8 @@ function utcDayKey(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-export class PaperBroker {
+export class PaperBroker implements ExecutionBroker {
+  readonly mode = 'paper' as const;
   private cashUsd: number;
   private readonly positionSizeUsd: number;
   private readonly maxOpenPositions: number;

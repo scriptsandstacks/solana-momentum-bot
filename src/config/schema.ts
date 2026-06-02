@@ -12,7 +12,7 @@ const chainConfigSchema = z.object({
 });
 
 export const botConfigSchema = z.object({
-  mode: z.literal('paper'),
+  mode: z.enum(['paper', 'live']),
   chains: z.object({
     solana: chainConfigSchema,
     base: chainConfigSchema,
@@ -53,6 +53,23 @@ export const botConfigSchema = z.object({
       scoredCandidateDays: z.number().positive(),
     })
     .default({ scoredCandidateDays: 30 }),
+  // Optional notification transports. Omitting the section disables all push
+  // notifications. Telegram and webhook implementations hook into the Reporter
+  // interface without changes to bot logic.
+  notifications: z
+    .object({
+      // Set to true to emit trade open/close/cycle events to stdout (default in
+      // the run loop; this flag controls whether they are also formatted as
+      // structured summaries separate from the raw process logs).
+      console: z.boolean().default(true),
+      telegram: z
+        .object({
+          botToken: z.string().min(1),
+          chatId: z.string().min(1),
+        })
+        .optional(),
+    })
+    .default({ console: true }),
 });
 
 export type ChainName = keyof z.infer<typeof botConfigSchema>['chains'];

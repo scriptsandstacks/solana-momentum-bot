@@ -8,12 +8,14 @@ import { runPumpWatch } from '../bot/pumpWatch.js';
 import { processPumpPortalEvents } from '../bot/pumpProcess.js';
 import { processExits } from '../bot/exitPositions.js';
 import { runBotLoop } from '../bot/runLoop.js';
+import { consoleReporter } from '../bot/reporter.js';
 import { loadConfigFromFile } from '../config/loadConfig.js';
 import { scanSolanaCandidates } from '../chains/solana/scanner.js';
 import { checkJupiterRoute } from '../discovery/jupiter.js';
 import { PaperBroker } from '../paper/paperBroker.js';
 import { scoreTokenCandidate } from '../scoring/scoreToken.js';
 import { SqliteStore } from '../storage/sqliteStore.js';
+import { createFreshLaunchStrategy } from '../strategies/freshLaunchMomentum.js';
 import type { PaperBrokerOptions } from '../paper/paperBroker.js';
 import type { BotConfig } from '../config/schema.js';
 
@@ -31,6 +33,20 @@ function paperBrokerOptions(config: BotConfig): PaperBrokerOptions {
       applyRouteSlippage: config.fees.applyRouteSlippage,
     },
   };
+}
+
+function assertPaperMode(config: BotConfig): void {
+  if (config.mode === 'live') {
+    throw new Error('Live trading is not yet implemented. Set mode: paper in config.yaml to run in simulation.');
+  }
+}
+
+// Build the active strategy from file config so each strategy reads its entry
+// threshold from the config section rather than from hardcoded defaults.
+function buildStrategy(config: BotConfig) {
+  return createFreshLaunchStrategy({
+    minScoreToEnter: config.scoring.minimumScoreToEnter,
+  });
 }
 
 const program = new Command();
@@ -279,9 +295,14 @@ program
     }
 
     const config = loadConfigFromFile(program.opts().config);
+    assertPaperMode(config);
     if (!config.chains.solana.enabled) {
       throw new Error('Solana must be enabled to run the bot.');
     }
+
+    const strategy = buildStrategy(config);
+    const log = (message: string) => process.stdout.write(`${message}\n`);
+    const reporter = config.notifications.console ? consoleReporter(log) : undefined;
 
     const stopController = new AbortController();
     const stop = () => stopController.abort();
@@ -298,10 +319,11 @@ program
         store,
         solanaConfig: config.chains.solana,
         paper: paperBrokerOptions(config),
-        minimumScoreToEnter: config.scoring.minimumScoreToEnter,
+        minimumScoreToEnter: strategy.config.minScoreToEnter,
         exits: config.exits,
         stopSignal: stopController.signal,
-        onLog: (message) => process.stdout.write(`${message}\n`),
+        onLog: log,
+        reporter,
       });
       process.stdout.write(
         `Run complete. eventsSaved=${result.eventsSaved} processRuns=${result.processRuns} events=${result.eventsRead} enriched=${result.candidatesEnriched} scored=${result.scored} opened=${result.openedPositions} closed=${result.closedPositions} outcomes=${result.outcomesUpdated} skipped=${result.skipped} failed=${result.failed}\n`,

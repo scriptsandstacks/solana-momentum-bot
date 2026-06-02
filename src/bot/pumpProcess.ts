@@ -4,6 +4,7 @@ import { PaperBroker, type PaperBrokerOptions } from '../paper/paperBroker.js';
 import { restoreBrokerFromStore, isBrokerStateStore } from '../paper/restoreBroker.js';
 import { scoreTokenCandidate } from '../scoring/scoreToken.js';
 import { freshLaunchMomentumStrategy } from '../strategies/freshLaunchMomentum.js';
+import type { Reporter } from './reporter.js';
 import type { ChainConfig } from '../config/schema.js';
 import type { OpportunityScore, PaperPosition, TokenCandidate } from '../types/domain.js';
 
@@ -40,6 +41,7 @@ interface PumpProcessOptions {
   maxPendingAttempts?: number;
   fetchCandidates?: (tokenMints: string[]) => Promise<TokenCandidate[]>;
   checkRoute?: (outputMint: string) => Promise<JupiterRouteCheck>;
+  reporter?: Reporter;
 }
 
 export interface PumpProcessResult {
@@ -133,6 +135,7 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
         if (capacity.ok) {
           const position = broker.openPosition(enriched, score.total);
           options.store.saveOpenPosition(position);
+          options.reporter?.onPositionOpened?.({ position, strategyId: enriched.strategyId ?? freshLaunchMomentumStrategy.id });
           result.openedPositions += 1;
           note += ' opened';
         } else {
