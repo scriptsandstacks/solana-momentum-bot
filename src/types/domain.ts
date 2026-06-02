@@ -32,6 +32,10 @@ export interface TokenCandidate {
   // Percentage of token supply held by the largest five token accounts.
   // undefined = not checked or RPC failure.
   top5HolderPct?: number;
+  // Computed from recent per-token volume snapshots before the current score is saved.
+  // undefined = insufficient history; samples records how much history was available.
+  volumeAcceleration5mZ?: number;
+  volumeAccelerationSamples?: number;
 }
 
 export interface OpportunityScore {

@@ -79,6 +79,13 @@ describe('migrationMomentum scorer', () => {
     expect(score.recommendation).not.toBe('paper_trade');
   });
 
+  it('adds a reason for strong 5m volume acceleration', () => {
+    const score = migrationMomentumStrategy.scoreCandidate(
+      migrationCandidate({ volumeAcceleration5mZ: 2.5, volumeAccelerationSamples: 4 }),
+    );
+    expect(score.reasons).toContain('volume_acceleration');
+  });
+
   it('uses a lower paper_trade threshold (70) than fresh launch (75)', () => {
     expect(migrationMomentumStrategy.config.minScoreToEnter).toBe(70);
     expect(freshLaunchMomentumStrategy.config.minScoreToEnter).toBe(75);

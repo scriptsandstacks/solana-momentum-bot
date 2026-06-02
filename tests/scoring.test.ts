@@ -67,4 +67,20 @@ describe('scoreTokenCandidate', () => {
     expect(score.total).toBeLessThan(75);
     expect(score.risks).toContain('holder_concentration_high');
   });
+
+  it('adds a reason for strong 5m volume acceleration', () => {
+    const withoutSignal = scoreTokenCandidate(baseCandidate);
+    const withSignal = scoreTokenCandidate({ ...baseCandidate, volumeAcceleration5mZ: 2.5, volumeAccelerationSamples: 4 });
+
+    expect(withSignal.total).toBeGreaterThan(withoutSignal.total);
+    expect(withSignal.reasons).toContain('volume_acceleration');
+  });
+
+  it('does not change score when acceleration history is missing', () => {
+    const withoutSignal = scoreTokenCandidate(baseCandidate);
+    const insufficientHistory = scoreTokenCandidate({ ...baseCandidate, volumeAccelerationSamples: 2 });
+
+    expect(insufficientHistory.total).toBe(withoutSignal.total);
+    expect(insufficientHistory.reasons).not.toContain('volume_acceleration');
+  });
 });

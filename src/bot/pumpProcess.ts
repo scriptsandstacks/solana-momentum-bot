@@ -5,10 +5,12 @@ import { checkHolderConcentration, type HolderConcentrationInfo } from '../chain
 import { PaperBroker, type PaperBrokerOptions } from '../paper/paperBroker.js';
 import { restoreBrokerFromStore, isBrokerStateStore } from '../paper/restoreBroker.js';
 import { freshLaunchMomentumStrategy } from '../strategies/freshLaunchMomentum.js';
+import { computeVolumeAcceleration } from './volumeAcceleration.js';
 import type { TradingStrategy } from '../strategies/types.js';
 import type { Reporter } from './reporter.js';
 import type { ChainConfig } from '../config/schema.js';
 import type { OpportunityScore, PaperPosition, TokenCandidate } from '../types/domain.js';
+import type { TokenVolumeSnapshotRow } from '../storage/sqliteStore.js';
 
 interface PumpPortalEventRow {
   id: number;
@@ -26,12 +28,14 @@ interface PumpPortalEventRow {
 // Without this, abandoned mints stay in the queue forever and burn enrichment
 // API budget on every interval tick.
 const DEFAULT_MAX_PENDING_ATTEMPTS = 5;
+const VOLUME_ACCELERATION_WINDOW_MINUTES = 30;
 
 interface PumpProcessStore {
   listPendingPumpPortalEvents(limit?: number): PumpPortalEventRow[];
   markPumpPortalEventProcessed(id: number, status: 'pending' | 'processed' | 'skipped' | 'failed', note?: string): void;
   saveScoredCandidate(candidate: TokenCandidate, score: OpportunityScore): void;
   saveOpenPosition(position: PaperPosition): void;
+  listRecentTokenVolumeSnapshots?(options: { address: string; sinceIso: string; limit?: number }): TokenVolumeSnapshotRow[];
 }
 
 interface PumpProcessOptions {
@@ -162,6 +166,16 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
           holderInfo = await checkHolderConcentration(candidate.address, rpcUrl);
         }
       }
+      const volumeAcceleration = options.store.listRecentTokenVolumeSnapshots
+        ? computeVolumeAcceleration(
+            candidate.volume5mUsd,
+            options.store.listRecentTokenVolumeSnapshots({
+              address: candidate.address,
+              sinceIso: new Date(Date.now() - VOLUME_ACCELERATION_WINDOW_MINUTES * 60_000).toISOString(),
+              limit: 50,
+            }),
+          )
+        : undefined;
 
       const enriched: TokenCandidate = strategy.tagCandidate({
         ...candidate,
@@ -170,6 +184,8 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
         mintAuthorityRevoked: authorityInfo.mintAuthorityRevoked ?? undefined,
         freezeAuthorityRevoked: authorityInfo.freezeAuthorityRevoked ?? undefined,
         top5HolderPct: holderInfo.top5HolderPct ?? undefined,
+        volumeAcceleration5mZ: volumeAcceleration?.volumeAcceleration5mZ,
+        volumeAccelerationSamples: volumeAcceleration?.volumeAccelerationSamples,
       });
       const score = strategy.scoreCandidate(enriched);
       options.store.saveScoredCandidate(enriched, score);

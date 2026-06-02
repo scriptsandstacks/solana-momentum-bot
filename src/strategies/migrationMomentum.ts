@@ -69,6 +69,19 @@ function scoreMigrationCandidate(candidate: TokenCandidate): OpportunityScore {
     risks.push('very_low_5m_volume');
   }
 
+  if (candidate.volumeAcceleration5mZ !== undefined) {
+    if (candidate.volumeAcceleration5mZ >= 2) {
+      total += 8;
+      reasons.push('volume_acceleration');
+    } else if (candidate.volumeAcceleration5mZ >= 1) {
+      total += 4;
+      reasons.push('volume_acceleration_moderate');
+    } else if (candidate.volumeAcceleration5mZ <= -1.5) {
+      total -= 6;
+      risks.push('volume_deceleration');
+    }
+  }
+
   // Buy pressure — must be present immediately post-migration.
   const totalTrades = candidate.buys5m + candidate.sells5m;
   const buyRatio = totalTrades === 0 ? 0 : candidate.buys5m / totalTrades;
