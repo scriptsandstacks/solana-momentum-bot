@@ -214,11 +214,15 @@ export function computeStrategyTuneRecommendations(
     .map(([strategyId, strategyRows]) => {
       const currentEntryThreshold = entryThresholdByStrategy[strategyId] ?? entryThresholdByStrategy.unknown ?? 75;
       const analytics = computeOutcomeAnalytics(strategyRows, thresholds);
+      const result = computeTuneRecommendations(analytics, thresholds, currentEntryThreshold);
       return {
         strategyId,
         currentEntryThreshold,
         analytics,
-        result: computeTuneRecommendations(analytics, thresholds, currentEntryThreshold),
+        result: {
+          ...result,
+          recommendations: result.recommendations.map((recommendation) => localizeStrategyRecommendation(strategyId, recommendation)),
+        },
       };
     })
     .sort((a, b) => b.result.sampleSize - a.result.sampleSize || a.strategyId.localeCompare(b.strategyId));
@@ -278,6 +282,9 @@ export function applyTuneConfigUpdates(configText: string, updates: TuneConfigUp
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function parameterToConfigPath(parameter: string): string[] | undefined {
+  const strategyMatch = /^strategies\.([^.]+)\.(minScoreToEnter|exits\.(stopLossPct|takeProfitPct))$/.exec(parameter);
+  if (strategyMatch) return parameter.split('.');
+
   switch (parameter) {
     case 'scoring.minimumScoreToEnter':
       return ['scoring', 'minimumScoreToEnter'];
@@ -288,6 +295,22 @@ function parameterToConfigPath(parameter: string): string[] | undefined {
     default:
       return undefined;
   }
+}
+
+function localizeStrategyRecommendation(strategyId: string, recommendation: TuningRecommendation): TuningRecommendation {
+  if (recommendation.parameter === 'scoring.minimumScoreToEnter') {
+    return {
+      ...recommendation,
+      parameter: `strategies.${strategyId}.minScoreToEnter`,
+    };
+  }
+  if (recommendation.parameter === 'exits.stopLossPct' || recommendation.parameter === 'exits.takeProfitPct') {
+    return {
+      ...recommendation,
+      parameter: `strategies.${strategyId}.${recommendation.parameter}`,
+    };
+  }
+  return recommendation;
 }
 
 function parseConcreteSuggestionValue(suggestion: string): number | undefined {

@@ -163,6 +163,8 @@ describe('strategy-specific tune recommendations', () => {
     const migration = results.find((result) => result.strategyId === 'migrationMomentum');
     expect(fresh?.currentEntryThreshold).toBe(75);
     expect(migration?.currentEntryThreshold).toBe(70);
+    expect(fresh?.result.recommendations[0]?.parameter).toBe('strategies.freshLaunchMomentum.minScoreToEnter');
+    expect(migration?.result.recommendations[0]?.parameter).toBe('strategies.migrationMomentum.minScoreToEnter');
     expect(fresh?.result.recommendations[0]?.suggestion).toBe('Raise to 80');
     expect(migration?.result.recommendations[0]?.suggestion).toBe('Raise to 75');
 
@@ -246,5 +248,35 @@ describe('tune config updates', () => {
     expect(updated).toContain('stopLossPct: 15');
     expect(updated).toContain('takeProfitPct: 300');
     expect(renderTuneApplyPreview(updates)).toContain('scoring.minimumScoreToEnter = 70');
+  });
+
+  it('derives and applies strategy-specific tune updates', () => {
+    const configText = [
+      'mode: paper',
+      'strategies:',
+      '  freshLaunchMomentum:',
+      '    minScoreToEnter: 75',
+      '  migrationMomentum:',
+      '    minScoreToEnter: 70',
+      'scoring:',
+      '  minimumScoreToEnter: 75',
+      '',
+    ].join('\n');
+    const updates = deriveTuneConfigUpdates([
+      {
+        parameter: 'strategies.migrationMomentum.minScoreToEnter',
+        currentValue: 70,
+        suggestion: 'Raise to 75',
+        rationale: 'test',
+        confidence: 'medium',
+      },
+    ]);
+
+    const updated = applyTuneConfigUpdates(configText, updates);
+
+    expect(updates.map((u) => ({ path: u.path.join('.'), value: u.value }))).toEqual([
+      { path: 'strategies.migrationMomentum.minScoreToEnter', value: 75 },
+    ]);
+    expect(updated).toContain('migrationMomentum:\n    minScoreToEnter: 75');
   });
 });

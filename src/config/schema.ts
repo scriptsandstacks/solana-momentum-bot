@@ -11,6 +11,35 @@ const chainConfigSchema = z.object({
   maxSlippageBps: z.number().int().min(1).max(10_000),
 });
 
+const exitRulesSchema = z.object({
+  stopLossPct: z.number().positive().max(100),
+  // Set high (200-500) for memecoin strategies so the trailing stop — not a
+  // fixed ceiling — is the actual exit. A low value (e.g. 50) cuts winners
+  // short on assets that routinely move 200-1000%.
+  takeProfitPct: z.number().positive(),
+  trailingStopPct: z.number().positive().max(100),
+  // Minimum unrealized gain (%) before the trailing stop arms.
+  // Below this level only the hard stop-loss applies (phase 1).
+  // At or above, the trailing stop becomes the downside gate (phase 2).
+  trailingArmPct: z.number().nonnegative().max(100).default(0),
+  maxHoldMinutes: z.number().int().positive(),
+});
+
+const exitRuleOverridesSchema = z.object({
+  stopLossPct: z.number().positive().max(100).optional(),
+  takeProfitPct: z.number().positive().optional(),
+  trailingStopPct: z.number().positive().max(100).optional(),
+  trailingArmPct: z.number().nonnegative().max(100).optional(),
+  maxHoldMinutes: z.number().int().positive().optional(),
+});
+
+const strategyOverridesSchema = z
+  .object({
+    minScoreToEnter: z.number().min(0).max(100).optional(),
+    exits: exitRuleOverridesSchema.optional(),
+  })
+  .default({});
+
 export const botConfigSchema = z.object({
   mode: z.enum(['paper', 'live']),
   chains: z.object({
@@ -24,19 +53,13 @@ export const botConfigSchema = z.object({
     maxOpenPositions: z.number().int().positive(),
     maxDailyLossUsd: z.number().positive(),
   }),
-  exits: z.object({
-    stopLossPct: z.number().positive().max(100),
-    // Set high (200-500) for memecoin strategies so the trailing stop — not a
-    // fixed ceiling — is the actual exit. A low value (e.g. 50) cuts winners
-    // short on assets that routinely move 200-1000%.
-    takeProfitPct: z.number().positive(),
-    trailingStopPct: z.number().positive().max(100),
-    // Minimum unrealized gain (%) before the trailing stop arms.
-    // Below this level only the hard stop-loss applies (phase 1).
-    // At or above, the trailing stop becomes the downside gate (phase 2).
-    trailingArmPct: z.number().nonnegative().max(100).default(0),
-    maxHoldMinutes: z.number().int().positive(),
-  }),
+  exits: exitRulesSchema,
+  strategies: z
+    .object({
+      freshLaunchMomentum: strategyOverridesSchema,
+      migrationMomentum: strategyOverridesSchema,
+    })
+    .default({ freshLaunchMomentum: {}, migrationMomentum: {} }),
   // Trading-cost model for paper fills. Defaulted so older configs stay valid;
   // when omitted the bot still applies these realistic defaults rather than
   // frictionless fills.

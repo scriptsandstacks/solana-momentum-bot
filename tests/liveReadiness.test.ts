@@ -50,6 +50,10 @@ const config: BotConfig = {
   scoring: {
     minimumScoreToEnter: 75,
   },
+  strategies: {
+    freshLaunchMomentum: {},
+    migrationMomentum: {},
+  },
   retention: {
     scoredCandidateDays: 30,
   },

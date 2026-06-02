@@ -28,8 +28,7 @@ import { checkJupiterRoute } from '../discovery/jupiter.js';
 import { PaperBroker } from '../paper/paperBroker.js';
 import { scoreTokenCandidate } from '../scoring/scoreToken.js';
 import { SqliteStore } from '../storage/sqliteStore.js';
-import { createFreshLaunchStrategy } from '../strategies/freshLaunchMomentum.js';
-import { createMigrationStrategy } from '../strategies/migrationMomentum.js';
+import { buildStrategies, strategyThresholdMap } from '../strategies/buildStrategies.js';
 import { evaluateLiveReadiness, renderLiveReadinessReport } from '../execution/liveReadiness.js';
 import type { ExitRules } from '../bot/exitPositions.js';
 import type { TradingStrategy } from '../strategies/types.js';
@@ -56,16 +55,6 @@ function assertPaperMode(config: BotConfig): void {
   if (config.mode === 'live') {
     throw new Error('Live trading is not yet implemented. Set mode: paper in config.yaml to run in simulation.');
   }
-}
-
-// Build all active strategies from file config. Each strategy's minScoreToEnter
-// defaults from config.scoring.minimumScoreToEnter; strategies may override
-// downward (e.g. migration uses 70 vs fresh launch's 75).
-function buildStrategies(config: BotConfig): TradingStrategy[] {
-  return [
-    createFreshLaunchStrategy({ minScoreToEnter: config.scoring.minimumScoreToEnter }),
-    createMigrationStrategy(), // uses its own defaults; migration scoring is independent
-  ];
 }
 
 // Build a per-position exit resolver that merges each strategy's exit overrides
@@ -300,13 +289,16 @@ program
     const strategyResults = computeStrategyTuneRecommendations(
       outcomeRows,
       thresholds,
-      Object.fromEntries(strategies.map((strategy) => [strategy.id, strategy.config.minScoreToEnter])),
+      strategyThresholdMap(strategies),
     );
     process.stdout.write(renderStrategyTuneReport(strategyResults, thresholds));
 
     if (!options.apply) return;
 
-    const updates = deriveTuneConfigUpdates(result.recommendations);
+    const updates = deriveTuneConfigUpdates([
+      ...result.recommendations,
+      ...strategyResults.flatMap((strategy) => strategy.result.recommendations),
+    ]);
     process.stdout.write(`\n${renderTuneApplyPreview(updates)}`);
     if (updates.length === 0) return;
 

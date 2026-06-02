@@ -52,6 +52,25 @@ fees:
 scoring:
   minimumScoreToEnter: 75
 
+# Optional per-strategy overrides. Omit any value to use the strategy default.
+# `tune --apply` may write concrete per-strategy recommendations here.
+strategies:
+  freshLaunchMomentum:
+    minScoreToEnter: 75
+    exits:
+      trailingArmPct: 30
+      trailingStopPct: 15
+      maxHoldMinutes: 60
+      takeProfitPct: 300
+  migrationMomentum:
+    minScoreToEnter: 70
+    exits:
+      stopLossPct: 18
+      trailingArmPct: 15
+      trailingStopPct: 12
+      maxHoldMinutes: 25
+      takeProfitPct: 200
+
 # Data retention. `prune` deletes scored candidates older than this that never
 # led to a position (trades are always kept). Also the counterfactual window for
 # the `outcomes` report.
