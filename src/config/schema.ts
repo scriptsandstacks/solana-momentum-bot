@@ -26,8 +26,15 @@ export const botConfigSchema = z.object({
   }),
   exits: z.object({
     stopLossPct: z.number().positive().max(100),
+    // Set high (200-500) for memecoin strategies so the trailing stop — not a
+    // fixed ceiling — is the actual exit. A low value (e.g. 50) cuts winners
+    // short on assets that routinely move 200-1000%.
     takeProfitPct: z.number().positive(),
     trailingStopPct: z.number().positive().max(100),
+    // Minimum unrealized gain (%) before the trailing stop arms.
+    // Below this level only the hard stop-loss applies (phase 1).
+    // At or above, the trailing stop becomes the downside gate (phase 2).
+    trailingArmPct: z.number().nonnegative().max(100).default(0),
     maxHoldMinutes: z.number().int().positive(),
   }),
   // Trading-cost model for paper fills. Defaulted so older configs stay valid;

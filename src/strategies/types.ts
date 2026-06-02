@@ -10,6 +10,7 @@ export interface StrategyConfig {
     stopLossPct?: number;
     takeProfitPct?: number;
     trailingStopPct?: number;
+    trailingArmPct?: number;
     maxHoldMinutes?: number;
   };
 }

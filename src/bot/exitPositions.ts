@@ -7,8 +7,18 @@ import type { PaperPosition, PaperTrade } from '../types/domain.js';
 
 export interface ExitRules {
   stopLossPct: number;
+  // A fixed take-profit ceiling. On fat-tailed assets (memecoins, fresh launches)
+  // this should be set very high (200–500) so the trailing stop — not a fixed
+  // ceiling — is the actual exit. A low takeProfitPct (e.g. 50) systematically
+  // cuts winners short on assets that can move 5-20x.
   takeProfitPct: number;
+  // How far price must pull back from the high-water mark to exit.
   trailingStopPct: number;
+  // Minimum unrealized gain (%) required before the trailing stop arms.
+  // Phase 1 (below this threshold): only the hard stop-loss applies.
+  // Phase 2 (at or above): trailing stop takes over as the downside gate.
+  // Set to 0 to use the old behavior (trailing arms on any gain above entry).
+  trailingArmPct: number;
   maxHoldMinutes: number;
 }
 
@@ -58,9 +68,16 @@ function minutesHeld(openedAt: Date, now: Date): number {
 // Decide whether a position should exit given a fresh price. Pure and exported
 // so the priority order and trailing-stop math are unit-testable in isolation.
 //
-// Priority: take-profit (best outcome) > stop-loss (hard floor) > trailing-stop
-// > max-hold timeout. The trailing stop only arms once price has risen above
-// entry; before that the hard stop-loss is the only downside gate.
+// Two-phase exit model:
+//   Phase 1 — below trailingArmPct gain: only the hard stop-loss applies.
+//             No trailing stop, no take-profit ceiling (unless explicitly set low).
+//             This gives a fresh position room to breathe before locking in gains.
+//   Phase 2 — at or above trailingArmPct gain: trailing stop takes over as the
+//             primary downside gate. The fixed take-profit (if set below 200%) acts
+//             as a safety ceiling but should normally not fire if trailingArmPct
+//             and trailingStopPct are calibrated for the asset's volatility.
+//
+// Priority within each phase: take-profit > stop-loss > trailing-stop > timeout.
 export function decideExit(
   position: Pick<PaperPosition, 'entryPriceUsd' | 'highWaterMarkUsd' | 'openedAt'>,
   priceUsd: number,
@@ -73,7 +90,11 @@ export function decideExit(
   if (pnlPct >= exits.takeProfitPct) return 'take_profit';
   if (pnlPct <= -exits.stopLossPct) return 'stop_loss';
 
-  if (highWaterMarkUsd > position.entryPriceUsd) {
+  // Trailing stop only arms once the position has gained at least trailingArmPct.
+  // The high-water mark must also have reached that level — a brief spike followed
+  // by immediate reversal should not arm the stop against the current price.
+  const trailingArmPrice = position.entryPriceUsd * (1 + exits.trailingArmPct / 100);
+  if (highWaterMarkUsd >= trailingArmPrice) {
     const trailingFloor = highWaterMarkUsd * (1 - exits.trailingStopPct / 100);
     if (priceUsd <= trailingFloor) return 'trailing_stop';
   }

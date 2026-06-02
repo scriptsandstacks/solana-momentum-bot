@@ -61,6 +61,7 @@ function buildExitResolver(strategy: TradingStrategy, globalExits: ExitRules) {
         stopLossPct: strategy.config.exits.stopLossPct ?? globalExits.stopLossPct,
         takeProfitPct: strategy.config.exits.takeProfitPct ?? globalExits.takeProfitPct,
         trailingStopPct: strategy.config.exits.trailingStopPct ?? globalExits.trailingStopPct,
+        trailingArmPct: strategy.config.exits.trailingArmPct ?? globalExits.trailingArmPct,
         maxHoldMinutes: strategy.config.exits.maxHoldMinutes ?? globalExits.maxHoldMinutes,
       };
     }
