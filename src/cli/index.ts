@@ -16,6 +16,7 @@ import { PaperBroker } from '../paper/paperBroker.js';
 import { scoreTokenCandidate } from '../scoring/scoreToken.js';
 import { SqliteStore } from '../storage/sqliteStore.js';
 import { createFreshLaunchStrategy } from '../strategies/freshLaunchMomentum.js';
+import { createMigrationStrategy } from '../strategies/migrationMomentum.js';
 import type { ExitRules } from '../bot/exitPositions.js';
 import type { TradingStrategy } from '../strategies/types.js';
 import type { PaperBrokerOptions } from '../paper/paperBroker.js';
@@ -43,29 +44,31 @@ function assertPaperMode(config: BotConfig): void {
   }
 }
 
-// Build the active strategy from file config so each strategy reads its entry
-// threshold from the config section rather than from hardcoded defaults.
-function buildStrategy(config: BotConfig) {
-  return createFreshLaunchStrategy({
-    minScoreToEnter: config.scoring.minimumScoreToEnter,
-  });
+// Build all active strategies from file config. Each strategy's minScoreToEnter
+// defaults from config.scoring.minimumScoreToEnter; strategies may override
+// downward (e.g. migration uses 70 vs fresh launch's 75).
+function buildStrategies(config: BotConfig): TradingStrategy[] {
+  return [
+    createFreshLaunchStrategy({ minScoreToEnter: config.scoring.minimumScoreToEnter }),
+    createMigrationStrategy(), // uses its own defaults; migration scoring is independent
+  ];
 }
 
 // Build a per-position exit resolver that merges each strategy's exit overrides
-// over the global exits. Unknown strategy IDs fall back to global exits so new
-// strategies are never silently under-configured.
-function buildExitResolver(strategy: TradingStrategy, globalExits: ExitRules) {
+// over the global exits. Keyed by strategyId so any number of strategies can
+// define their own thresholds without touching each other's positions.
+function buildExitResolver(strategies: TradingStrategy[], globalExits: ExitRules) {
+  const byId = new Map(strategies.map((s) => [s.id, s]));
   return (strategyId: string | undefined): ExitRules | undefined => {
-    if (strategyId === strategy.id && strategy.config.exits) {
-      return {
-        stopLossPct: strategy.config.exits.stopLossPct ?? globalExits.stopLossPct,
-        takeProfitPct: strategy.config.exits.takeProfitPct ?? globalExits.takeProfitPct,
-        trailingStopPct: strategy.config.exits.trailingStopPct ?? globalExits.trailingStopPct,
-        trailingArmPct: strategy.config.exits.trailingArmPct ?? globalExits.trailingArmPct,
-        maxHoldMinutes: strategy.config.exits.maxHoldMinutes ?? globalExits.maxHoldMinutes,
-      };
-    }
-    return undefined; // fall back to global exits in exitPositions
+    const strategy = strategyId ? byId.get(strategyId) : undefined;
+    if (!strategy?.config.exits) return undefined; // fall back to global exits
+    return {
+      stopLossPct: strategy.config.exits.stopLossPct ?? globalExits.stopLossPct,
+      takeProfitPct: strategy.config.exits.takeProfitPct ?? globalExits.takeProfitPct,
+      trailingStopPct: strategy.config.exits.trailingStopPct ?? globalExits.trailingStopPct,
+      trailingArmPct: strategy.config.exits.trailingArmPct ?? globalExits.trailingArmPct,
+      maxHoldMinutes: strategy.config.exits.maxHoldMinutes ?? globalExits.maxHoldMinutes,
+    };
   };
 }
 
@@ -356,7 +359,7 @@ program
       throw new Error('Solana must be enabled to run the bot.');
     }
 
-    const strategy = buildStrategy(config);
+    const strategies = buildStrategies(config);
     const log = (message: string) => process.stdout.write(`${message}\n`);
     const reporter = config.notifications.console ? consoleReporter(log) : undefined;
 
@@ -375,9 +378,13 @@ program
         store,
         solanaConfig: config.chains.solana,
         paper: paperBrokerOptions(config),
-        minimumScoreToEnter: strategy.config.minScoreToEnter,
+        // Use the minimum threshold across all strategies so the run loop's
+        // retry pass doesn't filter out candidates that belong to a lower-threshold
+        // strategy (e.g. migration at 70 vs fresh launch at 75).
+        minimumScoreToEnter: Math.min(...strategies.map((s) => s.config.minScoreToEnter)),
+        strategies,
         exits: config.exits,
-        resolveExits: buildExitResolver(strategy, config.exits),
+        resolveExits: buildExitResolver(strategies, config.exits),
         analyticsIntervalPasses,
         stopSignal: stopController.signal,
         onLog: log,

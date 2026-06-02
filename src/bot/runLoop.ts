@@ -6,6 +6,7 @@ import { retryBlockedOpens as retryBlockedOpensImpl, canRetryBlockedOpens, type 
 import { computeTradeAnalytics, renderAnalyticsReport } from './analytics.js';
 import { isBrokerStateStore, restoreBrokerFromStore } from '../paper/restoreBroker.js';
 import type { Reporter } from './reporter.js';
+import type { TradingStrategy } from '../strategies/types.js';
 import type { ChainConfig } from '../config/schema.js';
 import type { PaperBrokerOptions } from '../paper/paperBroker.js';
 import type { OpportunityScore, PaperPosition, PaperTrade, TokenCandidate } from '../types/domain.js';
@@ -94,6 +95,7 @@ type ProcessPumpEvents = (options: {
   solanaConfig: ChainConfig;
   paper: PaperBrokerOptions;
   minimumScoreToEnter: number;
+  strategies?: TradingStrategy[];
   limit?: number;
   reporter?: Reporter;
 }) => Promise<PumpProcessResult>;
@@ -108,6 +110,9 @@ interface RunBotLoopOptions {
   solanaConfig: ChainConfig;
   paper: PaperBrokerOptions;
   minimumScoreToEnter: number;
+  // Active strategies for event routing. When provided, each event is routed to
+  // the first strategy that accepts its event type.
+  strategies?: TradingStrategy[];
   // When provided, each processing pass also re-prices open positions and
   // applies these exit rules. Omitted in tests that only exercise discovery.
   exits?: ExitRules;
@@ -208,6 +213,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
         solanaConfig: options.solanaConfig,
         paper: options.paper,
         minimumScoreToEnter: options.minimumScoreToEnter,
+        strategies: options.strategies,
         limit: options.processLimit,
         reporter: options.reporter,
       });

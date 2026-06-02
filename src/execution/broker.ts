@@ -6,8 +6,10 @@ import type { PaperPosition, PaperTrade, TokenCandidate } from '../types/domain.
 // identical in both modes — only the broker swaps out.
 export interface ExecutionBroker {
   readonly mode: 'paper' | 'live';
-  canOpenPosition(now?: Date): { ok: boolean; reason?: string };
-  openPosition(candidate: TokenCandidate, score: number, openedAt?: Date): PaperPosition;
+  canOpenPosition(now?: Date, requiredSizeUsd?: number): { ok: boolean; reason?: string };
+  // positionSizeUsd overrides the broker's configured base size for this trade,
+  // allowing strategies to size up high-conviction trades and size down borderline ones.
+  openPosition(candidate: TokenCandidate, score: number, openedAt?: Date, positionSizeUsd?: number): PaperPosition;
   recordMark(positionId: string, priceUsd: number): PaperPosition;
   closePosition(
     positionId: string,
