@@ -29,6 +29,9 @@ export interface TokenCandidate {
   // true  = authority revoked (safe); false = authority still held (rug risk); undefined = not checked.
   mintAuthorityRevoked?: boolean;
   freezeAuthorityRevoked?: boolean;
+  // Percentage of token supply held by the largest five token accounts.
+  // undefined = not checked or RPC failure.
+  top5HolderPct?: number;
 }
 
 export interface OpportunityScore {

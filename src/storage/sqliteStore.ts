@@ -20,6 +20,7 @@ interface RecentScoreRow {
   sellRouteAvailable: number | null;
   mintAuthorityRevoked: number | null;
   freezeAuthorityRevoked: number | null;
+  top5HolderPct: number | null;
   score: number;
   recommendation: string;
   createdAt: string;
@@ -139,6 +140,7 @@ export interface RetriableScoredCandidateRow {
   sellRouteAvailable: number | null;
   mintAuthorityRevoked: number | null;
   freezeAuthorityRevoked: number | null;
+  top5HolderPct: number | null;
   score: number;
 }
 
@@ -171,14 +173,14 @@ export class SqliteStore {
         volume_1h_usd, price_change_5m_pct, buys_5m, sells_5m, age_minutes, source,
         route_available, estimated_slippage_bps, route_input_mint, route_input_symbol,
         strategy_id, sell_route_available,
-        mint_authority_revoked, freeze_authority_revoked,
+        mint_authority_revoked, freeze_authority_revoked, top5_holder_pct,
         score, recommendation, reasons_json, risks_json, created_at
       ) VALUES (
         @chain, @address, @symbol, @name, @pairAddress, @priceUsd, @liquidityUsd, @volume5mUsd,
         @volume1hUsd, @priceChange5mPct, @buys5m, @sells5m, @ageMinutes, @source,
         @routeAvailable, @estimatedSlippageBps, @routeInputMint, @routeInputSymbol,
         @strategyId, @sellRouteAvailable,
-        @mintAuthorityRevoked, @freezeAuthorityRevoked,
+        @mintAuthorityRevoked, @freezeAuthorityRevoked, @top5HolderPct,
         @score, @recommendation, @reasonsJson, @risksJson, @createdAt
       )`,
     );
@@ -199,6 +201,7 @@ export class SqliteStore {
       sellRouteAvailable: candidate.sellRouteAvailable === undefined ? null : candidate.sellRouteAvailable ? 1 : 0,
       mintAuthorityRevoked: candidate.mintAuthorityRevoked === undefined ? null : candidate.mintAuthorityRevoked ? 1 : 0,
       freezeAuthorityRevoked: candidate.freezeAuthorityRevoked === undefined ? null : candidate.freezeAuthorityRevoked ? 1 : 0,
+      top5HolderPct: candidate.top5HolderPct ?? null,
       score: score.total,
       recommendation: score.recommendation,
       reasonsJson: JSON.stringify(score.reasons),
@@ -222,6 +225,7 @@ export class SqliteStore {
                 route_input_mint as routeInputMint, route_input_symbol as routeInputSymbol,
                 strategy_id as strategyId, sell_route_available as sellRouteAvailable,
                 mint_authority_revoked as mintAuthorityRevoked, freeze_authority_revoked as freezeAuthorityRevoked,
+                top5_holder_pct as top5HolderPct,
                 score, recommendation, created_at as createdAt
          FROM scored_candidates
          ORDER BY id DESC
@@ -268,6 +272,7 @@ export class SqliteStore {
                   route_input_mint as routeInputMint, route_input_symbol as routeInputSymbol,
                   strategy_id as strategyId, sell_route_available as sellRouteAvailable,
                   mint_authority_revoked as mintAuthorityRevoked, freeze_authority_revoked as freezeAuthorityRevoked,
+                  top5_holder_pct as top5HolderPct,
                   score,
                   ROW_NUMBER() OVER (PARTITION BY address ORDER BY score DESC, id DESC) as rn
            FROM scored_candidates
@@ -283,7 +288,7 @@ export class SqliteStore {
                 priceUsd, liquidityUsd, volume5mUsd, volume1hUsd,
                 priceChange5mPct, buys5m, sells5m, ageMinutes, source,
                 routeAvailable, estimatedSlippageBps, routeInputMint, routeInputSymbol,
-                strategyId, sellRouteAvailable, mintAuthorityRevoked, freezeAuthorityRevoked, score
+                strategyId, sellRouteAvailable, mintAuthorityRevoked, freezeAuthorityRevoked, top5HolderPct, score
          FROM ranked WHERE rn = 1
          ORDER BY score DESC
          LIMIT @limit`,
@@ -675,6 +680,7 @@ export class SqliteStore {
         sell_route_available INTEGER,
         mint_authority_revoked INTEGER,
         freeze_authority_revoked INTEGER,
+        top5_holder_pct REAL,
         score INTEGER NOT NULL,
         recommendation TEXT NOT NULL,
         reasons_json TEXT NOT NULL,
@@ -782,6 +788,7 @@ export class SqliteStore {
     this.addColumnIfMissing('scored_candidates', 'sell_route_available', 'INTEGER');
     this.addColumnIfMissing('scored_candidates', 'mint_authority_revoked', 'INTEGER');
     this.addColumnIfMissing('scored_candidates', 'freeze_authority_revoked', 'INTEGER');
+    this.addColumnIfMissing('scored_candidates', 'top5_holder_pct', 'REAL');
     this.addColumnIfMissing('scored_candidates', 'outcome_high_usd', 'REAL');
     this.addColumnIfMissing('scored_candidates', 'outcome_low_usd', 'REAL');
     this.addColumnIfMissing('scored_candidates', 'outcome_last_usd', 'REAL');

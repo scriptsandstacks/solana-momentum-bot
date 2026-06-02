@@ -96,5 +96,6 @@ function rowToCandidate(row: RetriableScoredCandidateRow): TokenCandidate {
     sellRouteAvailable: row.sellRouteAvailable === null ? undefined : row.sellRouteAvailable === 1,
     mintAuthorityRevoked: row.mintAuthorityRevoked === null ? undefined : row.mintAuthorityRevoked === 1,
     freezeAuthorityRevoked: row.freezeAuthorityRevoked === null ? undefined : row.freezeAuthorityRevoked === 1,
+    top5HolderPct: row.top5HolderPct ?? undefined,
   };
 }

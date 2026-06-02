@@ -80,7 +80,7 @@ describe('SqliteStore', () => {
     const store = createStore();
 
     store.saveScoredCandidate(
-      { ...candidate, address: 'mint-authority-held', mintAuthorityRevoked: false, freezeAuthorityRevoked: true },
+      { ...candidate, address: 'mint-authority-held', mintAuthorityRevoked: false, freezeAuthorityRevoked: true, top5HolderPct: 85 },
       score,
     );
     store.saveScoredCandidate({ ...candidate, address: 'mint-authority-unknown' }, score);
@@ -91,10 +91,12 @@ describe('SqliteStore', () => {
     expect(byMint['mint-authority-held']).toMatchObject({
       mintAuthorityRevoked: 0,
       freezeAuthorityRevoked: 1,
+      top5HolderPct: 85,
     });
     expect(byMint['mint-authority-unknown']).toMatchObject({
       mintAuthorityRevoked: null,
       freezeAuthorityRevoked: null,
+      top5HolderPct: null,
     });
     store.close();
   });
@@ -377,6 +379,7 @@ describe('SqliteStore', () => {
       strategyId: 'freshLaunchMomentum',
       mintAuthorityRevoked: null,
       freezeAuthorityRevoked: null,
+      top5HolderPct: null,
     });
     expect(store.listTokenVolumeSnapshots(candidate.address, 5)).toHaveLength(1);
 
@@ -498,6 +501,7 @@ describe('SqliteStore', () => {
       strategyId: 'freshLaunchMomentum',
       mintAuthorityRevoked: null,
       freezeAuthorityRevoked: null,
+      top5HolderPct: null,
     });
     store.close();
   });

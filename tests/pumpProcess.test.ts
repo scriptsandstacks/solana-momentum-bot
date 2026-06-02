@@ -213,6 +213,31 @@ describe('processPumpPortalEvents', () => {
     expect(scored[0].score.risks).toContain('freeze_authority_held');
   });
 
+  it('attaches and scores holder concentration when checkHolderConcentration is provided', async () => {
+    const scored: Array<{ candidate: TokenCandidate; score: OpportunityScore }> = [];
+
+    await processPumpPortalEvents({
+      store: {
+        listPendingPumpPortalEvents: () => [
+          { id: 22, eventType: 'new_token', tokenMint: 'mint-concentrated', rawJson: '{}', receivedAt: '2026-01-01T00:00:00Z' },
+        ],
+        markPumpPortalEventProcessed: () => undefined,
+        saveScoredCandidate: (c, s) => scored.push({ candidate: c, score: s }),
+        saveOpenPosition: () => undefined,
+      },
+      solanaConfig: { enabled: true, minLiquidityUsd: 10_000, minVolume5mUsd: 5_000, maxSlippageBps: 500 },
+      paper: { startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 3 },
+      minimumScoreToEnter: 75,
+      fetchCandidates: async () => [strongCandidate('mint-concentrated')],
+      checkRoute: async () => ({ routeAvailable: true, estimatedSlippageBps: 100, routeInputMint: 'u', routeInputSymbol: 'USDC', sellRouteAvailable: true }),
+      checkAuthority: null,
+      checkHolderConcentration: async () => ({ top5HolderPct: 85 }),
+    });
+
+    expect(scored[0].candidate.top5HolderPct).toBe(85);
+    expect(scored[0].score.risks).toContain('holder_concentration_high');
+  });
+
   it('marks events failed when the Jupiter route check throws', async () => {
     const statuses: Array<{ id: number; status: string; note?: string }> = [];
 
