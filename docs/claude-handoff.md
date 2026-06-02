@@ -10,7 +10,7 @@ Paper-only. Do not introduce live wallet/private-key use.
 ## Current health
 
 ```
-npm test          → 26 files, 160 tests passing
+npm test          → 26 files, 163 tests passing
 npm run typecheck → clean
 git diff --check  → clean
 ```
@@ -68,6 +68,8 @@ Built on updated `development` after the prior Codex branch was merged/pulled, o
 | `2577d69` Add signal buckets to outcome analytics | `outcomes` now groups MFE/MAE by authority status, holder concentration, and volume acceleration buckets. `loadScoredOutcomeStats()` projects the persisted signal columns so the report can validate whether held authorities, high top-five concentration, or acceleration/deceleration correlate with paper outcomes. |
 | `37d3e60` Add strategy-specific tune reporting | `tune` still prints the global calibration view, then adds per-strategy sections using each active strategy's own entry threshold. Outcome rows now carry `strategyId`, and score buckets were split into `<70`, `70-74`, `75-79`, `80-89`, `90-100` so migration's 70 threshold is tunable. `--apply` remains conservative and only writes concrete global config updates. |
 | `4f4ebb6` Add live readiness audit | Added `live-readiness` CLI command and pure `evaluateLiveReadiness()` audit. It checks live blockers/prereqs without reading wallet contents or placing trades: missing LiveBroker, mode gate, Solana enabled, RPC env, wallet-file presence, sizing/loss-limit sanity, paper cost model, closed trade sample, and tracked outcome sample. Paper sample counts are advisory calibration warnings, not owner-permission gates. |
+| `23cf9ea` Make paper validation advisory for live readiness | Changed `live-readiness` so low paper-trade sample counts warn but do not block readiness. The owner should be able to switch between paper and live; paper results inform calibration rather than acting as training-wheel enforcement. |
+| `ebc0c59` Refresh retry candidates before opening | Retry opens now optionally refresh market data before opening. The run loop re-fetches the candidate and Jupiter route/sellability; if no current market data is found, it skips the retry instead of opening from stale scored price. |
 
 ---
 
@@ -144,11 +146,9 @@ Holder concentration ≥80%, authority penalties, and volume acceleration weight
 1. `LiveBroker implements ExecutionBroker` — Jupiter swap submission + keypair signing
 2. Real-time exit triggers — WebSocket price feeds rather than interval polling
 3. Base paper support once Solana live/paper switching is clean
-4. Re-quote/re-price retry opens before live trading; current retry still uses scored price.
 
 ### Minor
 
-- Retry uses scored price, not re-fetched price (acceptable for paper)
 - `docs/codex-handoff.md` was lightly cleaned for completed package-name work, but it has not been fully refreshed with the latest Codex commits.
 
 ---
@@ -157,16 +157,16 @@ Holder concentration ≥80%, authority penalties, and volume acceleration weight
 
 State at laptop-close handoff:
 - Current branch: `codex/volume-acceleration-signal`
-- Latest code commit before this handoff edit: `4f4ebb6 Add live readiness audit`
+- Latest code commit before this handoff edit: `ebc0c59 Refresh retry candidates before opening`
 - All verification passed after latest code commit:
   - `npm run typecheck`
-  - `npm test` → 26 files, 160 tests passing
+  - `npm test` → 26 files, 163 tests passing
   - `git diff --check`
 - Paper-only invariant is still intact. No wallet/private-key/live trading code was added.
 
 Suggested next move:
 1. Commit this handoff update after reviewing it.
-2. Next practical work is schema/config support for strategy-specific tunables, re-quote-on-retry for live safety, or a LiveBroker scaffold that preserves the owner-controlled paper/live switch.
+2. Next practical work is schema/config support for strategy-specific tunables, or a LiveBroker scaffold that preserves the owner-controlled paper/live switch.
 3. Paper results should inform calibration, not act as training-wheel enforcement.
 
 ---
