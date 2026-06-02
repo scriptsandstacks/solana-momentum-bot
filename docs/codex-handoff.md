@@ -1,96 +1,161 @@
-# Codex Handoff: Path-Dependent Outcome Thresholds
+# Codex Handoff — Review of Claude Session 4
 
-## Branch and PR Target
+**Last updated:** 2026-06-01 · **Branch:** `development`
+**Counterpart:** `docs/claude-handoff.md`
 
-- Working branch: `feature/outcome-path-order`
-- Target branch: `development`
-- Merged: PR #7
-- Context reviewed: `docs/claude-handoff.md`
+This is the current Codex-side handoff for reviewing the latest Claude follow-up work on the
+Solana-first paper trading bot. The older PR #7 path-order notes have been superseded by Claude
+Session 4 and are summarized here only where still relevant.
 
-## Context
+---
 
-Claude's outcome analytics (PR #6) captured only MFE/MAE/final over the trade horizon — sufficient to know *whether* TP and SL were each hit, but not *which crossed first*. Claude flagged this in the review focus: both flags can be true for a single candidate, which makes the `reachedTpRatePct`/`hitSlRatePct` numbers misleading for win/loss labeling and threshold tuning.
+## Current branch state
 
-## Decision
+Recent work on `development`:
 
-Record the first crossing timestamp for each threshold, then use timestamp ordering to classify outcomes as `tp` (TP crossed before SL), `sl` (SL crossed before TP), or `ambiguous` (both timestamps identical or both absent but both flags set). Rows with no timestamps fall back gracefully: if only TP crossed, classify `tp`; if only SL, classify `sl`; if neither, classify `none`; if both but no timestamps, classify `ambiguous`.
+1. **PR #7 — path-dependent outcome thresholds**
+   - Added first TP/SL crossing timestamps.
+   - Added path-aware outcome reporting.
+2. **Claude Session 4 / PR #8 — rug screening + capacity retry**
+   - Split legacy timestamp-less both-hit rows into `unknown` instead of `ambiguous`.
+   - Added Jupiter sell-route probing to catch likely honeypot/no-sell candidates.
+   - Persisted and reported `sell_route_available` on scored candidates.
+   - Added retry of capacity-blocked candidates after exit passes.
 
-This keeps the existing MFE/MAE columns intact (no regression) and adds the path-order dimension as new columns and new bucket fields.
-
-## Files Changed
-
-### `src/storage/sqliteStore.ts`
-
-- New columns `outcome_first_tp_at TEXT` and `outcome_first_sl_at TEXT` on `scored_candidates`.
-- Migration adds both columns to existing databases (`addColumnIfMissing`).
-- `TrackableScoredCandidateRow`, `ScoredOutcomeUpdate`, and `ScoredOutcomeStatRow` interfaces extended.
-- `getTrackableScoredCandidates()` and `getScoredOutcomeStats()` SELECTs include the new columns.
-- `recordScoredOutcome()` UPDATE persists both new fields.
-
-### `src/bot/trackOutcomes.ts`
-
-- `TrackOutcomesOptions` now accepts optional `thresholds: { takeProfitPct, stopLossPct }`.
-- `crossesTakeProfit()` / `crossesStopLoss()` helpers compute threshold crossings cleanly.
-- First-crossing timestamps are stamped on the current pass only if not already set — once written, they are never overwritten.
-- `outcomeFirstTakeProfitAt` and `outcomeFirstStopLossAt` are included in every `recordScoredOutcome` call.
-
-### `src/bot/runLoop.ts`
-
-- `TrackOutcomes` type updated to include optional `thresholds`.
-- `runBotLoop` passes `takeProfitPct`/`stopLossPct` from the exits config to `trackOutcomes`.
-
-### `src/cli/index.ts`
-
-- `track-outcomes` command passes `thresholds` from config so one-off CLI passes also stamp crossing times.
-
-### `src/bot/analytics.ts`
-
-- `OutcomeRow` extended with `outcomeFirstTakeProfitAt` and `outcomeFirstStopLossAt`.
-- `OutcomeBucket` extended with `tpFirstRatePct`, `slFirstRatePct`, `ambiguousRatePct`.
-- New `firstCrossing()` pure function implements the timestamp-ordering logic.
-- `summarizeOutcomes()` computes crossing classification per row and aggregates the three new rates.
-- `outcomeBucketLine()` output extended to show `tpFirst=`, `slFirst=`, `ambiguous=` columns.
-
-## Tests Added/Updated
-
-### `tests/trackOutcomes.test.ts`
-
-- Verifies that `outcomeFirstTakeProfitAt` is preserved from an earlier pass when a new SL crossing is stamped on a later pass (no overwrite).
-
-### `tests/analytics.test.ts`
-
-- Uses three rows (tp-first, sl-first, both-ambiguous) to verify each rate comes out at ~33.3%.
-- Verifies rendered output contains `tpFirst=` / `slFirst=` / `ambiguous=` columns.
-
-## Verification Performed
-
-```bash
-npm test && npm run typecheck
-```
-
-Result:
+Health reported and re-verified on this branch:
 
 ```text
-19 test files passed
-93 tests passed
-npm run typecheck passed
+npm test          -> 20 files, 104 tests passing
+npm run typecheck -> clean
 ```
 
-## Suggested Claude Review Focus
+---
 
-- **`ambiguous` bucket semantics**: legacy rows without timestamps but with both TP and SL flags set are classified `ambiguous`. Is that the right label, or should they be a separate `unknown` bucket so truly ambiguous (same-millisecond crossing) is distinguishable from "we didn't have timestamp data"?
-- **`thresholds` not required**: if neither `run` nor `track-outcomes` pass thresholds, crossing times are never stamped (the null guard in `trackOutcomes.ts` silently skips them). Confirm this silent fallback is acceptable vs. requiring thresholds or warning when they are absent.
-- **`outcomes` display**: the three new columns make each bucket line noticeably wider. Consider whether a two-line layout or a compact flag column is better for terminal readability.
-- **Aggregate by path order**: the per-bucket rates now exist; consider adding a threshold-sensitivity sweep (vary TP/SL, plot how `tpFirstRatePct` changes) as the next analytics step.
+## What changed since the previous Codex handoff
 
-## Known Remaining Items
+### Outcome analytics semantics were refined
 
-Unchanged from Claude's handoff (PR #6):
+The old Codex concern was that legacy rows with both TP and SL reached but no crossing timestamps
+were labeled `ambiguous`. Claude Session 4 changed this:
 
-1. Capacity-blocked candidates are marked `processed`, not retried when capacity later frees.
-2. Migrate-time closed-trade dedup runs on every startup.
-3. `package.json` still uses `hermes-agent` name (cosmetic).
-4. No live trading — paper-only by design.
-5. Exit re-pricing fires only on the process interval; positions can move past stop/target between passes.
-6. Outcome-tracking selection bias: unpriceable candidates are never sampled, so `outcomes` MFE/MAE skews toward names that stayed liquid.
-7. No sellability / rug screening — biggest paper-vs-live realism gap for pump.fun.
+- same-timestamp TP/SL crossings remain `ambiguous`
+- timestamp-less legacy both-hit rows are now `unknown`
+- report lines now separate `ambig=` from `unkn=`
+
+This resolves the prior `ambiguous` semantics concern.
+
+### Sell-route / honeypot screening was added
+
+Candidate routing now checks sellability in addition to buy route availability:
+
+- Jupiter buy route still gates executable entry.
+- Jupiter sell route probes token -> USDC with `ExactOut` for a small notional.
+- `sellRouteAvailable` is carried on route/candidate/scored-candidate data.
+- Scoring applies a heavy penalty and `no_sell_route` risk tag when sell route is explicitly false.
+- SQLite stores `scored_candidates.sell_route_available` as nullable integer:
+  - `NULL` = not checked / historical row
+  - `0` = sell route unavailable
+  - `1` = sell route available
+- Reports annotate scored candidates with `sell=ok` / `sell=NO` when known.
+
+This partially resolves the prior sellability/rug-screening gap. It does **not** replace on-chain
+mint/freeze authority checks.
+
+### Capacity-blocked candidate retry was added
+
+The bot can now retry high-scoring candidates that were previously skipped only because max open
+paper position capacity was full:
+
+- `SqliteStore.listRetriableScoredCandidates()` selects the best recent scored row per mint.
+- The query excludes candidates with an open position or a recent closed trade.
+- `retryBlockedOpens()` opens eligible candidates using the stored scored price.
+- `runBotLoop()` invokes retry after each exit pass and reports `retriedPositions`.
+
+This resolves the prior known issue that capacity-blocked candidates were permanently lost.
+
+---
+
+## Current known remaining items
+
+1. **On-chain Solana mint/freeze authority checks**
+   - Sell-route screening catches many no-sell/honeypot cases.
+   - Mint authority can still dilute holders.
+   - Freeze authority can still lock accounts.
+   - Add Solana RPC account checks and persist/report risk flags.
+
+2. **Retry entry uses scored price, not a re-fetched price**
+   - Acceptable for paper while inside `maxHoldMinutes`.
+   - Before live trading, retry should re-quote/re-price and re-check sellability.
+
+3. **Retry cooldown semantics need product review**
+   - Current recent-closed guard uses the trade horizon (`maxHoldMinutes`).
+   - Confirm whether that is the right cooldown or whether a shorter/larger dedicated retry cooldown
+     should exist.
+
+4. **Retry query runs every loop pass after exits**
+   - Broker capacity checks make this a no-op when full.
+   - SQLite overhead appears small, but watch during long runs.
+
+5. **Migrate-time `closed_trades` dedup runs on every startup**
+   - Currently negligible for paper trading.
+
+6. **Package name remains `hermes-agent`**
+   - Cosmetic cleanup.
+
+7. **Paper-only / no live trading**
+   - This remains intentional.
+   - Do not introduce wallet/private-key use into paper commands.
+
+8. **Exit timing is interval-based**
+   - Positions can cross stops/targets between loop passes.
+   - Accepted for paper; live trading needs real-time or much tighter monitoring.
+
+9. **Outcome-tracking selection bias**
+   - Unpriceable candidates are not sampled, so outcome analytics skew toward names that stayed
+     liquid enough to price.
+
+---
+
+## Suggested Codex review focus
+
+Review the Claude Session 4 implementation around these questions:
+
+1. **Retriable candidate query correctness**
+   - Does `ROW_NUMBER() OVER (PARTITION BY address ORDER BY score DESC, id DESC)` pick the right row?
+   - Should recency outrank score, or is best-score-with-id-tiebreaker correct?
+   - Are open-position and recent-closed exclusions robust?
+
+2. **Retry cooldown policy**
+   - Current cutoff tracks the trade horizon.
+   - Decide whether retry suppression should be its own config field.
+
+3. **Retry price realism**
+   - Retried opens use the scored candidate price instead of re-fetching.
+   - OK for paper? Should reports mark retried entries as `scored_price` sourced?
+
+4. **Sell-route check behavior**
+   - Confirm the $5 USDC `ExactOut` probe is the right notional and direction.
+   - Confirm no-sell route should be a heavy penalty instead of a hard rejection.
+   - Confirm undefined/historical sell-route status should remain neutral.
+
+5. **Exit slippage fallback**
+   - When no fresh sell quote exists during exit, the code may degrade to the entry route estimate.
+   - Confirm this is better than refusing to apply slippage or closing with stale assumptions.
+
+6. **Cost model accounting**
+   - Entry costs are folded into effective entry fill price/quantity.
+   - Confirm whether this is sufficient for paper analytics or whether a separate fee ledger is needed.
+
+7. **Retention/prune preservation rule**
+   - Rows for ever-traded mints may be over-preserved.
+   - Confirm this is acceptable versus correlating scored rows to specific positions.
+
+---
+
+## Recommended immediate implementation order
+
+1. Complete this Codex review pass and fix any blocking findings.
+2. Add on-chain Solana mint/freeze authority checks with tests.
+3. Run a longer paper session and inspect real `report`/outcome data.
+4. Tune scoring/exits from paper outcomes.
+5. Only then start disabled-by-default Base paper support.
