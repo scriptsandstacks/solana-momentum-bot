@@ -10,7 +10,7 @@ Paper-only. Do not introduce live wallet/private-key use.
 ## Current health
 
 ```
-npm test          → 26 files, 163 tests passing
+npm test          → 27 files, 167 tests passing
 npm run typecheck → clean
 git diff --check  → clean
 ```
@@ -70,6 +70,7 @@ Built on updated `development` after the prior Codex branch was merged/pulled, o
 | `4f4ebb6` Add live readiness audit | Added `live-readiness` CLI command and pure `evaluateLiveReadiness()` audit. It checks live blockers/prereqs without reading wallet contents or placing trades: missing LiveBroker, mode gate, Solana enabled, RPC env, wallet-file presence, sizing/loss-limit sanity, paper cost model, closed trade sample, and tracked outcome sample. Paper sample counts are advisory calibration warnings, not owner-permission gates. |
 | `23cf9ea` Make paper validation advisory for live readiness | Changed `live-readiness` so low paper-trade sample counts warn but do not block readiness. The owner should be able to switch between paper and live; paper results inform calibration rather than acting as training-wheel enforcement. |
 | `ebc0c59` Refresh retry candidates before opening | Retry opens now optionally refresh market data before opening. The run loop re-fetches the candidate and Jupiter route/sellability; if no current market data is found, it skips the retry instead of opening from stale scored price. |
+| `a66948d` Add strategy-specific config overrides | Added `strategies.freshLaunchMomentum` and `strategies.migrationMomentum` config sections for per-strategy `minScoreToEnter` and exit overrides. CLI strategy construction now uses shared `buildStrategies()`, and concrete per-strategy `tune --apply` suggestions can write to `strategies.<id>...` paths. |
 
 ---
 
@@ -135,9 +136,6 @@ Keep the paper/live mode switch seamless for the owner. `live-readiness` should 
 **Volume acceleration analytics/tuning**
 The signal is implemented, persisted, and reported by outcome bucket. Next useful step is to collect enough paper data, then tune the current z-score thresholds/weights from observed MFE/MAE.
 
-**Tune apply UX**
-`tune` is strategy-aware for reporting. `tune --apply` still applies concrete global config recommendations only. Future work: add schema/config support for strategy-specific tunables before allowing per-strategy auto-apply.
-
 **Risk-signal thresholds**
 Holder concentration ≥80%, authority penalties, and volume acceleration weights are deliberately conservative defaults. Use the expanded `outcomes` report to validate and adjust them after enough tracked candidates accumulate.
 
@@ -157,16 +155,16 @@ Holder concentration ≥80%, authority penalties, and volume acceleration weight
 
 State at laptop-close handoff:
 - Current branch: `codex/volume-acceleration-signal`
-- Latest code commit before this handoff edit: `ebc0c59 Refresh retry candidates before opening`
+- Latest code commit before this handoff edit: `a66948d Add strategy-specific config overrides`
 - All verification passed after latest code commit:
   - `npm run typecheck`
-  - `npm test` → 26 files, 163 tests passing
+  - `npm test` → 27 files, 167 tests passing
   - `git diff --check`
 - Paper-only invariant is still intact. No wallet/private-key/live trading code was added.
 
 Suggested next move:
 1. Commit this handoff update after reviewing it.
-2. Next practical work is schema/config support for strategy-specific tunables, or a LiveBroker scaffold that preserves the owner-controlled paper/live switch.
+2. Next practical work is a LiveBroker scaffold/factory that preserves the owner-controlled paper/live switch, without enabling real trading until transaction submission/signing is implemented deliberately.
 3. Paper results should inform calibration, not act as training-wheel enforcement.
 
 ---
