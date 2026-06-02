@@ -1,6 +1,6 @@
 # Claude Handoff — Strategy, Execution & Reporting Architecture
 
-**Last updated:** 2026-06-02 · **Branch:** `codex/claude-handoff-next-steps`
+**Last updated:** 2026-06-02 · **Branch:** `codex/volume-acceleration-signal`
 **Reviewer:** Codex. Counterpart: `docs/codex-handoff.md`.
 
 Paper-only. Do not introduce live wallet/private-key use.
@@ -10,7 +10,7 @@ Paper-only. Do not introduce live wallet/private-key use.
 ## Current health
 
 ```
-npm test          → 24 files, 148 tests passing
+npm test          → 25 files, 155 tests passing
 npm run typecheck → clean
 git diff --check  → clean
 ```
@@ -57,6 +57,14 @@ Built on `development` after PR #10 merge, on branch `codex/claude-handoff-next-
 | `3e99a44` Add tune apply support | Added `tune --apply` with confirmation prompt and `--yes` for non-interactive use. Applies only concrete numeric recommendations to YAML config; skips ambiguous suggestions such as `Raise to 200-300`. |
 | `6ca2c20` Add Solana holder concentration risk check | Added read-only `getTokenLargestAccounts` + `getTokenSupply` RPC check in `src/chains/solana/holderConcentration.ts`; enriches PumpPortal candidates with `top5HolderPct`; persists `top5_holder_pct`; penalizes both strategies when top five holders own ≥80% of supply. Best-effort: RPC failure leaves the signal unknown and does not block processing. |
 | `3dac574` Rename package to crypto-bot | Renamed package metadata from `hermes-agent` to `crypto-bot`; left CLI binary as `hermes-paper-bot`; cleaned stale handoff notes. |
+
+### Codex continuation — volume acceleration
+
+Built on updated `development` after the prior Codex branch was merged/pulled, on branch `codex/volume-acceleration-signal`.
+
+| Commit | What |
+|---|---|
+| `585e986` Add volume acceleration scoring signal | Added `src/bot/volumeAcceleration.ts` to compute current 5m volume against recent per-token baseline snapshots. `pumpProcess` reads the last 30 minutes from `token_volume_snapshots` before saving the current score, attaches `volumeAcceleration5mZ` and `volumeAccelerationSamples`, and both active strategies add modest bonuses for z≥1/z≥2 or a risk for sharp deceleration. `scored_candidates` now persists `volume_acceleration_5m_z` and `volume_acceleration_samples`; retry preserves the fields. No-history behavior is unchanged. |
 
 ---
 
@@ -114,12 +122,7 @@ To add live trading:
 
 ### Highest priority
 
-**Volume acceleration signal**
-The data model now exists: `token_volume_snapshots` stores one row per scored candidate with chain/address/symbol/strategy, `volume_5m_usd`, `volume_1h_usd`, price, and timestamp. Next step is implementing the actual acceleration feature:
-- Add a store query for recent snapshots over a rolling window, likely by address and lookback minutes.
-- Compute a per-token acceleration signal, e.g. current `volume5mUsd` vs rolling 30-minute baseline / standard deviation.
-- Thread that signal into `TokenCandidate` or strategy-local scoring context.
-- Update `freshLaunchMomentum` and `migrationMomentum` scoring carefully; add tests proving old behavior when history is missing.
+No paper-trading architecture blockers currently called out. Keep paper-only validation running before live-trading work.
 
 ### Medium priority
 
@@ -128,6 +131,9 @@ The check is implemented and persisted. Next useful step is analytics/reporting:
 
 **Authority flag analytics**
 `mint_authority_revoked` and `freeze_authority_revoked` are queryable now. Add stats/outcome groupings so we can answer, "did held authorities underperform?" without ad hoc SQL.
+
+**Volume acceleration analytics/tuning**
+The signal is implemented and persisted. Next useful step is analytics: bucket outcomes by `volume_acceleration_5m_z` and use paper results to tune the current z-score thresholds/weights.
 
 **Tune apply UX**
 `tune --apply` currently applies concrete global config recommendations only. It intentionally skips ambiguous ranges and does not write strategy-specific overrides. Future work: support strategy-specific suggestions once `tune` is strategy-aware.
@@ -148,19 +154,18 @@ The check is implemented and persisted. Next useful step is analytics/reporting:
 ## Resume notes for Codex
 
 State at laptop-close handoff:
-- Current branch: `codex/claude-handoff-next-steps`
-- Latest commit before this handoff edit: `3dac574 Rename package to crypto-bot`
-- Working tree was clean before editing this file.
+- Current branch: `codex/volume-acceleration-signal`
+- Latest code commit before this handoff edit: `585e986 Add volume acceleration scoring signal`
 - All verification passed after latest code commit:
   - `npm run typecheck`
-  - `npm test` → 24 files, 148 tests passing
+  - `npm test` → 25 files, 155 tests passing
   - `git diff --check`
 - Paper-only invariant is still intact. No wallet/private-key/live trading code was added.
 
 Suggested next move:
-1. Finish this handoff edit, then run `git status --short --branch`.
-2. Stage and commit `docs/claude-handoff.md` if the user wants the handoff persisted.
-3. Resume with the volume acceleration signal using the existing `token_volume_snapshots` table.
+1. Commit this handoff update after reviewing it.
+2. Continue with analytics/reporting for queryable risk/signal fields: authority flags, holder concentration buckets, and volume acceleration buckets.
+3. Do not start live trading implementation until paper results justify it.
 
 ---
 
