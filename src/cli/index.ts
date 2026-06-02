@@ -30,6 +30,7 @@ import { scoreTokenCandidate } from '../scoring/scoreToken.js';
 import { SqliteStore } from '../storage/sqliteStore.js';
 import { createFreshLaunchStrategy } from '../strategies/freshLaunchMomentum.js';
 import { createMigrationStrategy } from '../strategies/migrationMomentum.js';
+import { evaluateLiveReadiness, renderLiveReadinessReport } from '../execution/liveReadiness.js';
 import type { ExitRules } from '../bot/exitPositions.js';
 import type { TradingStrategy } from '../strategies/types.js';
 import type { PaperBrokerOptions } from '../paper/paperBroker.js';
@@ -133,6 +134,29 @@ program
       process.stdout.write('No buy route available (token may be unswappable, illiquid, or the quote API is unreachable).\n');
     }
     process.stdout.write(`Sell route (token→USDC): ${route.sellRouteAvailable ? 'available' : 'UNAVAILABLE — possible honeypot'}\n`);
+  });
+
+program
+  .command('live-readiness')
+  .description('Audit live-trading prerequisites without reading wallet contents or placing trades')
+  .action(() => {
+    const config = loadConfigFromFile(program.opts().config);
+    const store = new SqliteStore();
+    try {
+      const walletFile = config.chains.solana.walletFile;
+      const walletFileExists = walletFile ? fs.existsSync(path.resolve(process.cwd(), walletFile)) : false;
+      const report = evaluateLiveReadiness({
+        config,
+        env: process.env,
+        walletFileExists,
+        closedTrades: store.loadClosedTradeStats().length,
+        trackedOutcomes: store.loadScoredOutcomeStats().length,
+        liveBrokerImplemented: false,
+      });
+      process.stdout.write(renderLiveReadinessReport(report));
+    } finally {
+      store.close();
+    }
   });
 
 program.command('paper').description('Run one paper-trading scan cycle').action(async () => {
