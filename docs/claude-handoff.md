@@ -1,6 +1,6 @@
 # Claude Handoff — Strategy, Execution & Reporting Architecture
 
-**Last updated:** 2026-06-02 · **Branch:** `feature/strategy-interface-and-analytics`
+**Last updated:** 2026-06-02 · **Branch:** `codex/claude-handoff-next-steps`
 **Reviewer:** Codex. Counterpart: `docs/codex-handoff.md`.
 
 Paper-only. Do not introduce live wallet/private-key use.
@@ -10,8 +10,9 @@ Paper-only. Do not introduce live wallet/private-key use.
 ## Current health
 
 ```
-npm test          → 23 files, 134 tests passing
+npm test          → 24 files, 148 tests passing
 npm run typecheck → clean
+git diff --check  → clean
 ```
 
 ---
@@ -45,6 +46,17 @@ This branch covers two Claude sessions. All 11 commits sit on top of `developmen
 | Event routing | `TradingStrategy.acceptsEventType()`. `new_token` → freshLaunchMomentum; `migration` → migrationMomentum. Pipeline routes per event; falls back to first strategy. |
 | Conviction-based sizing | `TradingStrategy.resolvePositionSizeUsd(score, base)`. Fresh launch: 90+→1.5x, 80-89→1.0x, 75-79→0.75x. Migration: 85+→1.25x. `PaperBroker.openPosition` accepts optional size override. |
 | `tune` command | `src/bot/tune.ts` + CLI command. Reads MFE/MAE outcome data, emits confidence-rated recommendations: when to raise/lower entry threshold, when fixed TP is cutting winners short, when stop-loss could tighten. Closes the `track-outcomes` → `tune` → config feedback loop. |
+
+### Codex continuation — next-step implementation
+
+Built on `development` after PR #10 merge, on branch `codex/claude-handoff-next-steps`.
+
+| Commit | What |
+|---|---|
+| `f4c115f` Add strategy metadata storage and retry wiring | Added queryable `mint_authority_revoked`, `freeze_authority_revoked`, and `top5_holder_pct`-ready plumbing to scored candidate projections; added `token_volume_snapshots` history table written on every score save; made retry strategy-aware using SQL-side per-strategy thresholds before `LIMIT`; preserved strategy/authority metadata on retried opens; wired `manage-exits` to `buildExitResolver`. |
+| `3e99a44` Add tune apply support | Added `tune --apply` with confirmation prompt and `--yes` for non-interactive use. Applies only concrete numeric recommendations to YAML config; skips ambiguous suggestions such as `Raise to 200-300`. |
+| `6ca2c20` Add Solana holder concentration risk check | Added read-only `getTokenLargestAccounts` + `getTokenSupply` RPC check in `src/chains/solana/holderConcentration.ts`; enriches PumpPortal candidates with `top5HolderPct`; persists `top5_holder_pct`; penalizes both strategies when top five holders own ≥80% of supply. Best-effort: RPC failure leaves the signal unknown and does not block processing. |
+| `3dac574` Rename package to crypto-bot | Renamed package metadata from `hermes-agent` to `crypto-bot`; left CLI binary as `hermes-paper-bot`; cleaned stale handoff notes. |
 
 ---
 
@@ -88,7 +100,7 @@ To add live trading:
 | `stats` | Full analytics: overall + by strategy, reason, score bucket, source |
 | `strategies` | Compact per-strategy P&L table |
 | `outcomes` | Candidate MFE/MAE counterfactual by score bucket |
-| `tune` | Outcome data → specific threshold recommendations with confidence ratings |
+| `tune` | Outcome data → specific threshold recommendations with confidence ratings. `--apply` writes concrete numeric suggestions after confirmation; `--yes` skips confirmation. |
 | `pump-watch` | Bounded PumpPortal listener |
 | `pump-process` | Process pending events into scored candidates |
 | `manage-exits` | One-shot exit pass on open positions |
@@ -102,25 +114,23 @@ To add live trading:
 
 ### Highest priority
 
-**DB columns for authority flags**
-`mintAuthorityRevoked` and `freezeAuthorityRevoked` are stored in the `token_json` blob today. Adding dedicated columns to `scored_candidates` enables direct SQL queries: "how many scored candidates had held mint authority, and did they perform worse?" The migration is a single `addColumnIfMissing` call each.
-
 **Volume acceleration signal**
-Currently `volume5mUsd` and `volume1hUsd` are point-in-time snapshots. The edge for both strategies is *acceleration* — is volume increasing relative to its own recent rate? This requires storing per-token volume history (one row per scoring pass). The scoring function can then compute a z-score: "this 5m volume is 3 standard deviations above the token's own 30-minute rolling average." Not buildable without the data model first.
-
-**Strategy exit overrides wired into `manage-exits` CLI command**
-The `run` loop uses `resolveExits` correctly. The standalone `manage-exits` command still passes only global exits. Should build `buildExitResolver` from the active strategies there too.
+The data model now exists: `token_volume_snapshots` stores one row per scored candidate with chain/address/symbol/strategy, `volume_5m_usd`, `volume_1h_usd`, price, and timestamp. Next step is implementing the actual acceleration feature:
+- Add a store query for recent snapshots over a rolling window, likely by address and lookback minutes.
+- Compute a per-token acceleration signal, e.g. current `volume5mUsd` vs rolling 30-minute baseline / standard deviation.
+- Thread that signal into `TokenCandidate` or strategy-local scoring context.
+- Update `freshLaunchMomentum` and `migrationMomentum` scoring carefully; add tests proving old behavior when history is missing.
 
 ### Medium priority
 
-**Multiple strategies in `retryBlockedOpens`**
-Retry currently uses the minimum threshold across all strategies. It doesn't know which strategy owns each retriable candidate, so it can't apply strategy-specific thresholds to retries. Requires storing `strategy_id` on `scored_candidates` as a real queryable column (same migration as authority flags above).
+**Holder concentration analytics**
+The check is implemented and persisted. Next useful step is analytics/reporting: add outcome/stat breakdowns for `top5_holder_pct` buckets so paper results can validate whether the ≥80% block threshold is too strict or too loose.
 
-**Tune recommendations auto-apply**
-`tune` currently prints recommendations. A `--apply` flag could write the suggested values directly to `config.yaml` with a confirmation prompt.
+**Authority flag analytics**
+`mint_authority_revoked` and `freeze_authority_revoked` are queryable now. Add stats/outcome groupings so we can answer, "did held authorities underperform?" without ad hoc SQL.
 
-**Holder concentration check**
-On-chain RPC read of the token's top accounts (SPL `getTokenLargestAccounts`). If top 5 wallets hold >80% of supply, it's a rug risk regardless of other signals. Same pattern as the mint authority check.
+**Tune apply UX**
+`tune --apply` currently applies concrete global config recommendations only. It intentionally skips ambiguous ranges and does not write strategy-specific overrides. Future work: support strategy-specific suggestions once `tune` is strategy-aware.
 
 ### Live trading (after paper is validated)
 
@@ -131,6 +141,26 @@ On-chain RPC read of the token's top accounts (SPL `getTokenLargestAccounts`). I
 ### Minor
 
 - Retry uses scored price, not re-fetched price (acceptable for paper)
+- `docs/codex-handoff.md` was lightly cleaned for completed package-name work, but it has not been fully refreshed with the latest Codex commits.
+
+---
+
+## Resume notes for Codex
+
+State at laptop-close handoff:
+- Current branch: `codex/claude-handoff-next-steps`
+- Latest commit before this handoff edit: `3dac574 Rename package to crypto-bot`
+- Working tree was clean before editing this file.
+- All verification passed after latest code commit:
+  - `npm run typecheck`
+  - `npm test` → 24 files, 148 tests passing
+  - `git diff --check`
+- Paper-only invariant is still intact. No wallet/private-key/live trading code was added.
+
+Suggested next move:
+1. Finish this handoff edit, then run `git status --short --branch`.
+2. Stage and commit `docs/claude-handoff.md` if the user wants the handoff persisted.
+3. Resume with the volume acceleration signal using the existing `token_volume_snapshots` table.
 
 ---
 
