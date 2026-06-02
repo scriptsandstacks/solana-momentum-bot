@@ -14,6 +14,7 @@ function trade(overrides: Partial<AnalyticsTrade>): AnalyticsTrade {
     exitPriceSource: 'fresh',
     score: 82,
     source: 'pumpportal+dexscreener',
+    strategyId: 'freshLaunchMomentum',
     pnlUsd: 10,
     pnlPct: 40,
     openedAt: '2026-01-01T00:00:00.000Z',
@@ -47,11 +48,11 @@ describe('computeTradeAnalytics', () => {
     expect(analytics.overall.profitFactor).toBe(Number.POSITIVE_INFINITY);
   });
 
-  it('buckets by reason, score, exit source, and discovery source', () => {
+  it('buckets by reason, score, exit source, discovery source, and strategy', () => {
     const analytics = computeTradeAnalytics([
-      trade({ reason: 'take_profit', score: 92, exitPriceSource: 'fresh', source: 'raydium', pnlUsd: 30 }),
-      trade({ reason: 'stop_loss', score: 76, exitPriceSource: 'fresh', source: 'raydium', pnlUsd: -10 }),
-      trade({ reason: 'timeout', score: 88, exitPriceSource: 'last_mark', source: 'dexscreener', pnlUsd: -2 }),
+      trade({ reason: 'take_profit', score: 92, exitPriceSource: 'fresh', source: 'raydium', strategyId: 'freshLaunchMomentum', pnlUsd: 30 }),
+      trade({ reason: 'stop_loss', score: 76, exitPriceSource: 'fresh', source: 'raydium', strategyId: 'freshLaunchMomentum', pnlUsd: -10 }),
+      trade({ reason: 'timeout', score: 88, exitPriceSource: 'last_mark', source: 'dexscreener', strategyId: 'freshLaunchMomentum', pnlUsd: -2 }),
     ]);
 
     expect(analytics.byReason.map((b) => b.label).sort()).toEqual(['stop_loss', 'take_profit', 'timeout']);
@@ -60,6 +61,10 @@ describe('computeTradeAnalytics', () => {
     expect(analytics.byScoreBucket.at(-1)?.label).toBe('75-79');
     expect(analytics.byExitPriceSource.find((b) => b.label === 'last_mark')?.trades).toBe(1);
     expect(analytics.bySource.find((b) => b.label === 'raydium')?.trades).toBe(2);
+    // All trades carry the same strategy — should produce a single bucket with all 3 trades.
+    expect(analytics.byStrategy).toHaveLength(1);
+    expect(analytics.byStrategy[0].label).toBe('freshLaunchMomentum');
+    expect(analytics.byStrategy[0].trades).toBe(3);
   });
 
   it('computes average hold time from open/close timestamps', () => {

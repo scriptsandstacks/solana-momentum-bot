@@ -3,7 +3,7 @@ import { checkJupiterRoute, type JupiterRouteCheck } from '../discovery/jupiter.
 import { PaperBroker, type PaperBrokerOptions } from '../paper/paperBroker.js';
 import { restoreBrokerFromStore, isBrokerStateStore } from '../paper/restoreBroker.js';
 import { scoreTokenCandidate } from '../scoring/scoreToken.js';
-import { tagFreshLaunchMomentum } from '../strategies/freshLaunchMomentum.js';
+import { freshLaunchMomentumStrategy } from '../strategies/freshLaunchMomentum.js';
 import type { ChainConfig } from '../config/schema.js';
 import type { OpportunityScore, PaperPosition, TokenCandidate } from '../types/domain.js';
 
@@ -116,7 +116,7 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
 
     try {
       const route = await checkRoute(candidate.address);
-      const enriched: TokenCandidate = tagFreshLaunchMomentum({
+      const enriched: TokenCandidate = freshLaunchMomentumStrategy.tagCandidate({
         ...candidate,
         source: `${candidate.source}+${event.eventType}`,
         ...route,
