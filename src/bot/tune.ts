@@ -15,6 +15,7 @@
 //     indicating the TP ceiling (if fixed) is leaving money on the table.
 
 import type { OutcomeAnalytics, OutcomeBucket, OutcomeThresholds } from './analytics.js';
+import YAML from 'yaml';
 
 export interface TuningRecommendation {
   parameter: string;
@@ -27,6 +28,12 @@ export interface TuningRecommendation {
 export interface TuneResult {
   sampleSize: number;
   recommendations: TuningRecommendation[];
+}
+
+export interface TuneConfigUpdate {
+  path: string[];
+  value: number;
+  recommendation: TuningRecommendation;
 }
 
 // Minimum candidate count in a bucket before we trust its statistics.
@@ -183,7 +190,61 @@ export function renderTuneReport(
   return `${lines.join('\n')}\n`;
 }
 
+export function deriveTuneConfigUpdates(recommendations: TuningRecommendation[]): TuneConfigUpdate[] {
+  const updates: TuneConfigUpdate[] = [];
+  for (const recommendation of recommendations) {
+    const path = parameterToConfigPath(recommendation.parameter);
+    if (!path) continue;
+
+    const value = parseConcreteSuggestionValue(recommendation.suggestion);
+    if (value === undefined) continue;
+
+    updates.push({ path, value, recommendation });
+  }
+  return updates;
+}
+
+export function renderTuneApplyPreview(updates: TuneConfigUpdate[]): string {
+  if (updates.length === 0) {
+    return 'No concrete config updates to apply.\n';
+  }
+
+  const lines = ['Config updates to apply:'];
+  for (const update of updates) {
+    lines.push(`  ${update.path.join('.')} = ${update.value} (${update.recommendation.confidence} confidence)`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+export function applyTuneConfigUpdates(configText: string, updates: TuneConfigUpdate[]): string {
+  const doc = YAML.parseDocument(configText);
+  for (const update of updates) {
+    doc.setIn(update.path, update.value);
+  }
+  return doc.toString();
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+function parameterToConfigPath(parameter: string): string[] | undefined {
+  switch (parameter) {
+    case 'scoring.minimumScoreToEnter':
+      return ['scoring', 'minimumScoreToEnter'];
+    case 'exits.stopLossPct':
+      return ['exits', 'stopLossPct'];
+    case 'exits.takeProfitPct':
+      return ['exits', 'takeProfitPct'];
+    default:
+      return undefined;
+  }
+}
+
+function parseConcreteSuggestionValue(suggestion: string): number | undefined {
+  if (suggestion.includes('–') || suggestion.includes('-')) return undefined;
+  const match = /\b(?:Raise to|Consider lowering to|Consider tightening to)\s+(\d+(?:\.\d+)?)/i.exec(suggestion);
+  if (!match) return undefined;
+  return Number(match[1]);
+}
 
 function extractMinScore(label: string): number {
   if (label === '<75') return 0;
