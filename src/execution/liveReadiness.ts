@@ -87,7 +87,7 @@ export function evaluateLiveReadiness(input: LiveReadinessInput): LiveReadinessR
   checks.push(
     input.closedTrades >= 50
       ? pass('Paper trade sample', `${input.closedTrades} closed paper trades recorded.`)
-      : block('Paper trade sample', `${input.closedTrades} closed paper trades recorded; collect at least 50 before live.`),
+      : warn('Paper trade sample', `${input.closedTrades} closed paper trades recorded; more paper data improves calibration but does not block live mode.`),
   );
 
   checks.push(

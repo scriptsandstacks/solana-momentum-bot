@@ -67,7 +67,7 @@ Built on updated `development` after the prior Codex branch was merged/pulled, o
 | `585e986` Add volume acceleration scoring signal | Added `src/bot/volumeAcceleration.ts` to compute current 5m volume against recent per-token baseline snapshots. `pumpProcess` reads the last 30 minutes from `token_volume_snapshots` before saving the current score, attaches `volumeAcceleration5mZ` and `volumeAccelerationSamples`, and both active strategies add modest bonuses for z≥1/z≥2 or a risk for sharp deceleration. `scored_candidates` now persists `volume_acceleration_5m_z` and `volume_acceleration_samples`; retry preserves the fields. No-history behavior is unchanged. |
 | `2577d69` Add signal buckets to outcome analytics | `outcomes` now groups MFE/MAE by authority status, holder concentration, and volume acceleration buckets. `loadScoredOutcomeStats()` projects the persisted signal columns so the report can validate whether held authorities, high top-five concentration, or acceleration/deceleration correlate with paper outcomes. |
 | `37d3e60` Add strategy-specific tune reporting | `tune` still prints the global calibration view, then adds per-strategy sections using each active strategy's own entry threshold. Outcome rows now carry `strategyId`, and score buckets were split into `<70`, `70-74`, `75-79`, `80-89`, `90-100` so migration's 70 threshold is tunable. `--apply` remains conservative and only writes concrete global config updates. |
-| `4f4ebb6` Add live readiness audit | Added `live-readiness` CLI command and pure `evaluateLiveReadiness()` audit. It checks live blockers/prereqs without reading wallet contents or placing trades: missing LiveBroker, mode gate, Solana enabled, RPC env, wallet-file presence, sizing/loss-limit sanity, paper cost model, closed trade sample, and tracked outcome sample. |
+| `4f4ebb6` Add live readiness audit | Added `live-readiness` CLI command and pure `evaluateLiveReadiness()` audit. It checks live blockers/prereqs without reading wallet contents or placing trades: missing LiveBroker, mode gate, Solana enabled, RPC env, wallet-file presence, sizing/loss-limit sanity, paper cost model, closed trade sample, and tracked outcome sample. Paper sample counts are advisory calibration warnings, not owner-permission gates. |
 
 ---
 
@@ -126,7 +126,7 @@ To add live trading:
 
 ### Highest priority
 
-Keep paper-only validation running before live-trading implementation. `live-readiness` now makes the remaining blockers explicit, including the intentionally missing `LiveBroker`.
+Keep the paper/live mode switch seamless for the owner. `live-readiness` should report mechanical blockers and advisory calibration warnings, but it must not force a minimum number of paper cycles before the owner can choose live mode. The current hard blocker is the intentionally missing `LiveBroker`.
 
 ### Medium priority
 
@@ -139,11 +139,11 @@ The signal is implemented, persisted, and reported by outcome bucket. Next usefu
 **Risk-signal thresholds**
 Holder concentration ≥80%, authority penalties, and volume acceleration weights are deliberately conservative defaults. Use the expanded `outcomes` report to validate and adjust them after enough tracked candidates accumulate.
 
-### Live trading (after paper is validated)
+### Live trading
 
 1. `LiveBroker implements ExecutionBroker` — Jupiter swap submission + keypair signing
 2. Real-time exit triggers — WebSocket price feeds rather than interval polling
-3. Base paper support — after Solana paper results are confirmed meaningful
+3. Base paper support once Solana live/paper switching is clean
 4. Re-quote/re-price retry opens before live trading; current retry still uses scored price.
 
 ### Minor
@@ -166,8 +166,8 @@ State at laptop-close handoff:
 
 Suggested next move:
 1. Commit this handoff update after reviewing it.
-2. Next practical work is schema/config support for strategy-specific tunables, re-quote-on-retry for live safety, or collecting paper data and using `live-readiness` plus the expanded reports.
-3. Do not start live trading implementation until paper results justify it.
+2. Next practical work is schema/config support for strategy-specific tunables, re-quote-on-retry for live safety, or a LiveBroker scaffold that preserves the owner-controlled paper/live switch.
+3. Paper results should inform calibration, not act as training-wheel enforcement.
 
 ---
 

@@ -76,7 +76,7 @@ describe('evaluateLiveReadiness', () => {
     expect(renderLiveReadinessReport(report)).toContain('Live Readiness Audit');
   });
 
-  it('flags missing RPC, missing wallet file, and insufficient paper sample', () => {
+  it('flags missing RPC and wallet file as blockers, while paper sample is advisory', () => {
     const report = evaluateLiveReadiness({
       config: { ...config, chains: { ...config.chains, solana: { ...config.chains.solana, rpcUrlEnv: 'MISSING_RPC' } } },
       env: {},
@@ -87,7 +87,22 @@ describe('evaluateLiveReadiness', () => {
 
     expect(report.checks.find((check) => check.label === 'Solana RPC')).toMatchObject({ status: 'block' });
     expect(report.checks.find((check) => check.label === 'Wallet file')).toMatchObject({ status: 'block' });
-    expect(report.checks.find((check) => check.label === 'Paper trade sample')).toMatchObject({ status: 'block' });
+    expect(report.checks.find((check) => check.label === 'Paper trade sample')).toMatchObject({ status: 'warn' });
     expect(report.warn).toBeGreaterThan(0);
+  });
+
+  it('does not block an owner solely because paper-trade samples are low', () => {
+    const report = evaluateLiveReadiness({
+      config,
+      env: { SOLANA_RPC_URL: 'https://rpc.example' },
+      walletFileExists: true,
+      closedTrades: 0,
+      trackedOutcomes: 0,
+      liveBrokerImplemented: true,
+    });
+
+    expect(report.ready).toBe(true);
+    expect(report.block).toBe(0);
+    expect(report.checks.find((check) => check.label === 'Paper trade sample')).toMatchObject({ status: 'warn' });
   });
 });
