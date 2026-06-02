@@ -130,9 +130,7 @@ On-chain RPC read of the token's top accounts (SPL `getTokenLargestAccounts`). I
 
 ### Minor
 
-- Package name still `hermes-agent` in `package.json`
 - Retry uses scored price, not re-fetched price (acceptable for paper)
-- `manage-exits` does not yet pass `strategies` array (uses global exits only)
 
 ---
 
