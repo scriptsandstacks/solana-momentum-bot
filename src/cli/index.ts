@@ -9,6 +9,7 @@ import { processPumpPortalEvents } from '../bot/pumpProcess.js';
 import { processExits } from '../bot/exitPositions.js';
 import { runBotLoop } from '../bot/runLoop.js';
 import { consoleReporter } from '../bot/reporter.js';
+import { computeTuneRecommendations, renderTuneReport } from '../bot/tune.js';
 import { loadConfigFromFile } from '../config/loadConfig.js';
 import { scanSolanaCandidates } from '../chains/solana/scanner.js';
 import { checkJupiterRoute } from '../discovery/jupiter.js';
@@ -234,6 +235,28 @@ program
     const analytics = computeOutcomeAnalytics(store.loadScoredOutcomeStats(), thresholds);
     process.stdout.write(renderOutcomeAnalytics(analytics, thresholds));
     store.close();
+  });
+
+program
+  .command('tune')
+  .description('Analyze outcome data and recommend adjustments to entry threshold and exit parameters')
+  .action(() => {
+    const config = loadConfigFromFile(program.opts().config);
+    const store = new SqliteStore();
+    const thresholds = { takeProfitPct: config.exits.takeProfitPct, stopLossPct: config.exits.stopLossPct };
+    const outcomeRows = store.loadScoredOutcomeStats();
+    store.close();
+
+    if (outcomeRows.length === 0) {
+      process.stdout.write(
+        'No outcome data yet.\nRun the bot with `run` or `track-outcomes` to accumulate forward price data, then re-run `tune`.\n',
+      );
+      return;
+    }
+
+    const analytics = computeOutcomeAnalytics(outcomeRows, thresholds);
+    const result = computeTuneRecommendations(analytics, thresholds, config.scoring.minimumScoreToEnter);
+    process.stdout.write(renderTuneReport(result, analytics, thresholds, config.scoring.minimumScoreToEnter));
   });
 
 program
