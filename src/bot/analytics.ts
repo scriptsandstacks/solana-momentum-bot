@@ -45,7 +45,8 @@ export interface TradeAnalytics {
 }
 
 const SCORE_BUCKETS: Array<{ label: string; min: number; max: number }> = [
-  { label: '<75', min: Number.NEGATIVE_INFINITY, max: 74 },
+  { label: '<70', min: Number.NEGATIVE_INFINITY, max: 69 },
+  { label: '70-74', min: 70, max: 74 },
   { label: '75-79', min: 75, max: 79 },
   { label: '80-89', min: 80, max: 89 },
   { label: '90-100', min: 90, max: 100 },
@@ -123,6 +124,7 @@ export function computeTradeAnalytics(trades: AnalyticsTrade[]): TradeAnalytics 
 // ---------------------------------------------------------------------------
 
 export interface OutcomeRow {
+  strategyId?: string | null;
   score: number;
   recommendation: string;
   scoredPriceUsd: number;

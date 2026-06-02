@@ -13,7 +13,15 @@ import { processPumpPortalEvents } from '../bot/pumpProcess.js';
 import { processExits } from '../bot/exitPositions.js';
 import { runBotLoop } from '../bot/runLoop.js';
 import { consoleReporter } from '../bot/reporter.js';
-import { applyTuneConfigUpdates, computeTuneRecommendations, deriveTuneConfigUpdates, renderTuneApplyPreview, renderTuneReport } from '../bot/tune.js';
+import {
+  applyTuneConfigUpdates,
+  computeStrategyTuneRecommendations,
+  computeTuneRecommendations,
+  deriveTuneConfigUpdates,
+  renderStrategyTuneReport,
+  renderTuneApplyPreview,
+  renderTuneReport,
+} from '../bot/tune.js';
 import { loadConfigFromFile } from '../config/loadConfig.js';
 import { scanSolanaCandidates } from '../chains/solana/scanner.js';
 import { checkJupiterRoute } from '../discovery/jupiter.js';
@@ -264,6 +272,13 @@ program
     const analytics = computeOutcomeAnalytics(outcomeRows, thresholds);
     const result = computeTuneRecommendations(analytics, thresholds, config.scoring.minimumScoreToEnter);
     process.stdout.write(renderTuneReport(result, analytics, thresholds, config.scoring.minimumScoreToEnter));
+    const strategies = buildStrategies(config);
+    const strategyResults = computeStrategyTuneRecommendations(
+      outcomeRows,
+      thresholds,
+      Object.fromEntries(strategies.map((strategy) => [strategy.id, strategy.config.minScoreToEnter])),
+    );
+    process.stdout.write(renderStrategyTuneReport(strategyResults, thresholds));
 
     if (!options.apply) return;
 

@@ -14,7 +14,7 @@
 //   - MFE significantly exceeding the take-profit threshold in the best buckets,
 //     indicating the TP ceiling (if fixed) is leaving money on the table.
 
-import type { OutcomeAnalytics, OutcomeBucket, OutcomeThresholds } from './analytics.js';
+import { computeOutcomeAnalytics, type OutcomeAnalytics, type OutcomeBucket, type OutcomeRow, type OutcomeThresholds } from './analytics.js';
 import YAML from 'yaml';
 
 export interface TuningRecommendation {
@@ -34,6 +34,13 @@ export interface TuneConfigUpdate {
   path: string[];
   value: number;
   recommendation: TuningRecommendation;
+}
+
+export interface StrategyTuneResult {
+  strategyId: string;
+  currentEntryThreshold: number;
+  analytics: OutcomeAnalytics;
+  result: TuneResult;
 }
 
 // Minimum candidate count in a bucket before we trust its statistics.
@@ -190,6 +197,50 @@ export function renderTuneReport(
   return `${lines.join('\n')}\n`;
 }
 
+export function computeStrategyTuneRecommendations(
+  rows: OutcomeRow[],
+  thresholds: OutcomeThresholds,
+  entryThresholdByStrategy: Record<string, number>,
+): StrategyTuneResult[] {
+  const groups = new Map<string, OutcomeRow[]>();
+  for (const row of rows) {
+    const strategyId = row.strategyId || 'unknown';
+    const group = groups.get(strategyId) ?? [];
+    group.push(row);
+    groups.set(strategyId, group);
+  }
+
+  return [...groups.entries()]
+    .map(([strategyId, strategyRows]) => {
+      const currentEntryThreshold = entryThresholdByStrategy[strategyId] ?? entryThresholdByStrategy.unknown ?? 75;
+      const analytics = computeOutcomeAnalytics(strategyRows, thresholds);
+      return {
+        strategyId,
+        currentEntryThreshold,
+        analytics,
+        result: computeTuneRecommendations(analytics, thresholds, currentEntryThreshold),
+      };
+    })
+    .sort((a, b) => b.result.sampleSize - a.result.sampleSize || a.strategyId.localeCompare(b.strategyId));
+}
+
+export function renderStrategyTuneReport(results: StrategyTuneResult[], thresholds: OutcomeThresholds): string {
+  if (results.length === 0) return '';
+
+  const lines = ['', 'Strategy-specific tuning'];
+  for (const strategy of results) {
+    lines.push('', `Strategy: ${strategy.strategyId}`);
+    lines.push(
+      renderTuneReport(strategy.result, strategy.analytics, thresholds, strategy.currentEntryThreshold)
+        .trimEnd()
+        .split('\n')
+        .map((line) => `  ${line}`)
+        .join('\n'),
+    );
+  }
+  return `${lines.join('\n')}\n`;
+}
+
 export function deriveTuneConfigUpdates(recommendations: TuningRecommendation[]): TuneConfigUpdate[] {
   const updates: TuneConfigUpdate[] = [];
   for (const recommendation of recommendations) {
@@ -247,13 +298,14 @@ function parseConcreteSuggestionValue(suggestion: string): number | undefined {
 }
 
 function extractMinScore(label: string): number {
-  if (label === '<75') return 0;
+  if (label.startsWith('<')) return 0;
   const match = /^(\d+)/.exec(label);
   return match ? Number(match[1]) : 0;
 }
 
 function extractMaxScore(label: string): number {
-  if (label === '<75') return 74;
+  const lessThan = /^<(\d+)$/.exec(label);
+  if (lessThan) return Number(lessThan[1]) - 1;
   const match = /-(\d+)$/.exec(label);
   if (match) return Number(match[1]);
   const single = /^(\d+)$/.exec(label);

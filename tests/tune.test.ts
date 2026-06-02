@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyTuneConfigUpdates,
+  computeStrategyTuneRecommendations,
   computeTuneRecommendations,
   deriveTuneConfigUpdates,
+  renderStrategyTuneReport,
   renderTuneApplyPreview,
   renderTuneReport,
 } from '../src/bot/tune.js';
@@ -122,6 +124,52 @@ describe('renderTuneReport', () => {
     const result = computeTuneRecommendations(analytics, thresholds, currentEntry);
     const report = renderTuneReport(result, analytics, thresholds, currentEntry);
     expect(report).toContain('Not enough data');
+  });
+});
+
+describe('strategy-specific tune recommendations', () => {
+  it('uses each strategy threshold when computing strategy-level recommendations', () => {
+    const rows = [
+      ...repeat(
+        outcome({
+          strategyId: 'freshLaunchMomentum',
+          score: 77,
+          outcomeHighUsd: 0.011,
+          outcomeLowUsd: 0.008,
+          outcomeLastUsd: 0.008,
+          outcomeFirstStopLossAt: '2026-01-01T00:10:00Z',
+        }),
+        15,
+      ),
+      ...repeat(
+        outcome({
+          strategyId: 'migrationMomentum',
+          score: 72,
+          outcomeHighUsd: 0.011,
+          outcomeLowUsd: 0.008,
+          outcomeLastUsd: 0.008,
+          outcomeFirstStopLossAt: '2026-01-01T00:10:00Z',
+        }),
+        15,
+      ),
+    ];
+
+    const results = computeStrategyTuneRecommendations(rows, thresholds, {
+      freshLaunchMomentum: 75,
+      migrationMomentum: 70,
+    });
+
+    const fresh = results.find((result) => result.strategyId === 'freshLaunchMomentum');
+    const migration = results.find((result) => result.strategyId === 'migrationMomentum');
+    expect(fresh?.currentEntryThreshold).toBe(75);
+    expect(migration?.currentEntryThreshold).toBe(70);
+    expect(fresh?.result.recommendations[0]?.suggestion).toBe('Raise to 80');
+    expect(migration?.result.recommendations[0]?.suggestion).toBe('Raise to 75');
+
+    const report = renderStrategyTuneReport(results, thresholds);
+    expect(report).toContain('Strategy-specific tuning');
+    expect(report).toContain('Strategy: freshLaunchMomentum');
+    expect(report).toContain('Strategy: migrationMomentum');
   });
 });
 

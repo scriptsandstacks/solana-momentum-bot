@@ -161,6 +161,7 @@ describe('SqliteStore', () => {
     });
 
     expect(store.loadScoredOutcomeStats()[0]).toMatchObject({
+      strategyId: 'freshLaunchMomentum',
       mintAuthorityRevoked: 0,
       freezeAuthorityRevoked: 1,
       top5HolderPct: 85,

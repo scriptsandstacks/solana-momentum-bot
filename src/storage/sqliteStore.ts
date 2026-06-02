@@ -107,6 +107,7 @@ export interface ScoredOutcomeUpdate {
 }
 
 export interface ScoredOutcomeStatRow {
+  strategyId: string;
   score: number;
   recommendation: string;
   scoredPriceUsd: number;
@@ -577,7 +578,7 @@ export class SqliteStore {
   loadScoredOutcomeStats(): ScoredOutcomeStatRow[] {
     return this.db
       .prepare(
-        `SELECT score, recommendation, price_usd as scoredPriceUsd,
+        `SELECT strategy_id as strategyId, score, recommendation, price_usd as scoredPriceUsd,
                 outcome_high_usd as outcomeHighUsd, outcome_low_usd as outcomeLowUsd,
                 outcome_last_usd as outcomeLastUsd,
                 outcome_first_tp_at as outcomeFirstTakeProfitAt, outcome_first_sl_at as outcomeFirstStopLossAt,
