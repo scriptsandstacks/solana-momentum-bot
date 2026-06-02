@@ -152,4 +152,45 @@ describe('retryBlockedOpens', () => {
     expect(store._saved[0].token.volumeAcceleration5mZ).toBe(2.5);
     expect(store._saved[0].token.volumeAccelerationSamples).toBe(4);
   });
+
+  it('uses refreshed candidate data before opening a retried position', async () => {
+    const store = fakeStore([row({ priceUsd: 0.01, estimatedSlippageBps: 100 })]);
+
+    const result = await retryBlockedOpens({
+      store,
+      paper,
+      minimumScoreToEnter: 75,
+      cutoffIso: CUTOFF,
+      refreshCandidate: async (candidate) => ({
+        ...candidate,
+        priceUsd: 0.02,
+        estimatedSlippageBps: 250,
+        source: 'refreshed',
+      }),
+    });
+
+    expect(result.openedPositions).toBe(1);
+    expect(store._saved[0].token).toMatchObject({
+      priceUsd: 0.02,
+      estimatedSlippageBps: 250,
+      source: 'refreshed',
+      strategyId: 'freshLaunchMomentum',
+    });
+    expect(store._saved[0].entryPriceUsd).toBeCloseTo(0.02);
+  });
+
+  it('skips a retriable candidate when refresh cannot find current market data', async () => {
+    const store = fakeStore([row({ address: 'stale-mint' })]);
+
+    const result = await retryBlockedOpens({
+      store,
+      paper,
+      minimumScoreToEnter: 75,
+      cutoffIso: CUTOFF,
+      refreshCandidate: async () => undefined,
+    });
+
+    expect(result).toMatchObject({ candidates: 1, openedPositions: 0, skippedRefresh: 1 });
+    expect(store._saved).toHaveLength(0);
+  });
 });

@@ -19,7 +19,10 @@ export interface RetryBlockedOpensStore extends BrokerStateStore {
 export interface RetryBlockedOpensResult {
   candidates: number;
   openedPositions: number;
+  skippedRefresh: number;
 }
+
+export type RetryCandidateRefresher = (candidate: TokenCandidate) => Promise<TokenCandidate | undefined>;
 
 // After the exit pass frees broker capacity, try to fill it with recently
 // scored candidates that were never opened (most likely blocked by the cap at
@@ -33,6 +36,7 @@ export async function retryBlockedOpens(options: {
   strategies?: TradingStrategy[];
   cutoffIso: string;
   limit?: number;
+  refreshCandidate?: RetryCandidateRefresher;
 }): Promise<RetryBlockedOpensResult> {
   const minScoreByStrategy = new Map(options.strategies?.map((strategy) => [strategy.id, strategy.config.minScoreToEnter]) ?? []);
   const queryMinScore =
@@ -46,7 +50,7 @@ export async function retryBlockedOpens(options: {
     strategyMinScores: Object.fromEntries(minScoreByStrategy),
   }).filter((row) => row.score >= (minScoreByStrategy.get(row.strategyId) ?? options.minimumScoreToEnter));
 
-  const result: RetryBlockedOpensResult = { candidates: rows.length, openedPositions: 0 };
+  const result: RetryBlockedOpensResult = { candidates: rows.length, openedPositions: 0, skippedRefresh: 0 };
   if (rows.length === 0) return result;
 
   const broker = restoreBrokerFromStore(options.store, options.paper);
@@ -55,13 +59,34 @@ export async function retryBlockedOpens(options: {
     const capacity = broker.canOpenPosition();
     if (!capacity.ok) break; // still at capacity — no point continuing
 
-    const candidate = rowToCandidate(row);
+    const storedCandidate = rowToCandidate(row);
+    const candidate = options.refreshCandidate
+      ? mergeRefreshedCandidate(storedCandidate, await options.refreshCandidate(storedCandidate))
+      : storedCandidate;
+    if (!candidate) {
+      result.skippedRefresh += 1;
+      continue;
+    }
     const position = broker.openPosition(candidate, row.score);
     options.store.saveOpenPosition(position);
     result.openedPositions += 1;
   }
 
   return result;
+}
+
+function mergeRefreshedCandidate(stored: TokenCandidate, refreshed: TokenCandidate | undefined): TokenCandidate | undefined {
+  if (!refreshed) return undefined;
+  return {
+    ...stored,
+    ...refreshed,
+    strategyId: stored.strategyId,
+    mintAuthorityRevoked: stored.mintAuthorityRevoked,
+    freezeAuthorityRevoked: stored.freezeAuthorityRevoked,
+    top5HolderPct: stored.top5HolderPct,
+    volumeAcceleration5mZ: stored.volumeAcceleration5mZ,
+    volumeAccelerationSamples: stored.volumeAccelerationSamples,
+  };
 }
 
 export function canRetryBlockedOpens(store: unknown): store is RetryBlockedOpensStore {
