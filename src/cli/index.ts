@@ -341,11 +341,13 @@ program
   .description('Re-price open paper positions and apply stop-loss / take-profit / trailing-stop / max-hold exits')
   .action(async () => {
     const config = loadConfigFromFile(program.opts().config);
+    const strategies = buildStrategies(config);
     const store = new SqliteStore();
     const result = await processExits({
       store,
       paper: paperBrokerOptions(config),
       exits: config.exits,
+      resolveExits: buildExitResolver(strategies, config.exits),
     });
     store.close();
     process.stdout.write(

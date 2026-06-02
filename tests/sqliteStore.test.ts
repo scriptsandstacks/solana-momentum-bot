@@ -76,6 +76,49 @@ describe('SqliteStore', () => {
     store.close();
   });
 
+  it('persists authority flags as queryable scored-candidate columns', () => {
+    const store = createStore();
+
+    store.saveScoredCandidate(
+      { ...candidate, address: 'mint-authority-held', mintAuthorityRevoked: false, freezeAuthorityRevoked: true },
+      score,
+    );
+    store.saveScoredCandidate({ ...candidate, address: 'mint-authority-unknown' }, score);
+
+    const rows = store.listRecentScores(10);
+    const byMint = Object.fromEntries(rows.map((r) => [r.address, r]));
+
+    expect(byMint['mint-authority-held']).toMatchObject({
+      mintAuthorityRevoked: 0,
+      freezeAuthorityRevoked: 1,
+    });
+    expect(byMint['mint-authority-unknown']).toMatchObject({
+      mintAuthorityRevoked: null,
+      freezeAuthorityRevoked: null,
+    });
+    store.close();
+  });
+
+  it('records volume snapshots for future acceleration scoring', () => {
+    const store = createStore();
+
+    store.saveScoredCandidate({ ...candidate, volume5mUsd: 10_000, volume1hUsd: 80_000 }, score);
+    store.saveScoredCandidate({ ...candidate, volume5mUsd: 25_000, volume1hUsd: 120_000 }, score);
+
+    const rows = store.listTokenVolumeSnapshots(candidate.address, 10);
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      address: candidate.address,
+      symbol: 'MOCK',
+      strategyId: 'freshLaunchMomentum',
+      volume5mUsd: 25_000,
+      volume1hUsd: 120_000,
+    });
+    expect(rows[1]).toMatchObject({ volume5mUsd: 10_000, volume1hUsd: 80_000 });
+    store.close();
+  });
+
   it('saves paper positions and closed trades', () => {
     const store = createStore();
     const position: PaperPosition = {
@@ -329,6 +372,14 @@ describe('SqliteStore', () => {
     // without throwing, and the pre-existing row must remain queryable with
     // sensible defaults for the new columns.
     const store = new SqliteStore(dbPath);
+    store.saveScoredCandidate(candidate, score);
+    expect(store.listRecentScores(1)[0]).toMatchObject({
+      strategyId: 'freshLaunchMomentum',
+      mintAuthorityRevoked: null,
+      freezeAuthorityRevoked: null,
+    });
+    expect(store.listTokenVolumeSnapshots(candidate.address, 5)).toHaveLength(1);
+
     const rows = store.listPumpPortalEvents(10);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
@@ -443,6 +494,33 @@ describe('SqliteStore', () => {
     expect(addresses.filter((a) => a === 'mint-a')).toHaveLength(1);
     // the row for mint-a has the higher score
     expect(rows.find((r) => r.address === 'mint-a')?.score).toBe(90);
+    expect(rows.find((r) => r.address === 'mint-a')).toMatchObject({
+      strategyId: 'freshLaunchMomentum',
+      mintAuthorityRevoked: null,
+      freezeAuthorityRevoked: null,
+    });
+    store.close();
+  });
+
+  it('applies strategy-specific thresholds before limiting retriable scored candidates', () => {
+    const store = createStore();
+    const cutoff = '2026-01-01T00:00:00.000Z';
+
+    store.saveScoredCandidate({ ...candidate, address: 'fresh-too-low', strategyId: 'freshLaunchMomentum' }, { ...score, total: 70 });
+    store.saveScoredCandidate({ ...candidate, address: 'migration-ok', strategyId: 'migrationMomentum' }, { ...score, total: 70 });
+
+    const rows = store.listRetriableScoredCandidates({
+      minScore: 70,
+      cutoffIso: cutoff,
+      limit: 1,
+      strategyMinScores: {
+        freshLaunchMomentum: 75,
+        migrationMomentum: 70,
+      },
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ address: 'migration-ok', strategyId: 'migrationMomentum', score: 70 });
     store.close();
   });
 });

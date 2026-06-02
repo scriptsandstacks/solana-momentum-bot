@@ -18,6 +18,8 @@ interface RecentScoreRow {
   routeInputSymbol?: string;
   strategyId: string;
   sellRouteAvailable: number | null;
+  mintAuthorityRevoked: number | null;
+  freezeAuthorityRevoked: number | null;
   score: number;
   recommendation: string;
   createdAt: string;
@@ -133,8 +135,22 @@ export interface RetriableScoredCandidateRow {
   estimatedSlippageBps: number;
   routeInputMint: string | null;
   routeInputSymbol: string | null;
+  strategyId: string;
   sellRouteAvailable: number | null;
+  mintAuthorityRevoked: number | null;
+  freezeAuthorityRevoked: number | null;
   score: number;
+}
+
+export interface TokenVolumeSnapshotRow {
+  chain: string;
+  address: string;
+  symbol: string;
+  strategyId: string;
+  volume5mUsd: number;
+  volume1hUsd: number;
+  priceUsd: number;
+  observedAt: string;
 }
 
 export class SqliteStore {
@@ -148,35 +164,54 @@ export class SqliteStore {
   }
 
   saveScoredCandidate(candidate: TokenCandidate, score: OpportunityScore): void {
-    this.db
-      .prepare(
-        `INSERT INTO scored_candidates (
-          chain, address, symbol, name, pair_address, price_usd, liquidity_usd, volume_5m_usd,
-          volume_1h_usd, price_change_5m_pct, buys_5m, sells_5m, age_minutes, source,
-          route_available, estimated_slippage_bps, route_input_mint, route_input_symbol,
-          strategy_id, sell_route_available,
-          score, recommendation, reasons_json, risks_json, created_at
-        ) VALUES (
-          @chain, @address, @symbol, @name, @pairAddress, @priceUsd, @liquidityUsd, @volume5mUsd,
-          @volume1hUsd, @priceChange5mPct, @buys5m, @sells5m, @ageMinutes, @source,
-          @routeAvailable, @estimatedSlippageBps, @routeInputMint, @routeInputSymbol,
-          @strategyId, @sellRouteAvailable,
-          @score, @recommendation, @reasonsJson, @risksJson, @createdAt
-        )`,
-      )
-      .run({
-        ...candidate,
-        routeAvailable: candidate.routeAvailable ? 1 : 0,
-        routeInputMint: candidate.routeInputMint ?? null,
-        routeInputSymbol: candidate.routeInputSymbol ?? null,
-        strategyId: candidate.strategyId ?? FRESH_LAUNCH_MOMENTUM_STRATEGY_ID,
-        sellRouteAvailable: candidate.sellRouteAvailable === undefined ? null : candidate.sellRouteAvailable ? 1 : 0,
-        score: score.total,
-        recommendation: score.recommendation,
-        reasonsJson: JSON.stringify(score.reasons),
-        risksJson: JSON.stringify(score.risks),
-        createdAt: new Date().toISOString(),
-      });
+    const strategyId = candidate.strategyId ?? FRESH_LAUNCH_MOMENTUM_STRATEGY_ID;
+    const insertScore = this.db.prepare(
+      `INSERT INTO scored_candidates (
+        chain, address, symbol, name, pair_address, price_usd, liquidity_usd, volume_5m_usd,
+        volume_1h_usd, price_change_5m_pct, buys_5m, sells_5m, age_minutes, source,
+        route_available, estimated_slippage_bps, route_input_mint, route_input_symbol,
+        strategy_id, sell_route_available,
+        mint_authority_revoked, freeze_authority_revoked,
+        score, recommendation, reasons_json, risks_json, created_at
+      ) VALUES (
+        @chain, @address, @symbol, @name, @pairAddress, @priceUsd, @liquidityUsd, @volume5mUsd,
+        @volume1hUsd, @priceChange5mPct, @buys5m, @sells5m, @ageMinutes, @source,
+        @routeAvailable, @estimatedSlippageBps, @routeInputMint, @routeInputSymbol,
+        @strategyId, @sellRouteAvailable,
+        @mintAuthorityRevoked, @freezeAuthorityRevoked,
+        @score, @recommendation, @reasonsJson, @risksJson, @createdAt
+      )`,
+    );
+    const insertVolume = this.db.prepare(
+      `INSERT INTO token_volume_snapshots (
+        chain, address, symbol, strategy_id, volume_5m_usd, volume_1h_usd, price_usd, observed_at
+      ) VALUES (
+        @chain, @address, @symbol, @strategyId, @volume5mUsd, @volume1hUsd, @priceUsd, @observedAt
+      )`,
+    );
+    const createdAt = new Date().toISOString();
+    const payload = {
+      ...candidate,
+      routeAvailable: candidate.routeAvailable ? 1 : 0,
+      routeInputMint: candidate.routeInputMint ?? null,
+      routeInputSymbol: candidate.routeInputSymbol ?? null,
+      strategyId,
+      sellRouteAvailable: candidate.sellRouteAvailable === undefined ? null : candidate.sellRouteAvailable ? 1 : 0,
+      mintAuthorityRevoked: candidate.mintAuthorityRevoked === undefined ? null : candidate.mintAuthorityRevoked ? 1 : 0,
+      freezeAuthorityRevoked: candidate.freezeAuthorityRevoked === undefined ? null : candidate.freezeAuthorityRevoked ? 1 : 0,
+      score: score.total,
+      recommendation: score.recommendation,
+      reasonsJson: JSON.stringify(score.reasons),
+      risksJson: JSON.stringify(score.risks),
+      createdAt,
+      observedAt: createdAt,
+    };
+
+    const transaction = this.db.transaction(() => {
+      insertScore.run(payload);
+      insertVolume.run(payload);
+    });
+    transaction();
   }
 
   listRecentScores(limit = 20): RecentScoreRow[] {
@@ -186,6 +221,7 @@ export class SqliteStore {
                 liquidity_usd as liquidityUsd, volume_5m_usd as volume5mUsd,
                 route_input_mint as routeInputMint, route_input_symbol as routeInputSymbol,
                 strategy_id as strategyId, sell_route_available as sellRouteAvailable,
+                mint_authority_revoked as mintAuthorityRevoked, freeze_authority_revoked as freezeAuthorityRevoked,
                 score, recommendation, created_at as createdAt
          FROM scored_candidates
          ORDER BY id DESC
@@ -194,12 +230,32 @@ export class SqliteStore {
       .all(limit) as RecentScoreRow[];
   }
 
-  listRetriableScoredCandidates(options: { minScore: number; cutoffIso: string; limit?: number }): RetriableScoredCandidateRow[] {
+  listRetriableScoredCandidates(options: {
+    minScore: number;
+    cutoffIso: string;
+    limit?: number;
+    strategyMinScores?: Record<string, number>;
+  }): RetriableScoredCandidateRow[] {
     // Return the best-scored (most recent tie-break) row per address for candidates
     // that (a) scored high enough, (b) are still within the trade horizon, (c) have
     // no open position, and (d) have no position that was opened after the cutoff.
     // ROW_NUMBER deduplicates addresses so a token scored multiple times is only
     // offered once (highest score wins).
+    const strategyEntries = Object.entries(options.strategyMinScores ?? {});
+    const strategyThresholdCases = strategyEntries
+      .map((_, index) => `WHEN @strategyId${index} THEN @strategyMinScore${index}`)
+      .join(' ');
+    const minScoreExpression = strategyEntries.length > 0 ? `CASE strategy_id ${strategyThresholdCases} ELSE @minScore END` : '@minScore';
+    const params: Record<string, string | number> = {
+      minScore: options.minScore,
+      cutoffIso: options.cutoffIso,
+      limit: options.limit ?? 10,
+    };
+    for (const [index, [strategyId, minScore]] of strategyEntries.entries()) {
+      params[`strategyId${index}`] = strategyId;
+      params[`strategyMinScore${index}`] = minScore;
+    }
+
     return this.db
       .prepare(
         `WITH ranked AS (
@@ -210,10 +266,12 @@ export class SqliteStore {
                   age_minutes as ageMinutes, source,
                   route_available as routeAvailable, estimated_slippage_bps as estimatedSlippageBps,
                   route_input_mint as routeInputMint, route_input_symbol as routeInputSymbol,
-                  sell_route_available as sellRouteAvailable, score,
+                  strategy_id as strategyId, sell_route_available as sellRouteAvailable,
+                  mint_authority_revoked as mintAuthorityRevoked, freeze_authority_revoked as freezeAuthorityRevoked,
+                  score,
                   ROW_NUMBER() OVER (PARTITION BY address ORDER BY score DESC, id DESC) as rn
            FROM scored_candidates
-           WHERE score >= @minScore
+           WHERE score >= ${minScoreExpression}
              AND recommendation = 'paper_trade'
              AND created_at >= @cutoffIso
              AND address NOT IN (SELECT address FROM open_positions)
@@ -225,12 +283,26 @@ export class SqliteStore {
                 priceUsd, liquidityUsd, volume5mUsd, volume1hUsd,
                 priceChange5mPct, buys5m, sells5m, ageMinutes, source,
                 routeAvailable, estimatedSlippageBps, routeInputMint, routeInputSymbol,
-                sellRouteAvailable, score
+                strategyId, sellRouteAvailable, mintAuthorityRevoked, freezeAuthorityRevoked, score
          FROM ranked WHERE rn = 1
          ORDER BY score DESC
          LIMIT @limit`,
       )
-      .all({ minScore: options.minScore, cutoffIso: options.cutoffIso, limit: options.limit ?? 10 }) as RetriableScoredCandidateRow[];
+      .all(params) as RetriableScoredCandidateRow[];
+  }
+
+  listTokenVolumeSnapshots(address: string, limit = 50): TokenVolumeSnapshotRow[] {
+    return this.db
+      .prepare(
+        `SELECT chain, address, symbol, strategy_id as strategyId,
+                volume_5m_usd as volume5mUsd, volume_1h_usd as volume1hUsd,
+                price_usd as priceUsd, observed_at as observedAt
+         FROM token_volume_snapshots
+         WHERE address = ?
+         ORDER BY observed_at DESC, id DESC
+         LIMIT ?`,
+      )
+      .all(address, limit) as TokenVolumeSnapshotRow[];
   }
 
   saveOpenPosition(position: PaperPosition): void {
@@ -601,6 +673,8 @@ export class SqliteStore {
         route_input_symbol TEXT,
         strategy_id TEXT NOT NULL DEFAULT 'freshLaunchMomentum',
         sell_route_available INTEGER,
+        mint_authority_revoked INTEGER,
+        freeze_authority_revoked INTEGER,
         score INTEGER NOT NULL,
         recommendation TEXT NOT NULL,
         reasons_json TEXT NOT NULL,
@@ -618,6 +692,20 @@ export class SqliteStore {
 
       CREATE INDEX IF NOT EXISTS idx_scored_candidates_created_at ON scored_candidates(created_at);
       CREATE INDEX IF NOT EXISTS idx_scored_candidates_chain_score ON scored_candidates(chain, score);
+
+      CREATE TABLE IF NOT EXISTS token_volume_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chain TEXT NOT NULL,
+        address TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        strategy_id TEXT NOT NULL DEFAULT 'freshLaunchMomentum',
+        volume_5m_usd REAL NOT NULL,
+        volume_1h_usd REAL NOT NULL,
+        price_usd REAL NOT NULL,
+        observed_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_token_volume_snapshots_address_time ON token_volume_snapshots(address, observed_at);
 
       CREATE TABLE IF NOT EXISTS open_positions (
         id TEXT PRIMARY KEY,
@@ -692,6 +780,8 @@ export class SqliteStore {
     this.addColumnIfMissing('scored_candidates', 'route_input_symbol', 'TEXT');
     this.addColumnIfMissing('scored_candidates', 'strategy_id', "TEXT NOT NULL DEFAULT 'freshLaunchMomentum'");
     this.addColumnIfMissing('scored_candidates', 'sell_route_available', 'INTEGER');
+    this.addColumnIfMissing('scored_candidates', 'mint_authority_revoked', 'INTEGER');
+    this.addColumnIfMissing('scored_candidates', 'freeze_authority_revoked', 'INTEGER');
     this.addColumnIfMissing('scored_candidates', 'outcome_high_usd', 'REAL');
     this.addColumnIfMissing('scored_candidates', 'outcome_low_usd', 'REAL');
     this.addColumnIfMissing('scored_candidates', 'outcome_last_usd', 'REAL');
