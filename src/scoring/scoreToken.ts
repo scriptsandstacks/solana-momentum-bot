@@ -86,6 +86,23 @@ export function scoreTokenCandidate(candidate: TokenCandidate): OpportunityScore
     risks.push('no_sell_route');
   }
 
+  // On-chain authority checks. false = authority still held (rug risk); undefined = not checked.
+  if (candidate.mintAuthorityRevoked === false) {
+    total -= 20;
+    risks.push('mint_authority_held');
+  } else if (candidate.mintAuthorityRevoked === true) {
+    total += 5;
+    reasons.push('mint_authority_revoked');
+  }
+
+  if (candidate.freezeAuthorityRevoked === false) {
+    total -= 15;
+    risks.push('freeze_authority_held');
+  } else if (candidate.freezeAuthorityRevoked === true) {
+    total += 3;
+    reasons.push('freeze_authority_revoked');
+  }
+
   const bounded = clampScore(total);
   const recommendation = bounded >= 75 ? 'paper_trade' : bounded >= 50 ? 'watch' : 'ignore';
 

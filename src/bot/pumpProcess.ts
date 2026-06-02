@@ -1,5 +1,6 @@
 import { fetchPumpPortalMarketCandidates } from './pumpCandidates.js';
 import { checkJupiterRoute, type JupiterRouteCheck } from '../discovery/jupiter.js';
+import { checkMintAuthority, type MintAuthorityInfo } from '../chains/solana/mintAuthority.js';
 import { PaperBroker, type PaperBrokerOptions } from '../paper/paperBroker.js';
 import { restoreBrokerFromStore, isBrokerStateStore } from '../paper/restoreBroker.js';
 import { freshLaunchMomentumStrategy } from '../strategies/freshLaunchMomentum.js';
@@ -40,6 +41,9 @@ interface PumpProcessOptions {
   maxPendingAttempts?: number;
   fetchCandidates?: (tokenMints: string[]) => Promise<TokenCandidate[]>;
   checkRoute?: (outputMint: string) => Promise<JupiterRouteCheck>;
+  // Injectable for testing; defaults to the real Solana RPC call.
+  // Pass null to skip authority checks entirely (e.g. when no RPC URL is available).
+  checkAuthority?: ((mint: string) => Promise<MintAuthorityInfo>) | null;
   reporter?: Reporter;
 }
 
@@ -117,10 +121,28 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
 
     try {
       const route = await checkRoute(candidate.address);
+
+      // Mint/freeze authority check — best-effort on-chain signal.
+      // Runs when an explicit checkAuthority function is provided, or when
+      // solanaConfig.rpcUrlEnv resolves to a URL in the environment.
+      // Pass checkAuthority: null to explicitly disable the check.
+      let authorityInfo: MintAuthorityInfo = { mintAuthorityRevoked: null, freezeAuthorityRevoked: null };
+      if (options.checkAuthority !== null) {
+        const rpcUrl = options.solanaConfig.rpcUrlEnv ? (process.env[options.solanaConfig.rpcUrlEnv] ?? undefined) : undefined;
+        if (options.checkAuthority) {
+          authorityInfo = await options.checkAuthority(candidate.address);
+        } else if (rpcUrl) {
+          authorityInfo = await checkMintAuthority(candidate.address, rpcUrl);
+        }
+        // No explicit function and no RPC URL configured → skip silently (unknown).
+      }
+
       const enriched: TokenCandidate = freshLaunchMomentumStrategy.tagCandidate({
         ...candidate,
         source: `${candidate.source}+${event.eventType}`,
         ...route,
+        mintAuthorityRevoked: authorityInfo.mintAuthorityRevoked ?? undefined,
+        freezeAuthorityRevoked: authorityInfo.freezeAuthorityRevoked ?? undefined,
       });
       const score = freshLaunchMomentumStrategy.scoreCandidate(enriched);
       options.store.saveScoredCandidate(enriched, score);
