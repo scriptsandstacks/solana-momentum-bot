@@ -120,7 +120,7 @@ export class PaperBroker implements ExecutionBroker {
   // positionSizeUsd overrides the broker's configured base size for this specific
   // trade. Use this for conviction-tiered sizing: pass strategy.resolvePositionSizeUsd()
   // output here rather than changing the broker's global configuration.
-  openPosition(candidate: TokenCandidate, score: number, openedAt = new Date(), positionSizeUsd?: number): PaperPosition {
+  async openPosition(candidate: TokenCandidate, score: number, openedAt = new Date(), positionSizeUsd?: number): Promise<PaperPosition> {
     const check = this.canOpenPosition(openedAt);
     if (!check.ok) {
       throw new Error(check.reason);
@@ -169,7 +169,7 @@ export class PaperBroker implements ExecutionBroker {
     return position;
   }
 
-  closePosition(
+  async closePosition(
     positionId: string,
     exitPriceUsd: number,
     reason: PaperTrade['reason'],
@@ -179,7 +179,7 @@ export class PaperBroker implements ExecutionBroker {
     // overrides the position's entry-time route estimate, which was a small
     // buy-side probe and a poor proxy for selling the full position later.
     exitSlippageBps?: number,
-  ): PaperTrade {
+  ): Promise<PaperTrade> {
     const position = this.openPositions.get(positionId);
     if (!position) {
       throw new Error(`Cannot close position: unknown position ${positionId}`);

@@ -347,9 +347,9 @@ export class SqliteStore {
       .prepare(
         `INSERT OR REPLACE INTO open_positions (
           id, chain, address, symbol, strategy_id, token_json, score, entry_price_usd, quantity, opened_at,
-          high_water_mark_usd, last_mark_usd
+          high_water_mark_usd, last_mark_usd, entry_tx_signature
         ) VALUES (@id, @chain, @address, @symbol, @strategyId, @tokenJson, @score, @entryPriceUsd, @quantity, @openedAt,
-          @highWaterMarkUsd, @lastMarkUsd)`,
+          @highWaterMarkUsd, @lastMarkUsd, @entryTxSignature)`,
       )
       .run({
         id: position.id,
@@ -367,6 +367,7 @@ export class SqliteStore {
         openedAt: position.openedAt.toISOString(),
         highWaterMarkUsd: position.highWaterMarkUsd,
         lastMarkUsd: position.lastMarkUsd ?? position.entryPriceUsd,
+        entryTxSignature: position.entryTxSignature ?? null,
       });
   }
 
@@ -377,7 +378,7 @@ export class SqliteStore {
       .prepare(
         `SELECT id, token_json as tokenJson, strategy_id as strategyId, score, entry_price_usd as entryPriceUsd,
                 quantity, opened_at as openedAt, high_water_mark_usd as highWaterMarkUsd,
-                last_mark_usd as lastMarkUsd
+                last_mark_usd as lastMarkUsd, entry_tx_signature as entryTxSignature
          FROM open_positions
          ORDER BY opened_at ASC`,
       )
@@ -391,6 +392,7 @@ export class SqliteStore {
       openedAt: string;
       highWaterMarkUsd: number | null;
       lastMarkUsd: number | null;
+      entryTxSignature: string | null;
     }>;
 
     return rows.map((row) => {
@@ -406,6 +408,7 @@ export class SqliteStore {
         // Older rows predating the columns fall back to the entry price.
         highWaterMarkUsd: row.highWaterMarkUsd ?? row.entryPriceUsd,
         lastMarkUsd: row.lastMarkUsd ?? row.entryPriceUsd,
+        entryTxSignature: row.entryTxSignature ?? undefined,
       };
     });
   }
@@ -438,7 +441,7 @@ export class SqliteStore {
       .all() as Array<{ id: string }>;
     let maxSeq = 0;
     for (const { id } of rows) {
-      const match = /^paper-(\d+)$/.exec(id);
+      const match = /^(?:paper|live)-(\d+)$/.exec(id);
       if (match) {
         maxSeq = Math.max(maxSeq, Number(match[1]));
       }
@@ -461,10 +464,10 @@ export class SqliteStore {
     const insert = this.db.prepare(
       `INSERT OR IGNORE INTO closed_trades (
         position_id, chain, address, symbol, strategy_id, token_json, score, source, entry_price_usd, exit_price_usd,
-        quantity, reason, exit_price_source, pnl_usd, pnl_pct, opened_at, closed_at
+        quantity, reason, exit_price_source, pnl_usd, pnl_pct, opened_at, closed_at, exit_tx_signature
       ) VALUES (
         @positionId, @chain, @address, @symbol, @strategyId, @tokenJson, @score, @source, @entryPriceUsd, @exitPriceUsd,
-        @quantity, @reason, @exitPriceSource, @pnlUsd, @pnlPct, @openedAt, @closedAt
+        @quantity, @reason, @exitPriceSource, @pnlUsd, @pnlPct, @openedAt, @closedAt, @exitTxSignature
       )`,
     );
     const removeOpen = this.db.prepare('DELETE FROM open_positions WHERE id = ?');
@@ -488,6 +491,7 @@ export class SqliteStore {
         pnlPct: trade.pnlPct,
         openedAt: trade.openedAt.toISOString(),
         closedAt: trade.closedAt.toISOString(),
+        exitTxSignature: trade.exitTxSignature ?? null,
       });
       removeOpen.run(trade.positionId);
     });
@@ -816,10 +820,12 @@ export class SqliteStore {
     this.addColumnIfMissing('open_positions', 'strategy_id', "TEXT NOT NULL DEFAULT 'freshLaunchMomentum'");
     this.addColumnIfMissing('open_positions', 'high_water_mark_usd', 'REAL');
     this.addColumnIfMissing('open_positions', 'last_mark_usd', 'REAL');
+    this.addColumnIfMissing('open_positions', 'entry_tx_signature', 'TEXT');
     this.addColumnIfMissing('closed_trades', 'strategy_id', "TEXT NOT NULL DEFAULT 'freshLaunchMomentum'");
     this.addColumnIfMissing('closed_trades', 'exit_price_source', "TEXT NOT NULL DEFAULT 'fresh'");
     this.addColumnIfMissing('closed_trades', 'score', 'INTEGER NOT NULL DEFAULT 0');
     this.addColumnIfMissing('closed_trades', 'source', "TEXT NOT NULL DEFAULT ''");
+    this.addColumnIfMissing('closed_trades', 'exit_tx_signature', 'TEXT');
     this.addColumnIfMissing('scored_candidates', 'route_input_mint', 'TEXT');
     this.addColumnIfMissing('scored_candidates', 'route_input_symbol', 'TEXT');
     this.addColumnIfMissing('scored_candidates', 'strategy_id', "TEXT NOT NULL DEFAULT 'freshLaunchMomentum'");

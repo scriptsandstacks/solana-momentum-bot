@@ -59,12 +59,23 @@ describe('createExecutionBroker', () => {
     expect(broker.mode).toBe('paper');
   });
 
-  it('creates the inert LiveBroker scaffold in live mode', () => {
+  it('creates a LiveBroker in live mode', () => {
     const broker = createExecutionBroker({ config: parseConfig({ ...baseConfig, mode: 'live' }), paper });
 
     expect(broker).toBeInstanceOf(LiveBroker);
     expect(broker.mode).toBe('live');
+    // No initial cash (deps not wired) so capacity check fails on funds.
     expect(broker.canOpenPosition()).toMatchObject({ ok: false });
-    expect(() => broker.openPosition({} as any, 80)).toThrow('LiveBroker execution is not implemented yet');
+  });
+
+  it('LiveBroker openPosition rejects (no funds in a freshly factory-created broker)', async () => {
+    const broker = createExecutionBroker({ config: parseConfig({ ...baseConfig, mode: 'live' }), paper });
+    // Factory-created LiveBroker has no initial cash — canOpenPosition blocks first.
+    await expect(broker.openPosition({} as any, 80)).rejects.toThrow(/insufficient funds|deps are not configured/);
+  });
+
+  it('LiveBroker closePosition rejects on unknown position id', async () => {
+    const broker = createExecutionBroker({ config: parseConfig({ ...baseConfig, mode: 'live' }), paper });
+    await expect(broker.closePosition('pos-1', 0.01, 'stop_loss')).rejects.toThrow('unknown position');
   });
 });

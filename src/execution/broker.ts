@@ -9,7 +9,7 @@ export interface ExecutionBroker {
   canOpenPosition(now?: Date, requiredSizeUsd?: number): { ok: boolean; reason?: string };
   // positionSizeUsd overrides the broker's configured base size for this trade,
   // allowing strategies to size up high-conviction trades and size down borderline ones.
-  openPosition(candidate: TokenCandidate, score: number, openedAt?: Date, positionSizeUsd?: number): PaperPosition;
+  openPosition(candidate: TokenCandidate, score: number, openedAt?: Date, positionSizeUsd?: number): Promise<PaperPosition>;
   recordMark(positionId: string, priceUsd: number): PaperPosition;
   closePosition(
     positionId: string,
@@ -18,7 +18,7 @@ export interface ExecutionBroker {
     closedAt?: Date,
     exitPriceSource?: NonNullable<PaperTrade['exitPriceSource']>,
     exitSlippageBps?: number,
-  ): PaperTrade;
+  ): Promise<PaperTrade>;
   getCashUsd(): number;
   getRealizedPnlUsd(): number;
   getDailyRealizedPnlUsd(now?: Date): number;

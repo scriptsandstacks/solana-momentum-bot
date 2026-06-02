@@ -1,6 +1,6 @@
 # Hermes — System Documentation
 
-Technical reference for the Hermes paper trading bot. Covers architecture, data flow, strategy logic, exit rules, analytics, and CLI commands.
+Technical reference for the Hermes trading bot. Covers architecture, data flow, strategy logic, exit rules, analytics, live trading, and CLI commands.
 
 ---
 
@@ -9,11 +9,10 @@ Technical reference for the Hermes paper trading bot. Covers architecture, data 
 | Area | Status |
 |---|---|
 | Paper trading (Solana) | Active |
-| Live trading | Not implemented — architecture ready |
+| Live trading (Solana) | Implemented — Jupiter swap execution, keypair signing, on-chain confirmation |
 | Base / Ethereum | Config present, disabled |
-| Private key usage | Not used in paper mode |
-| Persistence | SQLite |
-| Test coverage | 23 files, 134 tests |
+| Persistence | SQLite (auto-migrating schema) |
+| Test coverage | 32 files, 240 tests |
 
 ---
 
@@ -28,7 +27,7 @@ DexScreener + Raydium enrichment (price, liquidity, volume, buy/sell counts)
         ↓
 Jupiter route check (swappability, buy-side slippage, sell-route probe)
         ↓
-Solana RPC mint authority check (mint/freeze authority revoked?)
+Solana RPC risk checks (mint/freeze authority, holder concentration, volume acceleration)
         ↓
 Strategy scorer → OpportunityScore (0–100)
         ↓
@@ -36,11 +35,16 @@ Entry decision (score ≥ strategy.config.minScoreToEnter AND broker has capacit
         ↓
 Position sizing (strategy.resolvePositionSizeUsd — conviction tiers)
         ↓
-PaperBroker (simulated fill with cost model)
+ExecutionBroker (PaperBroker or LiveBroker)
+  Paper: simulated fill with cost model
+  Live:  Jupiter swap → sign → submit → confirm → actual fill
         ↓
-SQLite (scored candidates, open positions, closed trades, events)
+SQLite (scored candidates, open positions, closed trades, events, tx signatures)
         ↓
-Exit engine (re-price every interval → two-phase trailing stop)
+Exit engine
+  Interval polling (30 s for paper, 10 s for live)
+  + Solana RPC WebSocket activity triggers (live: immediate on trade detection)
+  → Two-phase trailing stop
         ↓
 Analytics (stats, strategies, outcomes, tune)
 ```
@@ -57,7 +61,7 @@ Analytics (stats, strategies, outcomes, tune)
 
 **Event type:** `new_token` only
 
-**Scorer signals (src/scoring/scoreToken.ts):**
+**Scorer signals (`src/scoring/scoreToken.ts`):**
 
 | Signal | Strong | OK | Weak / Risk |
 |---|---|---|---|
@@ -71,19 +75,21 @@ Analytics (stats, strategies, outcomes, tune)
 | Sell route | present (0) | — | absent (−50) |
 | Mint authority | revoked (+5) | unchecked (0) | held (−20) |
 | Freeze authority | revoked (+3) | unchecked (0) | held (−15) |
+| Top-5 holder concentration | — | <80% (0) | ≥80% (−10) |
+| Volume acceleration (z-score) | z≥2 (+6) | z≥1 (+3) | z≤−1 (−5) |
 
-**Entry threshold:** score ≥ 75 (configurable via `scoring.minimumScoreToEnter`)
+**Entry threshold:** score ≥ 75
 
 **Position sizing:**
-- Score 90+: 1.5× base position size
+- Score 90+: 1.5× base
 - Score 80–89: 1.0× base
 - Score 75–79: 0.75× base
 
 **Exit rules:**
-- Stop-loss: −20% from entry (hard floor, always active)
-- Trailing arm: +30% — trailing stop only activates once the high-water mark reaches +30%
-- Trailing stop: 15% pullback from peak (phase 2 only)
-- Safety ceiling: +300% fixed take-profit (almost never fires; trailing stop is the real exit)
+- Stop-loss: −20% from entry (phase 1, always active)
+- Trailing arm: +30% — trailing stop only activates once HWM reaches +30%
+- Trailing stop: 15% pullback from peak (phase 2)
+- Safety ceiling: +300% fixed take-profit
 - Max hold: 60 minutes
 
 ---
@@ -92,7 +98,7 @@ Analytics (stats, strategies, outcomes, tune)
 
 **File:** `src/strategies/migrationMomentum.ts`
 
-**Edge:** When a Pump.fun token's bonding curve reaches 100% completion (~$69K raised), the protocol executes a large structural buy that seeds Raydium liquidity. The token has already survived price discovery on Pump.fun, so its liquidity is proven. The migration pump is typically sharper and shorter than a fresh launch pump.
+**Edge:** Bonding curve completion executes a large structural buy seeding Raydium. Token has proven demand from Pump.fun price discovery. Migration pumps are sharp and short.
 
 **Event type:** `migration` only
 
@@ -109,6 +115,8 @@ Analytics (stats, strategies, outcomes, tune)
 | Slippage | ≤200 bps (+5) | — | >500 bps (−8) |
 | Sell route | present (0) | — | absent (−50) |
 | Mint / freeze authority | same as above | | |
+| Top-5 holder concentration | — | <80% (0) | ≥80% (−10) |
+| Volume acceleration | z≥1 (+4) | — | z≤−1 (−4) |
 
 **Entry threshold:** score ≥ 70
 
@@ -118,46 +126,61 @@ Analytics (stats, strategies, outcomes, tune)
 
 **Exit rules:**
 - Stop-loss: −18% from entry
-- Trailing arm: +15% — trailing stop arms sooner (migration pumps start immediately)
-- Trailing stop: 12% pullback from peak
+- Trailing arm: +15%
+- Trailing stop: 12% from peak
 - Safety ceiling: +200%
-- Max hold: 25 minutes (migration pumps peak and fade quickly)
+- Max hold: 25 minutes
 
 ---
 
 ## Two-phase exit model
 
-All strategies use a two-phase trailing stop to avoid clipping winners short while still cutting losers fast.
-
 ```
 Phase 1 — position is below trailingArmPct gain
   Only the hard stop-loss applies.
-  Trailing stop is inactive.
-  Position can breathe through normal volatility without being shaken out.
+  Trailing stop is inactive (no premature shake-out on normal volatility).
 
 Phase 2 — high-water mark has reached trailingArmPct above entry
   Trailing stop activates at trailingStopPct below the peak.
-  No ceiling on upside (takeProfitPct is set high as a safety net only).
+  Safety ceiling (takeProfitPct) acts as backstop only.
   Position rides winners as far as they go.
 ```
 
-**Why this matters:** A fixed 50% take-profit on a memecoin that peaks at +400% leaves 350% on the table. A trailing stop that activates too early (e.g. after any 1% gain) shakes out the position on normal noise. The arm threshold prevents premature activation; the trailing stop then captures most of the move.
+---
+
+## Risk signals
+
+### Mint / freeze authority (`src/chains/solana/mintAuthority.ts`)
+`getAccountInfo` with `jsonParsed` on the token mint. Reads `mintAuthority` and `freezeAuthority`. Best-effort, 5 s timeout. Penalises held authority; bonuses for both revoked. Skipped silently if RPC is unreachable.
+
+### Holder concentration (`src/chains/solana/holderConcentration.ts`)
+`getTokenLargestAccounts` + `getTokenSupply` to compute the fraction held by the top-5 accounts. If top-5 hold ≥ 80% of supply, both strategies apply a −10 pt risk. Best-effort.
+
+### Volume acceleration (`src/bot/volumeAcceleration.ts`)
+Computes a z-score of the current 5-minute volume against the last 30 minutes of per-token snapshots stored in `token_volume_snapshots`. Positive z = accelerating; negative z = decelerating. Insufficient history (< 3 snapshots) returns undefined; scoring skips the signal.
 
 ---
 
-## Entry decision flow
+## ExecutionBroker interface
 
-For each pending PumpPortal event:
+**File:** `src/execution/broker.ts`
 
-1. Fetch market data from DexScreener + Raydium
-2. Filter: liquidity < `minLiquidityUsd` or volume < `minVolume5mUsd` → skip
-3. Check Jupiter buy routes; probe sell route (honeypot detection)
-4. Check Solana RPC mint/freeze authority (when RPC URL configured)
-5. Route to strategy: `new_token` → freshLaunchMomentum, `migration` → migrationMomentum
-6. Strategy tags candidate with `strategyId` and scores it
-7. If `score < strategy.config.minScoreToEnter` → persist score, no entry
-8. If broker capacity blocked (position cap, cash, daily-loss breaker) → persist score, note reason, add to retry queue
-9. Otherwise: compute position size (`strategy.resolvePositionSizeUsd(score, base)`), open paper position
+The seam between bot logic and execution engine. Both `PaperBroker` and `LiveBroker` implement it. `openPosition` and `closePosition` are async so live transaction submission fits naturally.
+
+```typescript
+interface ExecutionBroker {
+  readonly mode: 'paper' | 'live';
+  canOpenPosition(now?: Date, requiredSizeUsd?: number): { ok: boolean; reason?: string };
+  openPosition(candidate, score, openedAt?, positionSizeUsd?): Promise<PaperPosition>;
+  recordMark(positionId, priceUsd): PaperPosition;
+  closePosition(positionId, exitPriceUsd, reason, closedAt?, exitPriceSource?, exitSlippageBps?): Promise<PaperTrade>;
+  getCashUsd(): number;
+  getRealizedPnlUsd(): number;
+  getDailyRealizedPnlUsd(now?): number;
+  getOpenPositions(): PaperPosition[];
+  getClosedTrades(): PaperTrade[];
+}
+```
 
 ---
 
@@ -165,31 +188,61 @@ For each pending PumpPortal event:
 
 **File:** `src/paper/paperBroker.ts`
 
-Implements `ExecutionBroker` interface (`src/execution/broker.ts`). Simulates fills without touching real funds.
+Simulates fills without touching real funds.
 
-**Cost model** — fills are not frictionless:
-- **Entry:** effective buy price = mid × (1 + feeBps/10000 + routeSlippageBps/10000). Fewer tokens per dollar than the mid price.
-- **Exit:** realized proceeds = mid × (1 − feeBps/10000 − sellSlippageBps/10000). Sell slippage is re-quoted from Jupiter at actual position size (ExactOut).
+**Cost model:**
+- **Entry:** effective buy price = mid × (1 + feeBps/10000 + routeSlippageBps/10000)
+- **Exit:** realized proceeds = mid × (1 − feeBps/10000 − sellSlippageBps/10000)
 
-**State restored from SQLite on every pass** — cash, open positions, position-id sequence, and daily P&L for the circuit breaker all survive process restarts.
+**State restored from SQLite on every pass** via `restoreBrokerFromStore`.
 
-**Circuit breakers:**
-- `maxOpenPositions`: no new entries when at cap
-- Cash: no entry if cash < required position size
-- `maxDailyLossUsd`: no new entries once today's net realized P&L ≤ −maxDailyLossUsd; resets at UTC midnight
+**Circuit breakers:** `maxOpenPositions`, cash floor, `maxDailyLossUsd` (resets UTC midnight).
 
 ---
 
-## Live trading transition
+## Live broker
 
-The `ExecutionBroker` interface is the seam. The bot pipeline speaks only to this interface. To add live trading:
+**File:** `src/execution/liveBroker.ts`
 
-1. `src/execution/liveBroker.ts` — implement `ExecutionBroker`
-2. `openPosition()` → submit Jupiter swap, sign with wallet keypair
-3. `closePosition()` → submit sell transaction
-4. CLI `run`: branch on `config.mode === 'live'`, build `LiveBroker` instead of restoring `PaperBroker`
+Executes real on-chain trades via Jupiter and the Solana RPC.
 
-No changes needed to `pumpProcess`, `exitPositions`, `runLoop`, or any strategy.
+**`openPosition` flow:**
+1. `canOpenPosition()` — checks wallet config, cash, cap, daily-loss limit
+2. `getJupiterQuoteForSwap` — sized to `positionSizeUsd` (USDC direct, SOL via price query)
+3. `getJupiterSwapTransaction` — POST to `/swap/v1/swap`
+4. `VersionedTransaction.deserialize` → `tx.sign([keypair])` → `sendTransaction` RPC
+5. `confirmTransaction` — polls `getSignatureStatuses` every 2 s up to 90 s
+6. Returns `PaperPosition` with actual fill price and `entryTxSignature`
+
+**`closePosition` flow:**
+1. Quote token → USDC (`getJupiterQuoteForSwap`)
+2. Build, sign, send, confirm
+3. Returns `PaperTrade` with USDC proceeds and `exitTxSignature`
+
+**Deps are injectable** (`LiveBrokerDeps`) — all network calls are mocked in tests; no real keys needed.
+
+**Startup:** `LiveBroker.restore(store, options, deps, initialCashUsd)` seeds position state from SQLite and cash from the on-chain wallet balance.
+
+---
+
+## Real-time exit triggers
+
+**File:** `src/execution/tokenActivityWatcher.ts`
+
+In live mode, a `TokenActivityWatcher` subscribes to the Solana RPC `logsSubscribe` WebSocket for each currently open token. When a confirmed transaction mentions a held mint, the watcher fires a debounced callback (1 s default), which triggers `runExitOnlyPass()` immediately rather than waiting for the next 10 s interval. A separate `exitIntervalMs` interval runs as a backstop.
+
+The RPC WebSocket URL is derived from `rpcUrlEnv` by substituting `https://` → `wss://`.
+
+---
+
+## Startup reconciliation
+
+**File:** `src/execution/walletReconciler.ts`
+
+When `mode: live`, the `run` command queries wallet SPL token balances (`getTokenAccountsByOwner`) and compares with `open_positions` in SQLite. Two discrepancy types:
+
+- **ORPHANED** — token held on-chain but absent from SQLite. Likely from a crash after swap confirmation but before `saveOpenPosition`. Use `recover-positions` to register a synthetic position.
+- **STALE** — position in SQLite but no on-chain balance. Likely manually sold or a partial fill. Use `recover-positions` to close it out.
 
 ---
 
@@ -199,142 +252,139 @@ No changes needed to `pumpProcess`, `exitPositions`, `runLoop`, or any strategy.
 
 | Log prefix | Content |
 |---|---|
-| `[trade] OPENED ...` | Strategy, score, entry price |
-| `[trade] CLOSED ...` | Reason, P&L ($, %), hold time |
+| `[trade] OPENED ...` | Strategy, score, entry price (+ tx signature in live mode) |
+| `[trade] CLOSED ...` | Reason, P&L ($, %), hold time (+ tx signature in live mode) |
 | `[cycle] ...` | Events processed, opened, closed, open count, cash |
 | `[analytics] ...` | Full stats output every N passes (`--analytics-every`, default 10) |
 | `[run:process] ...` | Raw enrichment / scoring counts |
-| `[run:exits] ...` | Raw exit counts |
+| `[run:exits] ...` | Raw exit counts, including `failed=` for live tx errors |
+| `[run:exits:fast] ...` | Activity-triggered exit pass results |
+| `[reconcile] ...` | Startup wallet reconciliation results |
 
 ### CLI commands
 
-**`stats`** — realized trade analytics broken down by:
-- Strategy (freshLaunchMomentum vs migrationMomentum)
-- Exit reason (stop-loss / trailing-stop / timeout)
-- Exit price source (fresh price vs stale last-mark)
-- Score bucket (75-79, 80-89, 90-100)
-- Discovery source
-
-Metrics per bucket: trades, wins, losses, win%, total P&L, expectancy (mean P&L/trade), avg win, avg loss, profit factor (gross wins ÷ gross losses), avg hold minutes.
-
-**`strategies`** — compact per-strategy summary table.
-
-**`outcomes`** — counterfactual MFE/MAE analytics for all scored candidates (whether traded or not). Answers: "at each score level, how far did candidates run and draw down over the trade horizon?"
-
-**`tune`** — reads outcome data and emits actionable, confidence-rated recommendations:
-- Whether to raise or lower the entry threshold (based on which score buckets hit SL > TP)
-- Whether the fixed take-profit ceiling is cutting winners short (when avg MFE >> takeProfitPct)
-- Whether the stop-loss could be tightened (when avg MAE is much smaller than the stop)
-
-Sample output:
-```
-Threshold Tuning Recommendations
-Based on 143 tracked candidates
-Current: entry≥75  SL=20%  TP=300%
-
-Outcome by score bucket:
-  Bucket        n    avgMFE   avgMAE    hitTP%   hitSL%
-  <75          48    +11.2%  -18.4%       15%      69%
-▶ 75-79        38    +28.1%  -14.2%       32%      53%
-▶ 80-89        45    +52.3%   -9.7%       56%      33%
-▶ 90-100       12    +87.4%   -5.1%       83%       8%
-
-Recommendations:
-  [HIGH] scoring.minimumScoreToEnter
-    Current: 75
-    Suggest: Raise to 80
-    Why:     Score bucket 75-79 hits stop-loss more often than take-profit...
-```
+| Command | Purpose |
+|---|---|
+| `run` | Main loop. `mode: live` enables on-chain swaps. `--exit-interval-seconds` (default 10 in live). |
+| `live-readiness` | Audit live prerequisites without reading wallet contents or placing trades. |
+| `recover-positions` | Resolve wallet/SQLite discrepancies. `--dry-run`, `--yes`. |
+| `report` | Persisted scores, open positions, closed trades, events. |
+| `stats` | Trade analytics: expectancy, win rate, P&L by strategy / reason / score bucket / source. |
+| `strategies` | Compact per-strategy performance summary. |
+| `outcomes` | Counterfactual MFE/MAE by score bucket. |
+| `tune` | Outcome data → specific threshold recommendations with confidence. `--apply` (`--yes`). |
+| `pump-watch` | Bounded PumpPortal listener. |
+| `pump-process` | Process pending events into scored candidates. |
+| `manage-exits` | One-shot exit pass. |
+| `track-outcomes` | One-shot forward price capture. |
+| `prune` | Delete old untraded scored candidates. |
+| `check-route` | Read-only Jupiter route smoke test. |
 
 ---
 
 ## Data pipeline — detailed
 
-### PumpPortal websocket
+### PumpPortal WebSocket
+Subscribes to `subscribeNewToken` and `subscribeMigration` free streams. Events are persisted immediately, processed asynchronously. Events with no market data remain `pending` and are retried up to 5 times.
 
-Subscribes to `subscribeNewToken` and `subscribeMigration` free streams. Events are persisted to `pumpportal_events` immediately as they arrive, then processed asynchronously by `pump-process` or the `run` loop.
-
-Each event stores: `eventType`, `tokenMint`, `symbol`, `name`, `signature`, `rawJson`, `receivedAt`, `processingStatus`, `processingNote`.
-
-Events with no market data yet remain `pending` and are retried up to 5 times before being skipped.
-
-### DexScreener + Raydium enrichment
-
-For each pending mint, the bot fetches in parallel:
-- **DexScreener** `/tokens/<mints>`: pair data, price, liquidity, volume (5m, 1h), buy/sell counts, momentum
-- **Raydium** pool endpoint: pool data, TVL
-
-Results are merged per mint: price/liquidity/pair from the deepest pool; volume/buy-sell counts/momentum from DexScreener (which has live activity; Raydium does not). Keeps the best candidate per mint.
+### Enrichment
+DexScreener (`/tokens/<mints>`) and Raydium pool endpoint queried in parallel per mint. Results merged: price/liquidity/pair from the deepest pool; volume/buy-sell counts/momentum from DexScreener. Retry-refreshed candidates get a fresh route check before opening.
 
 ### Jupiter route check
-
-For each viable candidate:
-1. Quotes a small fixed buy (SOL→token, USDC→token, USDT→token) — keeps the best (lowest slippage) route
-2. Probes a small sell ($5 ExactOut: token→USDC) — if no quote, flags `sellRouteAvailable: false` (honeypot signal, −50 pts)
-
-### Solana RPC authority check
-
-`getAccountInfo` with `jsonParsed` encoding on the token mint address. Reads `mintAuthority` and `freezeAuthority` from the SPL token mint account. Best-effort with 5-second timeout; returns unknown if RPC is unreachable. Only runs when `solanaConfig.rpcUrlEnv` resolves to a URL.
+1. Quotes a small fixed buy (SOL→token, USDC→token, USDT→token) — keeps lowest-slippage route
+2. Probes a $5 ExactOut sell (token→USDC) — `sellRouteAvailable: false` = honeypot, −50 pts
 
 ---
 
 ## SQLite schema
 
-**`scored_candidates`** — every candidate that passed the liquidity/volume pre-filter, whether entered or not. Includes forward-outcome columns populated by `track-outcomes`:
-
+**`scored_candidates`**
 ```
 id, chain, address, symbol, strategy_id, token_json, score, recommendation,
 reasons, risks, source, price_usd, liquidity_usd, volume_5m_usd,
 route_available, sell_route_available, estimated_slippage_bps,
+mint_authority_revoked, freeze_authority_revoked, top5_holder_pct,
+volume_acceleration_5m_z, volume_acceleration_samples,
 outcome_high_usd, outcome_low_usd, outcome_last_usd,
 outcome_first_take_profit_at, outcome_first_stop_loss_at,
 outcome_done, created_at
 ```
 
-**`open_positions`** — currently open simulated positions. Includes `high_water_mark_usd` and `last_mark_usd` for trailing-stop math.
+**`open_positions`**
+```
+id, chain, address, symbol, strategy_id, token_json, score,
+entry_price_usd, quantity, opened_at, high_water_mark_usd, last_mark_usd,
+entry_tx_signature  ← live mode only
+```
 
-**`closed_trades`** — completed paper trades with entry/exit price, quantity, P&L, exit reason, and exit price source.
+**`closed_trades`**
+```
+id, position_id, chain, address, symbol, strategy_id, token_json, score, source,
+entry_price_usd, exit_price_usd, quantity, reason, exit_price_source,
+pnl_usd, pnl_pct, opened_at, closed_at,
+exit_tx_signature  ← live mode only
+```
 
-**`pumpportal_events`** — raw WebSocket events with processing status.
+**`token_volume_snapshots`** — per-token 5m volume history for acceleration signal
+
+**`pumpportal_events`** — raw WebSocket events with processing status
 
 ---
 
 ## Configuration reference
 
 ```yaml
-mode: paper             # 'paper' | 'live' (live not yet implemented)
+mode: paper  # 'paper' | 'live'
 
 chains:
   solana:
     enabled: true
-    walletFile: ./wallet/chain-solana.txt   # used only in live mode
-    rpcUrlEnv: SOLANA_RPC_URL               # env var for mint authority checks
-    minLiquidityUsd: 10000                  # pre-filter before scoring
+    walletFile: ./wallet/chain-solana.txt   # live mode only — Solana CLI keypair JSON
+    rpcUrlEnv: SOLANA_RPC_URL               # env var name for RPC URL (also used for risk signals)
+    minLiquidityUsd: 10000
     minVolume5mUsd: 5000
     maxSlippageBps: 500
+    priorityFeeLamports: auto               # live mode: lamports per tx, or 'auto' (Jupiter dynamic)
 
-paper:
+paper:                                      # controls position sizing in both paper and live modes
   startingBalanceUsd: 1000
-  positionSizeUsd: 25      # base size, scaled by strategy conviction tiers
+  positionSizeUsd: 25                       # base size, scaled by strategy conviction tiers
   maxOpenPositions: 3
-  maxDailyLossUsd: 100     # circuit breaker; resets at UTC midnight
+  maxDailyLossUsd: 100                      # circuit breaker; resets at UTC midnight
 
-exits:                     # global defaults; each strategy may override
+exits:                                      # global defaults; each strategy may override
   stopLossPct: 20
-  takeProfitPct: 300       # safety ceiling — trailing stop is the real exit
-  trailingStopPct: 15      # pullback from peak (phase 2)
-  trailingArmPct: 30       # phase 2 activates once HWM reaches +30%
+  takeProfitPct: 300                        # safety ceiling — trailing stop is the real exit
+  trailingStopPct: 15
+  trailingArmPct: 30
   maxHoldMinutes: 60
 
 fees:
-  swapFeeBps: 30           # per-leg swap + priority fee (entry and exit)
-  applyRouteSlippage: true # also charge route price impact
+  swapFeeBps: 30
+  applyRouteSlippage: true
 
 scoring:
-  minimumScoreToEnter: 75  # freshLaunchMomentum threshold
+  minimumScoreToEnter: 75
+
+strategies:
+  freshLaunchMomentum:
+    minScoreToEnter: 75
+    exits:
+      trailingArmPct: 30
+      trailingStopPct: 15
+      maxHoldMinutes: 60
+      takeProfitPct: 300
+  migrationMomentum:
+    minScoreToEnter: 70
+    exits:
+      stopLossPct: 18
+      trailingArmPct: 15
+      trailingStopPct: 12
+      maxHoldMinutes: 25
+      takeProfitPct: 200
 
 retention:
-  scoredCandidateDays: 30  # prune untraded scored candidates after this
+  scoredCandidateDays: 30
 ```
 
 ---
@@ -343,43 +393,57 @@ retention:
 
 ```
 src/
-  cli/index.ts                    CLI entrypoint and command wiring
-  config/schema.ts                Zod config schema
-  config/loadConfig.ts            YAML loader
+  cli/index.ts                        CLI entrypoint: all commands
 
-  strategies/types.ts             TradingStrategy interface + StrategyConfig
-  strategies/freshLaunchMomentum.ts  Fresh launch strategy + scorer
-  strategies/migrationMomentum.ts    Migration strategy + scorer
+  config/schema.ts                    Zod config schema (ChainConfig, BotConfig)
+  config/loadConfig.ts                YAML loader
 
-  execution/broker.ts             ExecutionBroker interface (paper/live seam)
-  paper/paperBroker.ts            PaperBroker (implements ExecutionBroker)
-  paper/restoreBroker.ts          SQLite → PaperBroker state restoration
+  strategies/types.ts                 TradingStrategy interface + StrategyConfig
+  strategies/freshLaunchMomentum.ts   Fresh launch strategy + scorer
+  strategies/migrationMomentum.ts     Migration strategy + scorer
+  strategies/buildStrategies.ts       Config → strategy array factory
 
-  scoring/scoreToken.ts           freshLaunchMomentum scorer (used by strategy)
+  execution/broker.ts                 ExecutionBroker interface (paper/live seam)
+  execution/brokerFactory.ts          createExecutionBroker factory
+  execution/liveBroker.ts             LiveBroker — on-chain Jupiter swap execution
+  execution/liveDeps.ts               Production deps: keypair, sign/send, confirm, decimals
+  execution/jupiterSwap.ts            Jupiter quote + swap transaction API
+  execution/liveReadiness.ts          live-readiness audit logic
+  execution/tokenActivityWatcher.ts   Solana RPC logsSubscribe WebSocket watcher
+  execution/walletReconciler.ts       On-chain vs SQLite position reconciliation
+  execution/positionRecovery.ts       Pure recovery transforms for recover-positions
 
-  bot/pumpProcess.ts              Event → strategy routing → enrichment → entry
-  bot/exitPositions.ts            Exit engine: re-price + two-phase trailing stop
-  bot/retryBlockedOpens.ts        Retry capacity-blocked entries after exit pass
-  bot/runLoop.ts                  Main loop: watch + process + exit + outcomes
-  bot/analytics.ts                Trade and outcome analytics
-  bot/reporter.ts                 Reporter interface + consoleReporter
-  bot/storageReport.ts            Persisted state report renderer
-  bot/report.ts                   In-memory scan report renderer
-  bot/tune.ts                     Threshold tuning recommendations
-  bot/paperCycle.ts               One-shot scan + paper-trade cycle
-  bot/pumpWatch.ts                Bounded PumpPortal listener
-  bot/trackOutcomes.ts            Forward MFE/MAE capture for scored candidates
+  paper/paperBroker.ts                PaperBroker (implements ExecutionBroker)
+  paper/restoreBroker.ts              SQLite → PaperBroker state restoration
 
-  chains/solana/scanner.ts        DexScreener-based Solana scan pipeline
-  chains/solana/mintAuthority.ts  Solana RPC mint/freeze authority check
+  scoring/scoreToken.ts               freshLaunchMomentum scorer
 
-  discovery/dexscreener.ts        DexScreener pair discovery and token lookup
-  discovery/jupiter.ts            Jupiter route check, sell probe, exit slippage quote
-  discovery/pumpPortal.ts         PumpPortal WebSocket client
-  discovery/raydium.ts            Raydium pool/liquidity enrichment
+  bot/pumpProcess.ts                  Event → strategy routing → enrichment → entry
+  bot/exitPositions.ts                Exit engine: re-price + two-phase trailing stop
+  bot/retryBlockedOpens.ts            Retry capacity-blocked entries after exit pass
+  bot/runLoop.ts                      Main loop: watch + process + exit + outcomes + watcher
+  bot/volumeAcceleration.ts           Volume acceleration z-score computation
+  bot/analytics.ts                    Trade and outcome analytics
+  bot/reporter.ts                     Reporter interface + consoleReporter
+  bot/tune.ts                         Threshold tuning recommendations
+  bot/paperCycle.ts                   One-shot scan + paper-trade cycle
+  bot/pumpWatch.ts                    Bounded PumpPortal listener
+  bot/trackOutcomes.ts                Forward MFE/MAE capture
+  bot/pumpCandidates.ts               fetchPumpPortalMarketCandidates (DexScreener + Raydium)
+  bot/storageReport.ts                Persisted state report renderer
+  bot/report.ts                       In-memory scan report renderer
 
-  storage/sqliteStore.ts          SQLite schema, migrations, repositories
-  types/domain.ts                 Shared domain types
+  chains/solana/scanner.ts            DexScreener-based Solana scan
+  chains/solana/mintAuthority.ts      Solana RPC mint/freeze authority check
+  chains/solana/holderConcentration.ts Top-5 holder concentration check
+
+  discovery/dexscreener.ts            DexScreener pair discovery
+  discovery/jupiter.ts                Jupiter route check + sell probe + exit slippage
+  discovery/pumpPortal.ts             PumpPortal WebSocket client
+  discovery/raydium.ts                Raydium pool/liquidity enrichment
+
+  storage/sqliteStore.ts              SQLite schema (auto-migrating), repositories
+  types/domain.ts                     Shared types: TokenCandidate, PaperPosition, PaperTrade
 ```
 
 ---
@@ -388,10 +452,16 @@ src/
 
 ```bash
 npm install
-npm test                          # 23 test files, 134 tests
-npm run typecheck                 # tsc --noEmit, must be clean
-npm run bot -- --help             # show all commands
+npm test              # 32 test files, 240 tests
+npm run typecheck     # must be clean before committing
+npm run bot -- --help # show all commands
 ```
 
-Never commit: `wallet/`, `.env`, `data/`, `logs/`, `node_modules/`.
-Never log or commit: private keys, seed phrases, API keys.
+**Before running live:**
+```bash
+npm run bot -- live-readiness   # audit all prerequisites
+npm run bot -- recover-positions --dry-run  # verify wallet/SQLite sync
+```
+
+**Never commit:** `wallet/`, `.env`, `data/`, `logs/`, `node_modules/`
+**Never log:** private keys, seed phrases, API keys

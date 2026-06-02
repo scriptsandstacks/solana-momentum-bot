@@ -5,10 +5,16 @@ const chainConfigSchema = z.object({
   // Path to a wallet/keypair file. Optional and intentionally unused in paper
   // mode; live mode will load this to sign on-chain trades.
   walletFile: z.string().min(1).optional(),
+  // Env var name that holds the RPC URL (e.g. SOLANA_RPC_URL). Required for
+  // live trading and for on-chain risk signals (mint authority, holder concentration).
   rpcUrlEnv: z.string().min(1).optional(),
   minLiquidityUsd: z.number().positive(),
   minVolume5mUsd: z.number().nonnegative(),
   maxSlippageBps: z.number().int().min(1).max(10_000),
+  // Lamports to add as a Solana priority fee per transaction in live mode.
+  // 'auto' lets Jupiter set a dynamic fee based on current network congestion.
+  // Omit to use no priority fee (not recommended during high congestion periods).
+  priorityFeeLamports: z.union([z.number().int().nonnegative(), z.literal('auto')]).optional(),
 });
 
 const exitRulesSchema = z.object({

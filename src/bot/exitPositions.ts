@@ -2,6 +2,7 @@ import { fetchPumpPortalMarketCandidates } from './pumpCandidates.js';
 import { quoteJupiterSellImpactBps } from '../discovery/jupiter.js';
 import { restoreBrokerFromStore, type BrokerStateStore } from '../paper/restoreBroker.js';
 import type { PaperBrokerOptions } from '../paper/paperBroker.js';
+import type { ExecutionBroker } from '../execution/broker.js';
 import type { Reporter } from './reporter.js';
 import type { PaperPosition, PaperTrade } from '../types/domain.js';
 
@@ -48,6 +49,9 @@ interface ProcessExitsOptions {
   fetchExitSlippageBps?: (tokenMint: string, positionValueUsd: number) => Promise<number | undefined>;
   now?: Date;
   reporter?: Reporter;
+  // When provided, use this broker directly instead of reconstructing from store.
+  broker?: ExecutionBroker;
+  onLog?: (message: string) => void;
 }
 
 export interface ProcessExitsResult {
@@ -59,6 +63,9 @@ export interface ProcessExitsResult {
   takeProfit: number;
   trailingStop: number;
   timeout: number;
+  // Count of positions where the close attempt threw (live tx failures etc.).
+  // These positions remain open and will be retried on the next exit pass.
+  failed: number;
 }
 
 function minutesHeld(openedAt: Date, now: Date): number {
@@ -127,7 +134,7 @@ function defaultFetchExitSlippageBps(tokenMint: string, positionValueUsd: number
 // open and retried next pass.
 export async function processExits(options: ProcessExitsOptions): Promise<ProcessExitsResult> {
   const now = options.now ?? new Date();
-  const broker = restoreBrokerFromStore(options.store, options.paper, now);
+  const broker = options.broker ?? restoreBrokerFromStore(options.store, options.paper, now);
   const open = broker.getOpenPositions();
 
   const result: ProcessExitsResult = {
@@ -139,6 +146,7 @@ export async function processExits(options: ProcessExitsOptions): Promise<Proces
     takeProfit: 0,
     trailingStop: 0,
     timeout: 0,
+    failed: 0,
   };
 
   if (open.length === 0) return result;
@@ -151,14 +159,14 @@ export async function processExits(options: ProcessExitsOptions): Promise<Proces
   const usesRouteSlippage = options.paper.costModel?.applyRouteSlippage === true;
   const prices = await fetchPrices(mints);
 
-  const recordClose = (
+  const recordClose = async (
     positionId: string,
     exitPriceUsd: number,
     reason: ExitReason,
     exitPriceSource: NonNullable<PaperTrade['exitPriceSource']> = 'fresh',
     exitSlippageBps?: number,
   ) => {
-    const trade = broker.closePosition(positionId, exitPriceUsd, reason, now, exitPriceSource, exitSlippageBps);
+    const trade = await broker.closePosition(positionId, exitPriceUsd, reason, now, exitPriceSource, exitSlippageBps);
     options.store.saveClosedTrade(trade);
     options.reporter?.onPositionClosed?.({ trade });
     result.closed += 1;
@@ -172,38 +180,49 @@ export async function processExits(options: ProcessExitsOptions): Promise<Proces
     const positionExits = options.resolveExits?.(position.token.strategyId) ?? options.exits;
     const price = prices.get(position.token.address);
 
-    if (price === undefined || price <= 0) {
-      // No fresh price. Time-based exits still apply: close an over-held position
-      // at its last known mark (entry price if it was never marked) so it frees
-      // its slot. Price-based exits are skipped until a real price returns.
-      if (minutesHeld(position.openedAt, now) >= positionExits.maxHoldMinutes) {
-        const exitPriceSource = position.lastMarkUsd === undefined ? 'entry_fallback' : 'last_mark';
-        recordClose(position.id, position.lastMarkUsd ?? position.entryPriceUsd, 'timeout', exitPriceSource);
-      } else {
-        result.missingPrice += 1;
+    try {
+      if (price === undefined || price <= 0) {
+        // No fresh price. Time-based exits still apply: close an over-held position
+        // at its last known mark (entry price if it was never marked) so it frees
+        // its slot. Price-based exits are skipped until a real price returns.
+        if (minutesHeld(position.openedAt, now) >= positionExits.maxHoldMinutes) {
+          const exitPriceSource = position.lastMarkUsd === undefined ? 'entry_fallback' : 'last_mark';
+          await recordClose(position.id, position.lastMarkUsd ?? position.entryPriceUsd, 'timeout', exitPriceSource);
+        } else {
+          result.missingPrice += 1;
+        }
+        continue;
       }
-      continue;
+      result.repriced += 1;
+
+      // Record the mark (ratchets the high-water mark) before evaluating exits so
+      // trailing-stop math uses the latest peak.
+      const updated = broker.recordMark(position.id, price);
+      const reason = decideExit(position, price, updated.highWaterMarkUsd, positionExits, now);
+
+      if (!reason) {
+        // No exit: persist the updated marks for the next pass.
+        options.store.saveOpenPosition(updated);
+        continue;
+      }
+
+      // Freshly quote the sell-side impact for the actual position size so the
+      // exit fill reflects what unwinding really costs, not the entry probe.
+      // Best-effort: a missing quote falls back to the entry estimate in the broker.
+      const exitSlippageBps = usesRouteSlippage
+        ? await fetchExitSlippageBps(position.token.address, price * position.quantity)
+        : undefined;
+      await recordClose(position.id, price, reason, 'fresh', exitSlippageBps);
+    } catch (error) {
+      // A single position failure (e.g. live swap rejected) must not abort the
+      // entire exit pass. Log and continue — the position stays open and will be
+      // retried on the next pass.
+      result.failed += 1;
+      options.onLog?.(
+        `[exits:error] position=${position.id} token=${position.token.symbol} ` +
+        `error=${error instanceof Error ? error.message : String(error)}`,
+      );
     }
-    result.repriced += 1;
-
-    // Record the mark (ratchets the high-water mark) before evaluating exits so
-    // trailing-stop math uses the latest peak.
-    const updated = broker.recordMark(position.id, price);
-    const reason = decideExit(position, price, updated.highWaterMarkUsd, positionExits, now);
-
-    if (!reason) {
-      // No exit: persist the updated marks for the next pass.
-      options.store.saveOpenPosition(updated);
-      continue;
-    }
-
-    // Freshly quote the sell-side impact for the actual position size so the
-    // exit fill reflects what unwinding really costs, not the entry probe.
-    // Best-effort: a missing quote falls back to the entry estimate in the broker.
-    const exitSlippageBps = usesRouteSlippage
-      ? await fetchExitSlippageBps(position.token.address, price * position.quantity)
-      : undefined;
-    recordClose(position.id, price, reason, 'fresh', exitSlippageBps);
   }
 
   return result;

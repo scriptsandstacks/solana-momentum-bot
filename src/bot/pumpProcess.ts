@@ -4,6 +4,7 @@ import { checkMintAuthority, type MintAuthorityInfo } from '../chains/solana/min
 import { checkHolderConcentration, type HolderConcentrationInfo } from '../chains/solana/holderConcentration.js';
 import { PaperBroker, type PaperBrokerOptions } from '../paper/paperBroker.js';
 import { restoreBrokerFromStore, isBrokerStateStore } from '../paper/restoreBroker.js';
+import type { ExecutionBroker } from '../execution/broker.js';
 import { freshLaunchMomentumStrategy } from '../strategies/freshLaunchMomentum.js';
 import { computeVolumeAcceleration } from './volumeAcceleration.js';
 import type { TradingStrategy } from '../strategies/types.js';
@@ -58,6 +59,9 @@ interface PumpProcessOptions {
   // Pass null to skip holder concentration checks entirely.
   checkHolderConcentration?: ((mint: string) => Promise<HolderConcentrationInfo>) | null;
   reporter?: Reporter;
+  // When provided, use this broker directly instead of reconstructing from store.
+  // Required for live mode where the broker holds the keypair and RPC connection.
+  broker?: ExecutionBroker;
 }
 
 export interface PumpProcessResult {
@@ -94,12 +98,13 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
   const candidatesByMint = new Map(candidates.map((candidate) => [candidate.address, candidate]));
   result.candidatesEnriched = candidates.length;
 
-  // Rehydrate the broker from persisted state so cash, the position cap, and the
-  // daily-loss breaker stay correct across passes/restarts. Fall back to a fresh
-  // broker for minimal stores (e.g. unit tests) that don't expose state reads.
-  const broker = isBrokerStateStore(options.store)
-    ? restoreBrokerFromStore(options.store, options.paper)
-    : new PaperBroker(options.paper);
+  // Use the provided broker (required for live mode) or reconstruct a paper broker
+  // from persisted state so cash, the position cap, and the daily-loss breaker
+  // stay correct across passes/restarts.
+  const broker = options.broker
+    ?? (isBrokerStateStore(options.store)
+      ? restoreBrokerFromStore(options.store, options.paper)
+      : new PaperBroker(options.paper));
 
   for (const event of events) {
     if (!event.tokenMint) {
@@ -201,7 +206,7 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
         const positionSizeUsd = strategy.resolvePositionSizeUsd(score.total, options.paper.positionSizeUsd);
         const capacity = broker.canOpenPosition(undefined, positionSizeUsd);
         if (capacity.ok) {
-          const position = broker.openPosition(enriched, score.total, undefined, positionSizeUsd);
+          const position = await broker.openPosition(enriched, score.total, undefined, positionSizeUsd);
           options.store.saveOpenPosition(position);
           options.reporter?.onPositionOpened?.({ position, strategyId: strategy.id });
           result.openedPositions += 1;

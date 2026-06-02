@@ -17,7 +17,7 @@ interface PaperCycleInput {
   store?: PaperCycleStore & Partial<BrokerStateStore>;
 }
 
-export function runPaperCycle(input: PaperCycleInput) {
+export async function runPaperCycle(input: PaperCycleInput) {
   // Rehydrate from persisted state so cash, the position cap, and the daily-loss
   // breaker stay correct across runs (matching pump-process/exits). A minimal
   // store without broker-state reads (e.g. unit tests) gets a fresh broker.
@@ -33,7 +33,7 @@ export function runPaperCycle(input: PaperCycleInput) {
     if (score.total < input.minimumScoreToEnter || score.recommendation !== 'paper_trade') continue;
     if (!broker.canOpenPosition().ok) continue;
     try {
-      const position = broker.openPosition(candidate, score.total);
+      const position = await broker.openPosition(candidate, score.total);
       input.store?.saveOpenPosition(position);
     } catch {
       // Defensive (e.g. non-positive price): skip this candidate, keep scoring.
