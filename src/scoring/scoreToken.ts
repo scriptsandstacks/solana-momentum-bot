@@ -31,6 +31,19 @@ export function scoreTokenCandidate(candidate: TokenCandidate): OpportunityScore
     risks.push('low_5m_volume');
   }
 
+  if (candidate.volumeAcceleration5mZ !== undefined) {
+    if (candidate.volumeAcceleration5mZ >= 2) {
+      total += 8;
+      reasons.push('volume_acceleration');
+    } else if (candidate.volumeAcceleration5mZ >= 1) {
+      total += 4;
+      reasons.push('volume_acceleration_moderate');
+    } else if (candidate.volumeAcceleration5mZ <= -1.5) {
+      total -= 6;
+      risks.push('volume_deceleration');
+    }
+  }
+
   const totalTrades = candidate.buys5m + candidate.sells5m;
   const buyRatio = totalTrades === 0 ? 0 : candidate.buys5m / totalTrades;
   if (buyRatio >= 0.65 && totalTrades >= 50) {

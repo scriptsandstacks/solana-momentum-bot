@@ -30,6 +30,8 @@ function row(overrides: Partial<RetriableScoredCandidateRow> = {}): RetriableSco
     mintAuthorityRevoked: null,
     freezeAuthorityRevoked: null,
     top5HolderPct: null,
+    volumeAcceleration5mZ: null,
+    volumeAccelerationSamples: null,
     score: 85,
     ...overrides,
   };
@@ -132,12 +134,63 @@ describe('retryBlockedOpens', () => {
   });
 
   it('maps authority flags onto retried candidates', async () => {
-    const store = fakeStore([row({ mintAuthorityRevoked: 1, freezeAuthorityRevoked: 0, top5HolderPct: 85 })]);
+    const store = fakeStore([
+      row({
+        mintAuthorityRevoked: 1,
+        freezeAuthorityRevoked: 0,
+        top5HolderPct: 85,
+        volumeAcceleration5mZ: 2.5,
+        volumeAccelerationSamples: 4,
+      }),
+    ]);
 
     await retryBlockedOpens({ store, paper, minimumScoreToEnter: 75, cutoffIso: CUTOFF });
 
     expect(store._saved[0].token.mintAuthorityRevoked).toBe(true);
     expect(store._saved[0].token.freezeAuthorityRevoked).toBe(false);
     expect(store._saved[0].token.top5HolderPct).toBe(85);
+    expect(store._saved[0].token.volumeAcceleration5mZ).toBe(2.5);
+    expect(store._saved[0].token.volumeAccelerationSamples).toBe(4);
+  });
+
+  it('uses refreshed candidate data before opening a retried position', async () => {
+    const store = fakeStore([row({ priceUsd: 0.01, estimatedSlippageBps: 100 })]);
+
+    const result = await retryBlockedOpens({
+      store,
+      paper,
+      minimumScoreToEnter: 75,
+      cutoffIso: CUTOFF,
+      refreshCandidate: async (candidate) => ({
+        ...candidate,
+        priceUsd: 0.02,
+        estimatedSlippageBps: 250,
+        source: 'refreshed',
+      }),
+    });
+
+    expect(result.openedPositions).toBe(1);
+    expect(store._saved[0].token).toMatchObject({
+      priceUsd: 0.02,
+      estimatedSlippageBps: 250,
+      source: 'refreshed',
+      strategyId: 'freshLaunchMomentum',
+    });
+    expect(store._saved[0].entryPriceUsd).toBeCloseTo(0.02);
+  });
+
+  it('skips a retriable candidate when refresh cannot find current market data', async () => {
+    const store = fakeStore([row({ address: 'stale-mint' })]);
+
+    const result = await retryBlockedOpens({
+      store,
+      paper,
+      minimumScoreToEnter: 75,
+      cutoffIso: CUTOFF,
+      refreshCandidate: async () => undefined,
+    });
+
+    expect(result).toMatchObject({ candidates: 1, openedPositions: 0, skippedRefresh: 1 });
+    expect(store._saved).toHaveLength(0);
   });
 });

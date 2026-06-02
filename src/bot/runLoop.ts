@@ -4,7 +4,9 @@ import { processExits as processExitsImpl, type ExitRules, type ProcessExitsResu
 import { trackCandidateOutcomes as trackCandidateOutcomesImpl, type TrackOutcomesResult } from './trackOutcomes.js';
 import { retryBlockedOpens as retryBlockedOpensImpl, canRetryBlockedOpens, type RetryBlockedOpensResult } from './retryBlockedOpens.js';
 import { computeTradeAnalytics, renderAnalyticsReport } from './analytics.js';
+import { fetchPumpPortalMarketCandidates } from './pumpCandidates.js';
 import { isBrokerStateStore, restoreBrokerFromStore } from '../paper/restoreBroker.js';
+import { checkJupiterRoute } from '../discovery/jupiter.js';
 import type { Reporter } from './reporter.js';
 import type { TradingStrategy } from '../strategies/types.js';
 import type { ChainConfig } from '../config/schema.js';
@@ -82,7 +84,15 @@ type RetryBlockedOpens = (options: {
   minimumScoreToEnter: number;
   strategies?: TradingStrategy[];
   cutoffIso: string;
+  refreshCandidate?: (candidate: TokenCandidate) => Promise<TokenCandidate | undefined>;
 }) => Promise<RetryBlockedOpensResult>;
+
+async function refreshRetryCandidate(candidate: TokenCandidate): Promise<TokenCandidate | undefined> {
+  const refreshed = (await fetchPumpPortalMarketCandidates([candidate.address]))[0];
+  if (!refreshed) return undefined;
+  const route = await checkJupiterRoute(candidate.address);
+  return { ...refreshed, ...route };
+}
 
 type PumpPortalClientLike = {
   connectFreeStreams(): Promise<void>;
@@ -260,11 +270,14 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
             minimumScoreToEnter: options.minimumScoreToEnter,
             strategies: options.strategies,
             cutoffIso,
+            refreshCandidate: refreshRetryCandidate,
           });
           result.openedPositions += retryResult.openedPositions;
           result.retriedPositions += retryResult.openedPositions;
-          if (retryResult.openedPositions > 0) {
-            options.onLog?.(`[run:retry] candidates=${retryResult.candidates} opened=${retryResult.openedPositions}`);
+          if (retryResult.openedPositions > 0 || retryResult.skippedRefresh > 0) {
+            options.onLog?.(
+              `[run:retry] candidates=${retryResult.candidates} opened=${retryResult.openedPositions} skippedRefresh=${retryResult.skippedRefresh}`,
+            );
           }
         }
       }

@@ -21,6 +21,8 @@ interface RecentScoreRow {
   mintAuthorityRevoked: number | null;
   freezeAuthorityRevoked: number | null;
   top5HolderPct: number | null;
+  volumeAcceleration5mZ: number | null;
+  volumeAccelerationSamples: number | null;
   score: number;
   recommendation: string;
   createdAt: string;
@@ -105,6 +107,7 @@ export interface ScoredOutcomeUpdate {
 }
 
 export interface ScoredOutcomeStatRow {
+  strategyId: string;
   score: number;
   recommendation: string;
   scoredPriceUsd: number;
@@ -113,6 +116,10 @@ export interface ScoredOutcomeStatRow {
   outcomeLastUsd: number;
   outcomeFirstTakeProfitAt: string | null;
   outcomeFirstStopLossAt: string | null;
+  mintAuthorityRevoked: number | null;
+  freezeAuthorityRevoked: number | null;
+  top5HolderPct: number | null;
+  volumeAcceleration5mZ: number | null;
 }
 
 // A recently scored candidate that was never opened into a position. Used by the
@@ -141,6 +148,8 @@ export interface RetriableScoredCandidateRow {
   mintAuthorityRevoked: number | null;
   freezeAuthorityRevoked: number | null;
   top5HolderPct: number | null;
+  volumeAcceleration5mZ: number | null;
+  volumeAccelerationSamples: number | null;
   score: number;
 }
 
@@ -174,6 +183,7 @@ export class SqliteStore {
         route_available, estimated_slippage_bps, route_input_mint, route_input_symbol,
         strategy_id, sell_route_available,
         mint_authority_revoked, freeze_authority_revoked, top5_holder_pct,
+        volume_acceleration_5m_z, volume_acceleration_samples,
         score, recommendation, reasons_json, risks_json, created_at
       ) VALUES (
         @chain, @address, @symbol, @name, @pairAddress, @priceUsd, @liquidityUsd, @volume5mUsd,
@@ -181,6 +191,7 @@ export class SqliteStore {
         @routeAvailable, @estimatedSlippageBps, @routeInputMint, @routeInputSymbol,
         @strategyId, @sellRouteAvailable,
         @mintAuthorityRevoked, @freezeAuthorityRevoked, @top5HolderPct,
+        @volumeAcceleration5mZ, @volumeAccelerationSamples,
         @score, @recommendation, @reasonsJson, @risksJson, @createdAt
       )`,
     );
@@ -202,6 +213,8 @@ export class SqliteStore {
       mintAuthorityRevoked: candidate.mintAuthorityRevoked === undefined ? null : candidate.mintAuthorityRevoked ? 1 : 0,
       freezeAuthorityRevoked: candidate.freezeAuthorityRevoked === undefined ? null : candidate.freezeAuthorityRevoked ? 1 : 0,
       top5HolderPct: candidate.top5HolderPct ?? null,
+      volumeAcceleration5mZ: candidate.volumeAcceleration5mZ ?? null,
+      volumeAccelerationSamples: candidate.volumeAccelerationSamples ?? null,
       score: score.total,
       recommendation: score.recommendation,
       reasonsJson: JSON.stringify(score.reasons),
@@ -226,6 +239,8 @@ export class SqliteStore {
                 strategy_id as strategyId, sell_route_available as sellRouteAvailable,
                 mint_authority_revoked as mintAuthorityRevoked, freeze_authority_revoked as freezeAuthorityRevoked,
                 top5_holder_pct as top5HolderPct,
+                volume_acceleration_5m_z as volumeAcceleration5mZ,
+                volume_acceleration_samples as volumeAccelerationSamples,
                 score, recommendation, created_at as createdAt
          FROM scored_candidates
          ORDER BY id DESC
@@ -273,6 +288,8 @@ export class SqliteStore {
                   strategy_id as strategyId, sell_route_available as sellRouteAvailable,
                   mint_authority_revoked as mintAuthorityRevoked, freeze_authority_revoked as freezeAuthorityRevoked,
                   top5_holder_pct as top5HolderPct,
+                  volume_acceleration_5m_z as volumeAcceleration5mZ,
+                  volume_acceleration_samples as volumeAccelerationSamples,
                   score,
                   ROW_NUMBER() OVER (PARTITION BY address ORDER BY score DESC, id DESC) as rn
            FROM scored_candidates
@@ -288,7 +305,8 @@ export class SqliteStore {
                 priceUsd, liquidityUsd, volume5mUsd, volume1hUsd,
                 priceChange5mPct, buys5m, sells5m, ageMinutes, source,
                 routeAvailable, estimatedSlippageBps, routeInputMint, routeInputSymbol,
-                strategyId, sellRouteAvailable, mintAuthorityRevoked, freezeAuthorityRevoked, top5HolderPct, score
+                strategyId, sellRouteAvailable, mintAuthorityRevoked, freezeAuthorityRevoked, top5HolderPct,
+                volumeAcceleration5mZ, volumeAccelerationSamples, score
          FROM ranked WHERE rn = 1
          ORDER BY score DESC
          LIMIT @limit`,
@@ -308,6 +326,20 @@ export class SqliteStore {
          LIMIT ?`,
       )
       .all(address, limit) as TokenVolumeSnapshotRow[];
+  }
+
+  listRecentTokenVolumeSnapshots(options: { address: string; sinceIso: string; limit?: number }): TokenVolumeSnapshotRow[] {
+    return this.db
+      .prepare(
+        `SELECT chain, address, symbol, strategy_id as strategyId,
+                volume_5m_usd as volume5mUsd, volume_1h_usd as volume1hUsd,
+                price_usd as priceUsd, observed_at as observedAt
+         FROM token_volume_snapshots
+         WHERE address = ? AND observed_at >= ?
+         ORDER BY observed_at DESC, id DESC
+         LIMIT ?`,
+      )
+      .all(options.address, options.sinceIso, options.limit ?? 50) as TokenVolumeSnapshotRow[];
   }
 
   saveOpenPosition(position: PaperPosition): void {
@@ -546,10 +578,14 @@ export class SqliteStore {
   loadScoredOutcomeStats(): ScoredOutcomeStatRow[] {
     return this.db
       .prepare(
-        `SELECT score, recommendation, price_usd as scoredPriceUsd,
+        `SELECT strategy_id as strategyId, score, recommendation, price_usd as scoredPriceUsd,
                 outcome_high_usd as outcomeHighUsd, outcome_low_usd as outcomeLowUsd,
                 outcome_last_usd as outcomeLastUsd,
-                outcome_first_tp_at as outcomeFirstTakeProfitAt, outcome_first_sl_at as outcomeFirstStopLossAt
+                outcome_first_tp_at as outcomeFirstTakeProfitAt, outcome_first_sl_at as outcomeFirstStopLossAt,
+                mint_authority_revoked as mintAuthorityRevoked,
+                freeze_authority_revoked as freezeAuthorityRevoked,
+                top5_holder_pct as top5HolderPct,
+                volume_acceleration_5m_z as volumeAcceleration5mZ
          FROM scored_candidates
          WHERE outcome_samples > 0 AND outcome_high_usd IS NOT NULL AND price_usd > 0`,
       )
@@ -681,6 +717,8 @@ export class SqliteStore {
         mint_authority_revoked INTEGER,
         freeze_authority_revoked INTEGER,
         top5_holder_pct REAL,
+        volume_acceleration_5m_z REAL,
+        volume_acceleration_samples INTEGER,
         score INTEGER NOT NULL,
         recommendation TEXT NOT NULL,
         reasons_json TEXT NOT NULL,
@@ -789,6 +827,8 @@ export class SqliteStore {
     this.addColumnIfMissing('scored_candidates', 'mint_authority_revoked', 'INTEGER');
     this.addColumnIfMissing('scored_candidates', 'freeze_authority_revoked', 'INTEGER');
     this.addColumnIfMissing('scored_candidates', 'top5_holder_pct', 'REAL');
+    this.addColumnIfMissing('scored_candidates', 'volume_acceleration_5m_z', 'REAL');
+    this.addColumnIfMissing('scored_candidates', 'volume_acceleration_samples', 'INTEGER');
     this.addColumnIfMissing('scored_candidates', 'outcome_high_usd', 'REAL');
     this.addColumnIfMissing('scored_candidates', 'outcome_low_usd', 'REAL');
     this.addColumnIfMissing('scored_candidates', 'outcome_last_usd', 'REAL');

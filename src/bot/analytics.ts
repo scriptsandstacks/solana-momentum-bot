@@ -45,7 +45,8 @@ export interface TradeAnalytics {
 }
 
 const SCORE_BUCKETS: Array<{ label: string; min: number; max: number }> = [
-  { label: '<75', min: Number.NEGATIVE_INFINITY, max: 74 },
+  { label: '<70', min: Number.NEGATIVE_INFINITY, max: 69 },
+  { label: '70-74', min: 70, max: 74 },
   { label: '75-79', min: 75, max: 79 },
   { label: '80-89', min: 80, max: 89 },
   { label: '90-100', min: 90, max: 100 },
@@ -123,6 +124,7 @@ export function computeTradeAnalytics(trades: AnalyticsTrade[]): TradeAnalytics 
 // ---------------------------------------------------------------------------
 
 export interface OutcomeRow {
+  strategyId?: string | null;
   score: number;
   recommendation: string;
   scoredPriceUsd: number;
@@ -131,6 +133,10 @@ export interface OutcomeRow {
   outcomeLastUsd: number;
   outcomeFirstTakeProfitAt?: string | null;
   outcomeFirstStopLossAt?: string | null;
+  mintAuthorityRevoked?: number | null;
+  freezeAuthorityRevoked?: number | null;
+  top5HolderPct?: number | null;
+  volumeAcceleration5mZ?: number | null;
 }
 
 export interface OutcomeThresholds {
@@ -158,6 +164,9 @@ export interface OutcomeAnalytics {
   overall: OutcomeBucket;
   byScoreBucket: OutcomeBucket[];
   byRecommendation: OutcomeBucket[];
+  byAuthority: OutcomeBucket[];
+  byHolderConcentration: OutcomeBucket[];
+  byVolumeAcceleration: OutcomeBucket[];
 }
 
 function firstCrossing(row: OutcomeRow, reachedTp: boolean, hitSl: boolean): 'tp' | 'sl' | 'ambiguous' | 'unknown' | 'none' {
@@ -235,7 +244,39 @@ export function computeOutcomeAnalytics(rows: OutcomeRow[], thresholds: OutcomeT
     overall: summarizeOutcomes('overall', rows, thresholds),
     byScoreBucket: groupOutcomes(rows, (row) => scoreBucketLabel(row.score), thresholds),
     byRecommendation: groupOutcomes(rows, (row) => row.recommendation || 'unknown', thresholds),
+    byAuthority: groupOutcomes(rows, authorityBucketLabel, thresholds),
+    byHolderConcentration: groupOutcomes(rows, holderConcentrationBucketLabel, thresholds),
+    byVolumeAcceleration: groupOutcomes(rows, volumeAccelerationBucketLabel, thresholds),
   };
+}
+
+function authorityBucketLabel(row: OutcomeRow): string {
+  const mint = tristateLabel(row.mintAuthorityRevoked);
+  const freeze = tristateLabel(row.freezeAuthorityRevoked);
+  return `mint:${mint} freeze:${freeze}`;
+}
+
+function tristateLabel(value: number | null | undefined): string {
+  if (value === 1) return 'revoked';
+  if (value === 0) return 'held';
+  return 'unknown';
+}
+
+function holderConcentrationBucketLabel(row: OutcomeRow): string {
+  const value = row.top5HolderPct;
+  if (value === null || value === undefined) return 'unknown';
+  if (value >= 80) return 'top5 >=80%';
+  if (value >= 50) return 'top5 50-79%';
+  return 'top5 <50%';
+}
+
+function volumeAccelerationBucketLabel(row: OutcomeRow): string {
+  const value = row.volumeAcceleration5mZ;
+  if (value === null || value === undefined) return 'unknown';
+  if (value >= 2) return 'z >=2';
+  if (value >= 1) return 'z 1-2';
+  if (value <= -1.5) return 'z <=-1.5';
+  return 'z -1.5-1';
 }
 
 function outcomeBucketLine(bucket: OutcomeBucket): string {
@@ -265,6 +306,12 @@ export function renderOutcomeAnalytics(analytics: OutcomeAnalytics, thresholds: 
   for (const bucket of analytics.byScoreBucket) lines.push(outcomeBucketLine(bucket));
   lines.push('', 'By recommendation:');
   for (const bucket of analytics.byRecommendation) lines.push(outcomeBucketLine(bucket));
+  lines.push('', 'By authority status:');
+  for (const bucket of analytics.byAuthority) lines.push(outcomeBucketLine(bucket));
+  lines.push('', 'By holder concentration:');
+  for (const bucket of analytics.byHolderConcentration) lines.push(outcomeBucketLine(bucket));
+  lines.push('', 'By volume acceleration:');
+  for (const bucket of analytics.byVolumeAcceleration) lines.push(outcomeBucketLine(bucket));
   return `${lines.join('\n')}\n`;
 }
 

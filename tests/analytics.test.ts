@@ -176,4 +176,48 @@ describe('computeOutcomeAnalytics', () => {
     expect(empty.overall.candidates).toBe(0);
     expect(renderOutcomeAnalytics(empty, thresholds)).toContain('No tracked outcomes yet');
   });
+
+  it('buckets outcomes by authority, holder concentration, and volume acceleration signals', () => {
+    const analytics = computeOutcomeAnalytics(
+      [
+        outcome({
+          mintAuthorityRevoked: 1,
+          freezeAuthorityRevoked: 1,
+          top5HolderPct: 35,
+          volumeAcceleration5mZ: 2.4,
+          outcomeHighUsd: 0.016,
+        }),
+        outcome({
+          mintAuthorityRevoked: 0,
+          freezeAuthorityRevoked: 1,
+          top5HolderPct: 85,
+          volumeAcceleration5mZ: -2,
+          outcomeHighUsd: 0.011,
+          outcomeLowUsd: 0.007,
+        }),
+        outcome({
+          mintAuthorityRevoked: null,
+          freezeAuthorityRevoked: null,
+          top5HolderPct: null,
+          volumeAcceleration5mZ: null,
+        }),
+      ],
+      thresholds,
+    );
+
+    expect(analytics.byAuthority.map((b) => b.label)).toContain('mint:revoked freeze:revoked');
+    expect(analytics.byAuthority.map((b) => b.label)).toContain('mint:held freeze:revoked');
+    expect(analytics.byAuthority.map((b) => b.label)).toContain('mint:unknown freeze:unknown');
+    expect(analytics.byHolderConcentration.map((b) => b.label)).toContain('top5 <50%');
+    expect(analytics.byHolderConcentration.map((b) => b.label)).toContain('top5 >=80%');
+    expect(analytics.byHolderConcentration.map((b) => b.label)).toContain('unknown');
+    expect(analytics.byVolumeAcceleration.map((b) => b.label)).toContain('z >=2');
+    expect(analytics.byVolumeAcceleration.map((b) => b.label)).toContain('z <=-1.5');
+    expect(analytics.byVolumeAcceleration.map((b) => b.label)).toContain('unknown');
+
+    const report = renderOutcomeAnalytics(analytics, thresholds);
+    expect(report).toContain('By authority status');
+    expect(report).toContain('By holder concentration');
+    expect(report).toContain('By volume acceleration');
+  });
 });

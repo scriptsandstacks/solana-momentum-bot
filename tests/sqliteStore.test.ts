@@ -80,7 +80,15 @@ describe('SqliteStore', () => {
     const store = createStore();
 
     store.saveScoredCandidate(
-      { ...candidate, address: 'mint-authority-held', mintAuthorityRevoked: false, freezeAuthorityRevoked: true, top5HolderPct: 85 },
+      {
+        ...candidate,
+        address: 'mint-authority-held',
+        mintAuthorityRevoked: false,
+        freezeAuthorityRevoked: true,
+        top5HolderPct: 85,
+        volumeAcceleration5mZ: 2.5,
+        volumeAccelerationSamples: 4,
+      },
       score,
     );
     store.saveScoredCandidate({ ...candidate, address: 'mint-authority-unknown' }, score);
@@ -92,11 +100,15 @@ describe('SqliteStore', () => {
       mintAuthorityRevoked: 0,
       freezeAuthorityRevoked: 1,
       top5HolderPct: 85,
+      volumeAcceleration5mZ: 2.5,
+      volumeAccelerationSamples: 4,
     });
     expect(byMint['mint-authority-unknown']).toMatchObject({
       mintAuthorityRevoked: null,
       freezeAuthorityRevoked: null,
       top5HolderPct: null,
+      volumeAcceleration5mZ: null,
+      volumeAccelerationSamples: null,
     });
     store.close();
   });
@@ -118,6 +130,43 @@ describe('SqliteStore', () => {
       volume1hUsd: 120_000,
     });
     expect(rows[1]).toMatchObject({ volume5mUsd: 10_000, volume1hUsd: 80_000 });
+    expect(store.listRecentTokenVolumeSnapshots({ address: candidate.address, sinceIso: rows[1].observedAt })).toHaveLength(2);
+    store.close();
+  });
+
+  it('projects queryable risk and acceleration fields into outcome stats', () => {
+    const store = createStore();
+
+    store.saveScoredCandidate(
+      {
+        ...candidate,
+        mintAuthorityRevoked: false,
+        freezeAuthorityRevoked: true,
+        top5HolderPct: 85,
+        volumeAcceleration5mZ: 2.5,
+        volumeAccelerationSamples: 4,
+      },
+      score,
+    );
+    const [trackable] = store.listTrackableScoredCandidates(1);
+    store.recordScoredOutcome({
+      id: trackable.id,
+      outcomeHighUsd: 0.018,
+      outcomeLowUsd: 0.009,
+      outcomeLastUsd: 0.015,
+      outcomeLastAt: '2026-01-01T00:05:00.000Z',
+      outcomeFirstTakeProfitAt: '2026-01-01T00:03:00.000Z',
+      outcomeFirstStopLossAt: null,
+      done: true,
+    });
+
+    expect(store.loadScoredOutcomeStats()[0]).toMatchObject({
+      strategyId: 'freshLaunchMomentum',
+      mintAuthorityRevoked: 0,
+      freezeAuthorityRevoked: 1,
+      top5HolderPct: 85,
+      volumeAcceleration5mZ: 2.5,
+    });
     store.close();
   });
 
@@ -380,6 +429,8 @@ describe('SqliteStore', () => {
       mintAuthorityRevoked: null,
       freezeAuthorityRevoked: null,
       top5HolderPct: null,
+      volumeAcceleration5mZ: null,
+      volumeAccelerationSamples: null,
     });
     expect(store.listTokenVolumeSnapshots(candidate.address, 5)).toHaveLength(1);
 
@@ -502,6 +553,8 @@ describe('SqliteStore', () => {
       mintAuthorityRevoked: null,
       freezeAuthorityRevoked: null,
       top5HolderPct: null,
+      volumeAcceleration5mZ: null,
+      volumeAccelerationSamples: null,
     });
     store.close();
   });

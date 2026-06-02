@@ -13,15 +13,23 @@ import { processPumpPortalEvents } from '../bot/pumpProcess.js';
 import { processExits } from '../bot/exitPositions.js';
 import { runBotLoop } from '../bot/runLoop.js';
 import { consoleReporter } from '../bot/reporter.js';
-import { applyTuneConfigUpdates, computeTuneRecommendations, deriveTuneConfigUpdates, renderTuneApplyPreview, renderTuneReport } from '../bot/tune.js';
+import {
+  applyTuneConfigUpdates,
+  computeStrategyTuneRecommendations,
+  computeTuneRecommendations,
+  deriveTuneConfigUpdates,
+  renderStrategyTuneReport,
+  renderTuneApplyPreview,
+  renderTuneReport,
+} from '../bot/tune.js';
 import { loadConfigFromFile } from '../config/loadConfig.js';
 import { scanSolanaCandidates } from '../chains/solana/scanner.js';
 import { checkJupiterRoute } from '../discovery/jupiter.js';
 import { PaperBroker } from '../paper/paperBroker.js';
 import { scoreTokenCandidate } from '../scoring/scoreToken.js';
 import { SqliteStore } from '../storage/sqliteStore.js';
-import { createFreshLaunchStrategy } from '../strategies/freshLaunchMomentum.js';
-import { createMigrationStrategy } from '../strategies/migrationMomentum.js';
+import { buildStrategies, strategyThresholdMap } from '../strategies/buildStrategies.js';
+import { evaluateLiveReadiness, renderLiveReadinessReport } from '../execution/liveReadiness.js';
 import type { ExitRules } from '../bot/exitPositions.js';
 import type { TradingStrategy } from '../strategies/types.js';
 import type { PaperBrokerOptions } from '../paper/paperBroker.js';
@@ -47,16 +55,6 @@ function assertPaperMode(config: BotConfig): void {
   if (config.mode === 'live') {
     throw new Error('Live trading is not yet implemented. Set mode: paper in config.yaml to run in simulation.');
   }
-}
-
-// Build all active strategies from file config. Each strategy's minScoreToEnter
-// defaults from config.scoring.minimumScoreToEnter; strategies may override
-// downward (e.g. migration uses 70 vs fresh launch's 75).
-function buildStrategies(config: BotConfig): TradingStrategy[] {
-  return [
-    createFreshLaunchStrategy({ minScoreToEnter: config.scoring.minimumScoreToEnter }),
-    createMigrationStrategy(), // uses its own defaults; migration scoring is independent
-  ];
 }
 
 // Build a per-position exit resolver that merges each strategy's exit overrides
@@ -125,6 +123,30 @@ program
       process.stdout.write('No buy route available (token may be unswappable, illiquid, or the quote API is unreachable).\n');
     }
     process.stdout.write(`Sell route (token→USDC): ${route.sellRouteAvailable ? 'available' : 'UNAVAILABLE — possible honeypot'}\n`);
+  });
+
+program
+  .command('live-readiness')
+  .description('Audit live-trading prerequisites without reading wallet contents or placing trades')
+  .action(() => {
+    const config = loadConfigFromFile(program.opts().config);
+    const store = new SqliteStore();
+    try {
+      const walletFile = config.chains.solana.walletFile;
+      const walletFileExists = walletFile ? fs.existsSync(path.resolve(process.cwd(), walletFile)) : false;
+      const report = evaluateLiveReadiness({
+        config,
+        env: process.env,
+        walletFileExists,
+        closedTrades: store.loadClosedTradeStats().length,
+        trackedOutcomes: store.loadScoredOutcomeStats().length,
+        liveBrokerAvailable: true,
+        liveExecutionImplemented: false,
+      });
+      process.stdout.write(renderLiveReadinessReport(report));
+    } finally {
+      store.close();
+    }
   });
 
 program.command('paper').description('Run one paper-trading scan cycle').action(async () => {
@@ -264,10 +286,20 @@ program
     const analytics = computeOutcomeAnalytics(outcomeRows, thresholds);
     const result = computeTuneRecommendations(analytics, thresholds, config.scoring.minimumScoreToEnter);
     process.stdout.write(renderTuneReport(result, analytics, thresholds, config.scoring.minimumScoreToEnter));
+    const strategies = buildStrategies(config);
+    const strategyResults = computeStrategyTuneRecommendations(
+      outcomeRows,
+      thresholds,
+      strategyThresholdMap(strategies),
+    );
+    process.stdout.write(renderStrategyTuneReport(strategyResults, thresholds));
 
     if (!options.apply) return;
 
-    const updates = deriveTuneConfigUpdates(result.recommendations);
+    const updates = deriveTuneConfigUpdates([
+      ...result.recommendations,
+      ...strategyResults.flatMap((strategy) => strategy.result.recommendations),
+    ]);
     process.stdout.write(`\n${renderTuneApplyPreview(updates)}`);
     if (updates.length === 0) return;
 
