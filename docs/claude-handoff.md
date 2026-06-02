@@ -10,7 +10,7 @@ Paper-only. Do not introduce live wallet/private-key use.
 ## Current health
 
 ```
-npm test          → 27 files, 167 tests passing
+npm test          → 28 files, 169 tests passing
 npm run typecheck → clean
 git diff --check  → clean
 ```
@@ -71,6 +71,7 @@ Built on updated `development` after the prior Codex branch was merged/pulled, o
 | `23cf9ea` Make paper validation advisory for live readiness | Changed `live-readiness` so low paper-trade sample counts warn but do not block readiness. The owner should be able to switch between paper and live; paper results inform calibration rather than acting as training-wheel enforcement. |
 | `ebc0c59` Refresh retry candidates before opening | Retry opens now optionally refresh market data before opening. The run loop re-fetches the candidate and Jupiter route/sellability; if no current market data is found, it skips the retry instead of opening from stale scored price. |
 | `a66948d` Add strategy-specific config overrides | Added `strategies.freshLaunchMomentum` and `strategies.migrationMomentum` config sections for per-strategy `minScoreToEnter` and exit overrides. CLI strategy construction now uses shared `buildStrategies()`, and concrete per-strategy `tune --apply` suggestions can write to `strategies.<id>...` paths. |
+| `da97cd6` Add live broker scaffold and factory | Added inert `LiveBroker` scaffold and `createExecutionBroker()` factory. The scaffold preserves the owner-controlled paper/live broker seam but refuses all live execution with clear errors until transaction submission/signing is implemented deliberately. `live-readiness` now distinguishes scaffold availability from actual live execution implementation. |
 
 ---
 
@@ -141,7 +142,7 @@ Holder concentration ≥80%, authority penalties, and volume acceleration weight
 
 ### Live trading
 
-1. `LiveBroker implements ExecutionBroker` — Jupiter swap submission + keypair signing
+1. Implement LiveBroker transaction execution — Jupiter swap submission + keypair signing
 2. Real-time exit triggers — WebSocket price feeds rather than interval polling
 3. Base paper support once Solana live/paper switching is clean
 
@@ -155,16 +156,16 @@ Holder concentration ≥80%, authority penalties, and volume acceleration weight
 
 State at laptop-close handoff:
 - Current branch: `codex/volume-acceleration-signal`
-- Latest code commit before this handoff edit: `a66948d Add strategy-specific config overrides`
+- Latest code commit before this handoff edit: `da97cd6 Add live broker scaffold and factory`
 - All verification passed after latest code commit:
   - `npm run typecheck`
-  - `npm test` → 27 files, 167 tests passing
+  - `npm test` → 28 files, 169 tests passing
   - `git diff --check`
 - Paper-only invariant is still intact. No wallet/private-key/live trading code was added.
 
 Suggested next move:
 1. Commit this handoff update after reviewing it.
-2. Next practical work is a LiveBroker scaffold/factory that preserves the owner-controlled paper/live switch, without enabling real trading until transaction submission/signing is implemented deliberately.
+2. Next practical work is implementing LiveBroker transaction execution deliberately: wallet loading, Jupiter swap transaction creation, signing, submission, confirmation, and persisted trade records.
 3. Paper results should inform calibration, not act as training-wheel enforcement.
 
 ---
