@@ -2,7 +2,6 @@ import { fetchPumpPortalMarketCandidates } from './pumpCandidates.js';
 import { checkJupiterRoute, type JupiterRouteCheck } from '../discovery/jupiter.js';
 import { PaperBroker, type PaperBrokerOptions } from '../paper/paperBroker.js';
 import { restoreBrokerFromStore, isBrokerStateStore } from '../paper/restoreBroker.js';
-import { scoreTokenCandidate } from '../scoring/scoreToken.js';
 import { freshLaunchMomentumStrategy } from '../strategies/freshLaunchMomentum.js';
 import type { Reporter } from './reporter.js';
 import type { ChainConfig } from '../config/schema.js';
@@ -123,7 +122,7 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
         source: `${candidate.source}+${event.eventType}`,
         ...route,
       });
-      const score = scoreTokenCandidate(enriched);
+      const score = freshLaunchMomentumStrategy.scoreCandidate(enriched);
       options.store.saveScoredCandidate(enriched, score);
       result.scored += 1;
 

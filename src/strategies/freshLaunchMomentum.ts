@@ -1,3 +1,4 @@
+import { scoreTokenCandidate } from '../scoring/scoreToken.js';
 import type { TokenCandidate } from '../types/domain.js';
 import type { StrategyConfig, TradingStrategy } from './types.js';
 
@@ -20,6 +21,7 @@ export function createFreshLaunchStrategy(config: Partial<StrategyConfig> = {}):
     id: FRESH_LAUNCH_MOMENTUM_STRATEGY_ID,
     config: { ...DEFAULT_CONFIG, ...config },
     tagCandidate: tagFreshLaunchMomentum,
+    scoreCandidate: scoreTokenCandidate,
   };
 }
 
