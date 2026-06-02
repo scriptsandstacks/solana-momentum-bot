@@ -1,3 +1,4 @@
+import type { ExecutionBroker } from '../execution/broker.js';
 import type { PaperPosition, PaperTrade, TokenCandidate } from '../types/domain.js';
 
 export interface PaperBrokerOptions {
@@ -48,7 +49,8 @@ function utcDayKey(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-export class PaperBroker {
+export class PaperBroker implements ExecutionBroker {
+  readonly mode = 'paper' as const;
   private cashUsd: number;
   private readonly positionSizeUsd: number;
   private readonly maxOpenPositions: number;
@@ -98,11 +100,12 @@ export class PaperBroker {
     return broker;
   }
 
-  canOpenPosition(now = new Date()): OpenPositionCheck {
+  canOpenPosition(now = new Date(), requiredSizeUsd?: number): OpenPositionCheck {
     if (this.openPositions.size >= this.maxOpenPositions) {
       return { ok: false, reason: `Cannot open position: max open positions (${this.maxOpenPositions}) reached` };
     }
-    if (this.cashUsd < this.positionSizeUsd) {
+    const required = requiredSizeUsd ?? this.positionSizeUsd;
+    if (this.cashUsd < required) {
       return { ok: false, reason: 'Cannot open position: insufficient paper cash' };
     }
     if (this.maxDailyLossUsd !== undefined) {
@@ -114,7 +117,10 @@ export class PaperBroker {
     return { ok: true };
   }
 
-  openPosition(candidate: TokenCandidate, score: number, openedAt = new Date()): PaperPosition {
+  // positionSizeUsd overrides the broker's configured base size for this specific
+  // trade. Use this for conviction-tiered sizing: pass strategy.resolvePositionSizeUsd()
+  // output here rather than changing the broker's global configuration.
+  openPosition(candidate: TokenCandidate, score: number, openedAt = new Date(), positionSizeUsd?: number): PaperPosition {
     const check = this.canOpenPosition(openedAt);
     if (!check.ok) {
       throw new Error(check.reason);
@@ -128,9 +134,10 @@ export class PaperBroker {
     // same positionSizeUsd buys fewer tokens. entryPriceUsd records this actual
     // fill (exit-rule PnL is then measured against what we really paid), while
     // the high-water and last marks track the observed mid for trailing stops.
+    const sizeUsd = positionSizeUsd ?? this.positionSizeUsd;
     const costFraction = this.legCostFraction(candidate.estimatedSlippageBps);
     const effectiveEntryPriceUsd = candidate.priceUsd * (1 + costFraction);
-    const quantity = this.positionSizeUsd / effectiveEntryPriceUsd;
+    const quantity = sizeUsd / effectiveEntryPriceUsd;
     const position: PaperPosition = {
       id,
       token: candidate,
@@ -142,7 +149,7 @@ export class PaperBroker {
       lastMarkUsd: candidate.priceUsd,
     };
 
-    this.cashUsd -= this.positionSizeUsd;
+    this.cashUsd -= sizeUsd;
     this.openPositions.set(id, position);
     return position;
   }

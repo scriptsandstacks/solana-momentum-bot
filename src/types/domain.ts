@@ -25,6 +25,10 @@ export interface TokenCandidate {
   // Populated after a Jupiter sell probe; absent on raw DexScreener/Raydium candidates.
   // false means the sell route was checked and failed — strong honeypot signal.
   sellRouteAvailable?: boolean;
+  // Populated after a Solana RPC mint-account inspection.
+  // true  = authority revoked (safe); false = authority still held (rug risk); undefined = not checked.
+  mintAuthorityRevoked?: boolean;
+  freezeAuthorityRevoked?: boolean;
 }
 
 export interface OpportunityScore {

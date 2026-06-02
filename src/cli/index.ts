@@ -8,12 +8,18 @@ import { runPumpWatch } from '../bot/pumpWatch.js';
 import { processPumpPortalEvents } from '../bot/pumpProcess.js';
 import { processExits } from '../bot/exitPositions.js';
 import { runBotLoop } from '../bot/runLoop.js';
+import { consoleReporter } from '../bot/reporter.js';
+import { computeTuneRecommendations, renderTuneReport } from '../bot/tune.js';
 import { loadConfigFromFile } from '../config/loadConfig.js';
 import { scanSolanaCandidates } from '../chains/solana/scanner.js';
 import { checkJupiterRoute } from '../discovery/jupiter.js';
 import { PaperBroker } from '../paper/paperBroker.js';
 import { scoreTokenCandidate } from '../scoring/scoreToken.js';
 import { SqliteStore } from '../storage/sqliteStore.js';
+import { createFreshLaunchStrategy } from '../strategies/freshLaunchMomentum.js';
+import { createMigrationStrategy } from '../strategies/migrationMomentum.js';
+import type { ExitRules } from '../bot/exitPositions.js';
+import type { TradingStrategy } from '../strategies/types.js';
 import type { PaperBrokerOptions } from '../paper/paperBroker.js';
 import type { BotConfig } from '../config/schema.js';
 
@@ -30,6 +36,40 @@ function paperBrokerOptions(config: BotConfig): PaperBrokerOptions {
       feeBps: config.fees.swapFeeBps,
       applyRouteSlippage: config.fees.applyRouteSlippage,
     },
+  };
+}
+
+function assertPaperMode(config: BotConfig): void {
+  if (config.mode === 'live') {
+    throw new Error('Live trading is not yet implemented. Set mode: paper in config.yaml to run in simulation.');
+  }
+}
+
+// Build all active strategies from file config. Each strategy's minScoreToEnter
+// defaults from config.scoring.minimumScoreToEnter; strategies may override
+// downward (e.g. migration uses 70 vs fresh launch's 75).
+function buildStrategies(config: BotConfig): TradingStrategy[] {
+  return [
+    createFreshLaunchStrategy({ minScoreToEnter: config.scoring.minimumScoreToEnter }),
+    createMigrationStrategy(), // uses its own defaults; migration scoring is independent
+  ];
+}
+
+// Build a per-position exit resolver that merges each strategy's exit overrides
+// over the global exits. Keyed by strategyId so any number of strategies can
+// define their own thresholds without touching each other's positions.
+function buildExitResolver(strategies: TradingStrategy[], globalExits: ExitRules) {
+  const byId = new Map(strategies.map((s) => [s.id, s]));
+  return (strategyId: string | undefined): ExitRules | undefined => {
+    const strategy = strategyId ? byId.get(strategyId) : undefined;
+    if (!strategy?.config.exits) return undefined; // fall back to global exits
+    return {
+      stopLossPct: strategy.config.exits.stopLossPct ?? globalExits.stopLossPct,
+      takeProfitPct: strategy.config.exits.takeProfitPct ?? globalExits.takeProfitPct,
+      trailingStopPct: strategy.config.exits.trailingStopPct ?? globalExits.trailingStopPct,
+      trailingArmPct: strategy.config.exits.trailingArmPct ?? globalExits.trailingArmPct,
+      maxHoldMinutes: strategy.config.exits.maxHoldMinutes ?? globalExits.maxHoldMinutes,
+    };
   };
 }
 
@@ -120,11 +160,45 @@ program.command('report').description('Print persisted scan, position, and trade
 
 program
   .command('stats')
-  .description('Aggregate paper-trade performance: expectancy, win rate, and PnL by reason / score / source')
+  .description('Aggregate paper-trade performance: expectancy, win rate, and PnL by reason / score / source / strategy')
   .action(() => {
     const store = new SqliteStore();
     const analytics = computeTradeAnalytics(store.loadClosedTradeStats());
     process.stdout.write(renderAnalyticsReport(analytics));
+    store.close();
+  });
+
+program
+  .command('strategies')
+  .description('Per-strategy performance summary: trades, win rate, expectancy, and P&L')
+  .action(() => {
+    const store = new SqliteStore();
+    const trades = store.loadClosedTradeStats();
+    if (trades.length === 0) {
+      process.stdout.write('No closed trades yet — run the bot to accumulate paper results.\n');
+      store.close();
+      return;
+    }
+    const analytics = computeTradeAnalytics(trades);
+    const lines = [
+      'Strategy Performance Summary',
+      `Total trades: ${analytics.overall.trades}  Total P&L: $${analytics.overall.totalPnlUsd.toFixed(2)}`,
+      '',
+      'Per-strategy breakdown:',
+    ];
+    for (const bucket of analytics.byStrategy) {
+      const pf = bucket.profitFactor === Number.POSITIVE_INFINITY ? 'inf' : bucket.profitFactor.toFixed(2);
+      lines.push(
+        `  ${bucket.label.padEnd(28)}` +
+          ` trades=${String(bucket.trades).padStart(4)}` +
+          ` win%=${bucket.winRatePct.toFixed(1).padStart(5)}` +
+          ` pnl=$${bucket.totalPnlUsd.toFixed(2).padStart(8)}` +
+          ` exp=$${bucket.expectancyUsd.toFixed(2).padStart(7)}` +
+          ` pf=${pf.padStart(5)}` +
+          ` hold=${bucket.avgHoldMinutes.toFixed(1)}m`,
+      );
+    }
+    process.stdout.write(`${lines.join('\n')}\n`);
     store.close();
   });
 
@@ -161,6 +235,28 @@ program
     const analytics = computeOutcomeAnalytics(store.loadScoredOutcomeStats(), thresholds);
     process.stdout.write(renderOutcomeAnalytics(analytics, thresholds));
     store.close();
+  });
+
+program
+  .command('tune')
+  .description('Analyze outcome data and recommend adjustments to entry threshold and exit parameters')
+  .action(() => {
+    const config = loadConfigFromFile(program.opts().config);
+    const store = new SqliteStore();
+    const thresholds = { takeProfitPct: config.exits.takeProfitPct, stopLossPct: config.exits.stopLossPct };
+    const outcomeRows = store.loadScoredOutcomeStats();
+    store.close();
+
+    if (outcomeRows.length === 0) {
+      process.stdout.write(
+        'No outcome data yet.\nRun the bot with `run` or `track-outcomes` to accumulate forward price data, then re-run `tune`.\n',
+      );
+      return;
+    }
+
+    const analytics = computeOutcomeAnalytics(outcomeRows, thresholds);
+    const result = computeTuneRecommendations(analytics, thresholds, config.scoring.minimumScoreToEnter);
+    process.stdout.write(renderTuneReport(result, analytics, thresholds, config.scoring.minimumScoreToEnter));
   });
 
 program
@@ -263,10 +359,12 @@ program
   .option('--api-key <key>', 'PumpPortal API key; defaults to PUMPPORTAL_API_KEY')
   .option('--process-interval-seconds <seconds>', 'seconds between PumpPortal processing passes', '30')
   .option('--process-limit <limit>', 'maximum pending PumpPortal events per processing pass', '50')
+  .option('--analytics-every <passes>', 'emit full analytics summary every N passes (0=off)', '10')
   .option('--seconds <seconds>', 'optional bounded runtime in seconds; omit to run until Ctrl-C')
-  .action(async (options: { apiKey?: string; processIntervalSeconds: string; processLimit: string; seconds?: string }) => {
+  .action(async (options: { apiKey?: string; processIntervalSeconds: string; processLimit: string; analyticsEvery: string; seconds?: string }) => {
     const processIntervalSeconds = Number(options.processIntervalSeconds);
     const processLimit = Number(options.processLimit);
+    const analyticsIntervalPasses = Number(options.analyticsEvery);
     const seconds = options.seconds === undefined ? undefined : Number(options.seconds);
     if (!Number.isFinite(processIntervalSeconds) || processIntervalSeconds <= 0) {
       throw new Error('--process-interval-seconds must be a positive number');
@@ -279,9 +377,14 @@ program
     }
 
     const config = loadConfigFromFile(program.opts().config);
+    assertPaperMode(config);
     if (!config.chains.solana.enabled) {
       throw new Error('Solana must be enabled to run the bot.');
     }
+
+    const strategies = buildStrategies(config);
+    const log = (message: string) => process.stdout.write(`${message}\n`);
+    const reporter = config.notifications.console ? consoleReporter(log) : undefined;
 
     const stopController = new AbortController();
     const stop = () => stopController.abort();
@@ -298,10 +401,17 @@ program
         store,
         solanaConfig: config.chains.solana,
         paper: paperBrokerOptions(config),
-        minimumScoreToEnter: config.scoring.minimumScoreToEnter,
+        // Use the minimum threshold across all strategies so the run loop's
+        // retry pass doesn't filter out candidates that belong to a lower-threshold
+        // strategy (e.g. migration at 70 vs fresh launch at 75).
+        minimumScoreToEnter: Math.min(...strategies.map((s) => s.config.minScoreToEnter)),
+        strategies,
         exits: config.exits,
+        resolveExits: buildExitResolver(strategies, config.exits),
+        analyticsIntervalPasses,
         stopSignal: stopController.signal,
-        onLog: (message) => process.stdout.write(`${message}\n`),
+        onLog: log,
+        reporter,
       });
       process.stdout.write(
         `Run complete. eventsSaved=${result.eventsSaved} processRuns=${result.processRuns} events=${result.eventsRead} enriched=${result.candidatesEnriched} scored=${result.scored} opened=${result.openedPositions} closed=${result.closedPositions} outcomes=${result.outcomesUpdated} skipped=${result.skipped} failed=${result.failed}\n`,

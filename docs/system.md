@@ -1,605 +1,397 @@
-# Hermes Agent Paper Trading System
+# Hermes — System Documentation
 
-This document describes how the current Solana-first paper-trading system works, what each component does, and how data flows through the bot.
+Technical reference for the Hermes paper trading bot. Covers architecture, data flow, strategy logic, exit rules, analytics, and CLI commands.
 
-## Current status
+---
 
-The system is a **paper-trading-only** crypto bot. It is designed to become multi-chain, but only Solana is enabled right now.
+## Status
 
 | Area | Status |
-| --- | --- |
-| Solana scanning | Enabled |
-| Base support | Configured but disabled |
-| Ethereum support | Configured but disabled |
-| Paper trading | Enabled (slippage + fee cost model on fills) |
-| Live trading | Not implemented |
+|---|---|
+| Paper trading (Solana) | Active |
+| Live trading | Not implemented — architecture ready |
+| Base / Ethereum | Config present, disabled |
 | Private key usage | Not used in paper mode |
-| Persistence | SQLite (with `prune` retention) |
-| Pump.fun discovery | PumpPortal free websocket events |
-| Route validation | Jupiter Swap API (keyless by default) |
-| Performance analytics | `stats` (realized trades) + `outcomes` (forward MFE/MAE) |
+| Persistence | SQLite |
+| Test coverage | 23 files, 134 tests |
 
-## Safety model
-
-The current bot is intentionally conservative:
-
-- It runs in `mode: paper` only.
-- It does not execute real swaps.
-- It does not need wallet private keys for the implemented commands.
-- Wallet files live under `wallet/` and are ignored by Git.
-- `.env`, local databases, logs, and `node_modules/` are ignored by Git.
-- API keys should be passed through environment variables or CLI flags and should not be committed.
-
-Live trading should not be added until paper-trading results are meaningful and safety/risk controls are expanded.
+---
 
 ## High-level architecture
 
-```text
-Discovery sources
-  ├─ PumpPortal websocket: new Pump.fun token and migration events
-  ├─ DexScreener search/token lookup: broad Solana market candidates
-  └─ Raydium mint pool lookup: pool/liquidity enrichment for PumpPortal mints
+```
+PumpPortal WebSocket
+  new_token events → freshLaunchMomentum strategy
+  migration events → migrationMomentum strategy
         ↓
-Candidate normalization
+DexScreener + Raydium enrichment (price, liquidity, volume, buy/sell counts)
         ↓
-Liquidity / volume pre-filter
+Jupiter route check (swappability, buy-side slippage, sell-route probe)
         ↓
-Jupiter route check
+Solana RPC mint authority check (mint/freeze authority revoked?)
         ↓
-Opportunity scoring
+Strategy scorer → OpportunityScore (0–100)
         ↓
-Paper broker simulation
+Entry decision (score ≥ strategy.config.minScoreToEnter AND broker has capacity)
         ↓
-SQLite persistence
+Position sizing (strategy.resolvePositionSizeUsd — conviction tiers)
         ↓
-CLI reports
+PaperBroker (simulated fill with cost model)
+        ↓
+SQLite (scored candidates, open positions, closed trades, events)
+        ↓
+Exit engine (re-price every interval → two-phase trailing stop)
+        ↓
+Analytics (stats, strategies, outcomes, tune)
 ```
 
-The important design choice is that discovery and execution realism are separate:
+---
 
-- **PumpPortal** finds early Pump.fun events.
-- **DexScreener** provides broad Solana pair/candidate metadata and token-market fallback enrichment.
-- **Raydium** provides direct Solana pool/liquidity enrichment for PumpPortal mints when Raydium pools exist.
-- **Jupiter** checks whether a candidate is actually swappable and estimates route price impact/slippage.
-- **The scoring engine** decides whether to ignore, watch, or paper trade.
-- **The paper broker** simulates entries without touching real funds.
-- **SQLite** records data so scans and paper results can be reviewed later.
+## Strategies
 
-## Component map
+### freshLaunchMomentum
 
-```text
-src/
-  cli/index.ts                 CLI entrypoint and command wiring
-  config/schema.ts             Zod schema for typed config validation
-  config/loadConfig.ts         YAML config loader
-  chains/solana/scanner.ts     Solana candidate scan pipeline
-  discovery/dexscreener.ts     DexScreener candidate discovery
-  discovery/jupiter.ts         Jupiter route/slippage validation
-  discovery/pumpPortal.ts      PumpPortal websocket client and event normalization
-  discovery/raydium.ts         Raydium mint pool/liquidity enrichment
-  scoring/scoreToken.ts        Deterministic candidate scoring
-  paper/paperBroker.ts         Paper position and trade accounting
-  bot/paperCycle.ts            One scan + paper-trade cycle
-  bot/pumpCandidates.ts        PumpPortal mint enrichment across DexScreener + Raydium
-  bot/pumpWatch.ts             Bounded PumpPortal websocket watcher
-  bot/report.ts                In-memory scan report renderer
-  bot/storageReport.ts         Persisted SQLite report renderer
-  storage/sqliteStore.ts       SQLite schema, migrations, and repositories
-  types/domain.ts              Shared domain types
+**File:** `src/strategies/freshLaunchMomentum.ts`
+
+**Edge:** A small fraction of new Pump.fun tokens sustain buy pressure through their first hour and can move 200-1000%. Strict scoring filters the majority that die immediately after creation.
+
+**Event type:** `new_token` only
+
+**Scorer signals (src/scoring/scoreToken.ts):**
+
+| Signal | Strong | OK | Weak / Risk |
+|---|---|---|---|
+| Liquidity | ≥$50K (+24) | ≥$10K (+18) | <$10K (−14) |
+| 5m volume | ≥$20K (+20) | ≥$5K (+14) | <$5K (+3) |
+| Buy ratio (5m) | ≥65% and ≥50 trades (+16) | ≥50% and ≥20 trades (+9) | below (0) |
+| Token age | 5–90 min (+10) | <5 min (+2) | >90 min (+5) |
+| 5m price change | 0–40% (+10) | — | >40% (+3), negative (0) |
+| Jupiter buy route | available (+15) | — | none (−25) |
+| Estimated slippage | ≤300 bps (+5) | — | >500 bps (−10) |
+| Sell route | present (0) | — | absent (−50) |
+| Mint authority | revoked (+5) | unchecked (0) | held (−20) |
+| Freeze authority | revoked (+3) | unchecked (0) | held (−15) |
+
+**Entry threshold:** score ≥ 75 (configurable via `scoring.minimumScoreToEnter`)
+
+**Position sizing:**
+- Score 90+: 1.5× base position size
+- Score 80–89: 1.0× base
+- Score 75–79: 0.75× base
+
+**Exit rules:**
+- Stop-loss: −20% from entry (hard floor, always active)
+- Trailing arm: +30% — trailing stop only activates once the high-water mark reaches +30%
+- Trailing stop: 15% pullback from peak (phase 2 only)
+- Safety ceiling: +300% fixed take-profit (almost never fires; trailing stop is the real exit)
+- Max hold: 60 minutes
+
+---
+
+### migrationMomentum
+
+**File:** `src/strategies/migrationMomentum.ts`
+
+**Edge:** When a Pump.fun token's bonding curve reaches 100% completion (~$69K raised), the protocol executes a large structural buy that seeds Raydium liquidity. The token has already survived price discovery on Pump.fun, so its liquidity is proven. The migration pump is typically sharper and shorter than a fresh launch pump.
+
+**Event type:** `migration` only
+
+**Scorer signals:**
+
+| Signal | Strong | OK | Weak / Risk |
+|---|---|---|---|
+| Liquidity | ≥$80K (+28) | ≥$40K (+20) | ≥$15K (+10), <$15K (−15) |
+| 5m volume | ≥$30K (+22) | ≥$10K (+15) | ≥$2K (+7), <$2K (−5) |
+| Buy ratio (5m) | ≥65% and ≥30 trades (+18) | ≥50% and ≥10 trades (+10) | below (−5) |
+| Token age | ≤360 min (+8) | ≤720 min (+3) | >720 min (−8) |
+| 5m price change | +5% to +60% (+10) | >0% (+5) | >60% (+2), negative (−5) |
+| Jupiter buy route | available (+14) | — | none (−30) |
+| Slippage | ≤200 bps (+5) | — | >500 bps (−8) |
+| Sell route | present (0) | — | absent (−50) |
+| Mint / freeze authority | same as above | | |
+
+**Entry threshold:** score ≥ 70
+
+**Position sizing:**
+- Score 85+: 1.25× base
+- Below 85: 1.0× base
+
+**Exit rules:**
+- Stop-loss: −18% from entry
+- Trailing arm: +15% — trailing stop arms sooner (migration pumps start immediately)
+- Trailing stop: 12% pullback from peak
+- Safety ceiling: +200%
+- Max hold: 25 minutes (migration pumps peak and fade quickly)
+
+---
+
+## Two-phase exit model
+
+All strategies use a two-phase trailing stop to avoid clipping winners short while still cutting losers fast.
+
+```
+Phase 1 — position is below trailingArmPct gain
+  Only the hard stop-loss applies.
+  Trailing stop is inactive.
+  Position can breathe through normal volatility without being shaken out.
+
+Phase 2 — high-water mark has reached trailingArmPct above entry
+  Trailing stop activates at trailingStopPct below the peak.
+  No ceiling on upside (takeProfitPct is set high as a safety net only).
+  Position rides winners as far as they go.
 ```
 
-## Data sources
+**Why this matters:** A fixed 50% take-profit on a memecoin that peaks at +400% leaves 350% on the table. A trailing stop that activates too early (e.g. after any 1% gain) shakes out the position on normal noise. The arm threshold prevents premature activation; the trailing stop then captures most of the move.
 
-### PumpPortal
+---
 
-PumpPortal is used as the early Pump.fun event source.
+## Entry decision flow
 
-Current subscriptions:
+For each pending PumpPortal event:
 
-```text
-subscribeNewToken
-subscribeMigration
+1. Fetch market data from DexScreener + Raydium
+2. Filter: liquidity < `minLiquidityUsd` or volume < `minVolume5mUsd` → skip
+3. Check Jupiter buy routes; probe sell route (honeypot detection)
+4. Check Solana RPC mint/freeze authority (when RPC URL configured)
+5. Route to strategy: `new_token` → freshLaunchMomentum, `migration` → migrationMomentum
+6. Strategy tags candidate with `strategyId` and scores it
+7. If `score < strategy.config.minScoreToEnter` → persist score, no entry
+8. If broker capacity blocked (position cap, cash, daily-loss breaker) → persist score, note reason, add to retry queue
+9. Otherwise: compute position size (`strategy.resolvePositionSizeUsd(score, base)`), open paper position
+
+---
+
+## Paper broker
+
+**File:** `src/paper/paperBroker.ts`
+
+Implements `ExecutionBroker` interface (`src/execution/broker.ts`). Simulates fills without touching real funds.
+
+**Cost model** — fills are not frictionless:
+- **Entry:** effective buy price = mid × (1 + feeBps/10000 + routeSlippageBps/10000). Fewer tokens per dollar than the mid price.
+- **Exit:** realized proceeds = mid × (1 − feeBps/10000 − sellSlippageBps/10000). Sell slippage is re-quoted from Jupiter at actual position size (ExactOut).
+
+**State restored from SQLite on every pass** — cash, open positions, position-id sequence, and daily P&L for the circuit breaker all survive process restarts.
+
+**Circuit breakers:**
+- `maxOpenPositions`: no new entries when at cap
+- Cash: no entry if cash < required position size
+- `maxDailyLossUsd`: no new entries once today's net realized P&L ≤ −maxDailyLossUsd; resets at UTC midnight
+
+---
+
+## Live trading transition
+
+The `ExecutionBroker` interface is the seam. The bot pipeline speaks only to this interface. To add live trading:
+
+1. `src/execution/liveBroker.ts` — implement `ExecutionBroker`
+2. `openPosition()` → submit Jupiter swap, sign with wallet keypair
+3. `closePosition()` → submit sell transaction
+4. CLI `run`: branch on `config.mode === 'live'`, build `LiveBroker` instead of restoring `PaperBroker`
+
+No changes needed to `pumpProcess`, `exitPositions`, `runLoop`, or any strategy.
+
+---
+
+## Analytics and reporting
+
+### During `run`
+
+| Log prefix | Content |
+|---|---|
+| `[trade] OPENED ...` | Strategy, score, entry price |
+| `[trade] CLOSED ...` | Reason, P&L ($, %), hold time |
+| `[cycle] ...` | Events processed, opened, closed, open count, cash |
+| `[analytics] ...` | Full stats output every N passes (`--analytics-every`, default 10) |
+| `[run:process] ...` | Raw enrichment / scoring counts |
+| `[run:exits] ...` | Raw exit counts |
+
+### CLI commands
+
+**`stats`** — realized trade analytics broken down by:
+- Strategy (freshLaunchMomentum vs migrationMomentum)
+- Exit reason (stop-loss / trailing-stop / timeout)
+- Exit price source (fresh price vs stale last-mark)
+- Score bucket (75-79, 80-89, 90-100)
+- Discovery source
+
+Metrics per bucket: trades, wins, losses, win%, total P&L, expectancy (mean P&L/trade), avg win, avg loss, profit factor (gross wins ÷ gross losses), avg hold minutes.
+
+**`strategies`** — compact per-strategy summary table.
+
+**`outcomes`** — counterfactual MFE/MAE analytics for all scored candidates (whether traded or not). Answers: "at each score level, how far did candidates run and draw down over the trade horizon?"
+
+**`tune`** — reads outcome data and emits actionable, confidence-rated recommendations:
+- Whether to raise or lower the entry threshold (based on which score buckets hit SL > TP)
+- Whether the fixed take-profit ceiling is cutting winners short (when avg MFE >> takeProfitPct)
+- Whether the stop-loss could be tightened (when avg MAE is much smaller than the stop)
+
+Sample output:
+```
+Threshold Tuning Recommendations
+Based on 143 tracked candidates
+Current: entry≥75  SL=20%  TP=300%
+
+Outcome by score bucket:
+  Bucket        n    avgMFE   avgMAE    hitTP%   hitSL%
+  <75          48    +11.2%  -18.4%       15%      69%
+▶ 75-79        38    +28.1%  -14.2%       32%      53%
+▶ 80-89        45    +52.3%   -9.7%       56%      33%
+▶ 90-100       12    +87.4%   -5.1%       83%       8%
+
+Recommendations:
+  [HIGH] scoring.minimumScoreToEnter
+    Current: 75
+    Suggest: Raise to 80
+    Why:     Score bucket 75-79 hits stop-loss more often than take-profit...
 ```
 
-These are the free streams used for initial discovery. The bot does **not** subscribe to metered token/account trade streams.
+---
 
-The watcher uses one websocket connection and sends both subscription messages over that connection.
+## Data pipeline — detailed
 
-Stored event fields:
+### PumpPortal websocket
 
-```text
-eventType          new_token | migration | unknown
-tokenMint          token mint if present
-symbol             token symbol if present
-name               token name if present
-signature          transaction signature if present
-rawJson            full raw event JSON
-receivedAt         local receive timestamp
-processingStatus   pending | processed | skipped | failed
-processingNote     latest processing result
-processedAt        processing timestamp
+Subscribes to `subscribeNewToken` and `subscribeMigration` free streams. Events are persisted to `pumpportal_events` immediately as they arrive, then processed asynchronously by `pump-process` or the `run` loop.
+
+Each event stores: `eventType`, `tokenMint`, `symbol`, `name`, `signature`, `rawJson`, `receivedAt`, `processingStatus`, `processingNote`.
+
+Events with no market data yet remain `pending` and are retried up to 5 times before being skipped.
+
+### DexScreener + Raydium enrichment
+
+For each pending mint, the bot fetches in parallel:
+- **DexScreener** `/tokens/<mints>`: pair data, price, liquidity, volume (5m, 1h), buy/sell counts, momentum
+- **Raydium** pool endpoint: pool data, TVL
+
+Results are merged per mint: price/liquidity/pair from the deepest pool; volume/buy-sell counts/momentum from DexScreener (which has live activity; Raydium does not). Keeps the best candidate per mint.
+
+### Jupiter route check
+
+For each viable candidate:
+1. Quotes a small fixed buy (SOL→token, USDC→token, USDT→token) — keeps the best (lowest slippage) route
+2. Probes a small sell ($5 ExactOut: token→USDC) — if no quote, flags `sellRouteAvailable: false` (honeypot signal, −50 pts)
+
+### Solana RPC authority check
+
+`getAccountInfo` with `jsonParsed` encoding on the token mint address. Reads `mintAuthority` and `freezeAuthority` from the SPL token mint account. Best-effort with 5-second timeout; returns unknown if RPC is unreachable. Only runs when `solanaConfig.rpcUrlEnv` resolves to a URL.
+
+---
+
+## SQLite schema
+
+**`scored_candidates`** — every candidate that passed the liquidity/volume pre-filter, whether entered or not. Includes forward-outcome columns populated by `track-outcomes`:
+
+```
+id, chain, address, symbol, strategy_id, token_json, score, recommendation,
+reasons, risks, source, price_usd, liquidity_usd, volume_5m_usd,
+route_available, sell_route_available, estimated_slippage_bps,
+outcome_high_usd, outcome_low_usd, outcome_last_usd,
+outcome_first_take_profit_at, outcome_first_stop_loss_at,
+outcome_done, created_at
 ```
 
-PumpPortal events are persisted first, then processed by `pump-process`. Processing tries to enrich each pending mint with DexScreener token market data and Raydium pool/liquidity data, keeps the deepest-liquidity candidate per mint, verifies a Jupiter route, scores the candidate, and opens a paper position only if the score passes the configured threshold. The `run` command combines watching and processing into one continuous loop.
+**`open_positions`** — currently open simulated positions. Includes `high_water_mark_usd` and `last_mark_usd` for trailing-stop math.
 
-### DexScreener
+**`closed_trades`** — completed paper trades with entry/exit price, quantity, P&L, exit reason, and exit price source.
 
-DexScreener is used by the Solana scanner to discover current Solana pairs/candidates. Candidates are normalized into the shared `TokenCandidate` shape.
+**`pumpportal_events`** — raw WebSocket events with processing status.
 
-The Solana scanner then filters candidates by config thresholds:
+---
 
-```text
-minLiquidityUsd
-minVolume5mUsd
-```
-
-### Raydium
-
-Raydium is used as a pool/liquidity enrichment source for PumpPortal token mints. For each pending mint, the bot queries Raydium's mint pool endpoint, normalizes pools into `TokenCandidate`, and keeps the highest-TVL Raydium pool for that mint.
-
-Raydium enrichment contributes:
-
-```text
-pairAddress        Raydium pool id
-liquidityUsd       pool TVL
-volume5mUsd        trailing-day volume prorated by the pool's active lifetime
-volume1hUsd        trailing-day volume prorated by the pool's active lifetime
-source             raydium
-```
-
-Raydium's `day.volume` is a trailing-24h total, not a recent rate. It is prorated by the pool's actual active lifetime (floored at 5 minutes, capped at one day) rather than a flat 24h split, so a fresh pool whose volume all accrued in its first minutes is not understated into failing the volume filter. For mature pools (≥ 1 day) this converges back to the flat day-split. Raydium does not report trade-level buy/sell counts or momentum, so those fields are left at zero on a Raydium candidate.
-
-DexScreener and Raydium candidates are merged by mint into a single best view: price, liquidity, and pair come from the deepest (most tradable) pool, but volume, buy/sell counts, and momentum come from a source that actually reports them (DexScreener). This keeps a deeper Raydium pool from blanking out DexScreener's live activity signal — otherwise fresh Raydium-led mints would be filtered or scored as if they were dead. Both source labels are preserved.
-
-### Jupiter
-
-Jupiter is used as the route validation layer, not the primary discovery source.
-
-For each viable candidate, the bot checks whether Jupiter can quote a swap into the token from several common inputs:
-
-```text
-SOL
-USDC
-USDT
-```
-
-The bot keeps the best available route by lowest estimated price impact/slippage.
-
-Returned route metadata:
-
-```text
-routeAvailable
-estimatedSlippageBps
-routeInputMint
-routeInputSymbol
-```
-
-A candidate with no Jupiter route is heavily penalized by scoring because it may not be realistically tradable.
-
-## Why Jupiter and Raydium have different roles
-
-Jupiter answers:
-
-```text
-Can we realistically swap this token, and with what route/price impact?
-```
-
-Raydium answers:
-
-```text
-Does this token have a Raydium pool, and what does that pool look like?
-```
-
-The system uses Jupiter because it aggregates multiple venues and gives better route realism for paper trading. Raydium now complements that by adding direct pool discovery/enrichment, especially for fresh mints where DexScreener coverage can lag.
-
-Route checks call Jupiter's Swap API (the old `quote-api.jup.ag/v6` host was deprecated on 2025-10-01). The host is chosen automatically from whether a key is present, so the bot runs keyless out of the box and upgrades itself once a key is set:
-
-- no key → `https://lite-api.jup.ag/swap/v1/quote` (keyless; deprecation postponed indefinitely as of 2026);
-- `JUPITER_API_KEY` set → `https://api.jup.ag/swap/v1/quote` with the key sent as the `x-api-key` header (free key from <https://portal.jup.ag>).
-
-`JUPITER_QUOTE_URL` overrides the host explicitly. The key is only an HTTP quote-API access key — it is read-only, never signs anything, and is unrelated to the wallet private keys forbidden in paper mode.
-
-Current split:
-
-```text
-PumpPortal = early Pump.fun signal
-Raydium = pool/liquidity discovery and enrichment
-Jupiter = route validation and eventual Solana execution path
-```
-
-## Config
-
-The default config lives in:
-
-```text
-config.yaml
-```
-
-A safe template lives in:
-
-```text
-config.example.yaml
-```
-
-Important current settings:
+## Configuration reference
 
 ```yaml
-mode: paper
+mode: paper             # 'paper' | 'live' (live not yet implemented)
+
 chains:
   solana:
     enabled: true
-  base:
-    enabled: false
-  ethereum:
-    enabled: false
+    walletFile: ./wallet/chain-solana.txt   # used only in live mode
+    rpcUrlEnv: SOLANA_RPC_URL               # env var for mint authority checks
+    minLiquidityUsd: 10000                  # pre-filter before scoring
+    minVolume5mUsd: 5000
+    maxSlippageBps: 500
+
 paper:
   startingBalanceUsd: 1000
-  positionSizeUsd: 25
+  positionSizeUsd: 25      # base size, scaled by strategy conviction tiers
   maxOpenPositions: 3
+  maxDailyLossUsd: 100     # circuit breaker; resets at UTC midnight
+
+exits:                     # global defaults; each strategy may override
+  stopLossPct: 20
+  takeProfitPct: 300       # safety ceiling — trailing stop is the real exit
+  trailingStopPct: 15      # pullback from peak (phase 2)
+  trailingArmPct: 30       # phase 2 activates once HWM reaches +30%
+  maxHoldMinutes: 60
+
+fees:
+  swapFeeBps: 30           # per-leg swap + priority fee (entry and exit)
+  applyRouteSlippage: true # also charge route price impact
+
 scoring:
-  minimumScoreToEnter: 75
+  minimumScoreToEnter: 75  # freshLaunchMomentum threshold
+
+retention:
+  scoredCandidateDays: 30  # prune untraded scored candidates after this
 ```
 
-The schema only accepts `mode: paper` today. That prevents accidentally enabling live behavior before it exists.
+---
 
-## CLI commands
+## File map
 
-Run commands from the project root:
+```
+src/
+  cli/index.ts                    CLI entrypoint and command wiring
+  config/schema.ts                Zod config schema
+  config/loadConfig.ts            YAML loader
 
-```bash
-cd /home/redman/development/projects/finance/crypto-bot
+  strategies/types.ts             TradingStrategy interface + StrategyConfig
+  strategies/freshLaunchMomentum.ts  Fresh launch strategy + scorer
+  strategies/migrationMomentum.ts    Migration strategy + scorer
+
+  execution/broker.ts             ExecutionBroker interface (paper/live seam)
+  paper/paperBroker.ts            PaperBroker (implements ExecutionBroker)
+  paper/restoreBroker.ts          SQLite → PaperBroker state restoration
+
+  scoring/scoreToken.ts           freshLaunchMomentum scorer (used by strategy)
+
+  bot/pumpProcess.ts              Event → strategy routing → enrichment → entry
+  bot/exitPositions.ts            Exit engine: re-price + two-phase trailing stop
+  bot/retryBlockedOpens.ts        Retry capacity-blocked entries after exit pass
+  bot/runLoop.ts                  Main loop: watch + process + exit + outcomes
+  bot/analytics.ts                Trade and outcome analytics
+  bot/reporter.ts                 Reporter interface + consoleReporter
+  bot/storageReport.ts            Persisted state report renderer
+  bot/report.ts                   In-memory scan report renderer
+  bot/tune.ts                     Threshold tuning recommendations
+  bot/paperCycle.ts               One-shot scan + paper-trade cycle
+  bot/pumpWatch.ts                Bounded PumpPortal listener
+  bot/trackOutcomes.ts            Forward MFE/MAE capture for scored candidates
+
+  chains/solana/scanner.ts        DexScreener-based Solana scan pipeline
+  chains/solana/mintAuthority.ts  Solana RPC mint/freeze authority check
+
+  discovery/dexscreener.ts        DexScreener pair discovery and token lookup
+  discovery/jupiter.ts            Jupiter route check, sell probe, exit slippage quote
+  discovery/pumpPortal.ts         PumpPortal WebSocket client
+  discovery/raydium.ts            Raydium pool/liquidity enrichment
+
+  storage/sqliteStore.ts          SQLite schema, migrations, repositories
+  types/domain.ts                 Shared domain types
 ```
 
-Install dependencies:
+---
+
+## Development
 
 ```bash
 npm install
+npm test                          # 23 test files, 134 tests
+npm run typecheck                 # tsc --noEmit, must be clean
+npm run bot -- --help             # show all commands
 ```
 
-Show command help:
-
-```bash
-npm run bot -- --help
-```
-
-### `scan`
-
-```bash
-npm run bot -- scan
-```
-
-Runs the Solana scanner once:
-
-1. Loads config.
-2. Fetches Solana candidates.
-3. Applies liquidity/volume filters.
-4. Checks Jupiter routes.
-5. Scores candidates.
-6. Saves scored candidates to SQLite.
-7. Prints a report.
-
-### `paper`
-
-```bash
-npm run bot -- paper
-```
-
-Runs one paper-trading cycle:
-
-1. Scans candidates.
-2. Scores them.
-3. Opens simulated paper positions for candidates above `minimumScoreToEnter`, subject to paper broker limits. The broker is rehydrated from SQLite, so the position cap, cash, and the daily-loss breaker hold across runs (consistent with `pump-process`/`manage-exits`). Every candidate is still scored and persisted even when an open is blocked by capacity.
-4. Saves scored candidates and open positions.
-5. Prints a report.
-
-This command still does not place real trades.
-
-### `report`
-
-```bash
-npm run bot -- report
-```
-
-Prints persisted state from SQLite:
-
-- recent scored candidates
-- open paper positions
-- closed paper trades
-- PumpPortal events
-- PnL summary
-- win rate
-
-### `stats`
-
-```bash
-npm run bot -- stats
-```
-
-Aggregates closed paper trades into performance analytics. Reports overall expectancy (mean PnL per trade), win rate, average win/loss, profit factor (gross wins ÷ gross losses), and average hold time, then breaks the same metrics down by:
-
-- exit reason (stop-loss / take-profit / trailing-stop / timeout),
-- exit price source (`fresh` vs stale `last_mark` / `entry_fallback`),
-- entry score bucket (`75-79`, `80-89`, `90-100`),
-- discovery source (PumpPortal / DexScreener / Raydium combinations).
-
-This is the loop that tells you whether the score threshold and exit rules are paying off, and which discovery source is feeding good or toxic flow. It reads only persisted trades and makes no network calls.
-
-### `track-outcomes`
-
-```bash
-npm run bot -- track-outcomes --limit 200
-```
-
-Re-prices recently scored candidates — whether or not they were traded — and records their forward high/low/last over the trade horizon (`exits.maxHoldMinutes`). This builds the **counterfactual dataset**: for every score level, how far candidates ran (maximum favorable excursion) and drew down (maximum adverse excursion) after we scored them. Candidates past the horizon are finalized and no longer tracked. The `run` loop performs this pass automatically each interval; this command is for one-off passes or a cron/`/loop`.
-
-### `outcomes`
-
-```bash
-npm run bot -- outcomes
-```
-
-Reports the tracked excursions by score bucket and recommendation: average MFE, average MAE, average final return, and how often candidates would have hit take-profit vs stop-loss (using the configured `exits` thresholds). This is the data that tells you whether `minimumScoreToEnter` is set too high (leaving profitable candidates on the table) or too low (admitting losers). Read-only; no network.
-
-### `prune`
-
-```bash
-npm run bot -- prune --dry-run
-npm run bot -- prune --days 30
-```
-
-Deletes scored candidates older than the retention window (`retention.scoredCandidateDays`, overridable with `--days`) that never led to a position — the "checked but not executed" rows that accumulate on every scan. Trades are never touched, and any mint that appears in `open_positions` or `closed_trades` is preserved so analytics/outcome joins for traded mints stay intact. After deleting it runs `VACUUM` to actually reclaim disk (SQLite does not shrink the file otherwise); pass `--no-vacuum` to skip that. Use `--dry-run` to see the count without deleting.
-
-This is destructive, so it is a separate explicit command rather than something the `run` loop does automatically. On a small device it is reasonable to schedule it (cron or `/loop`) once a day.
-
-### `pump-watch`
-
-```bash
-PUMPPORTAL_API_KEY=your_key npm run bot -- pump-watch --seconds 60
-```
-
-or:
-
-```bash
-npm run bot -- pump-watch --seconds 60 --api-key your_key
-```
-
-Watches PumpPortal free streams for a bounded duration, saves events to SQLite, and exits.
-
-The command intentionally requires an API key and a positive `--seconds` value. It is bounded so the bot does not accidentally run forever in the foreground.
-
-### `pump-process`
-
-```bash
-npm run bot -- pump-process --limit 50
-```
-
-Processes pending PumpPortal events:
-
-1. Loads pending events with token mints from SQLite.
-2. Fetches DexScreener token-pair data for those mints.
-3. Applies Solana liquidity and 5-minute volume thresholds.
-4. Checks Jupiter route availability and estimated slippage.
-5. Scores each enriched candidate.
-6. Saves the scored candidate.
-7. Opens a simulated paper position only if the score passes `minimumScoreToEnter`.
-8. Marks each event as `processed`, `skipped`, or `failed` with a note. Events with no market data yet remain `pending` so they can be retried later.
-
-### `manage-exits`
-
-```bash
-npm run bot -- manage-exits
-```
-
-Runs one exit pass:
-
-1. Rehydrates the paper broker from SQLite.
-2. Re-prices every open position via DexScreener + Raydium.
-3. Applies the configured stop-loss / take-profit / trailing-stop / max-hold rules.
-4. Closes triggered positions, records the closed trade, and persists raised high-water marks for the rest.
-5. Prints a compact summary of what was checked and closed.
-
-### `check-route`
-
-```bash
-npm run bot -- check-route <mint>
-```
-
-Read-only smoke test: quotes a Jupiter route into the given token mint and prints whether a route exists, the chosen input asset, and the estimated slippage. Places no trade and touches no funds. Reports which host/key is in use, so it doubles as a quick way to confirm the Jupiter quote path is reachable before starting `run`.
-
-### `run`
-
-```bash
-PUMPPORTAL_API_KEY=your_key npm run bot -- run
-```
-
-Runs continuously until Ctrl-C/SIGTERM:
-
-1. Connects one PumpPortal websocket.
-2. Saves incoming free-stream events immediately.
-3. Processes pending PumpPortal events every `--process-interval-seconds`.
-4. Enriches, route-checks, scores, and paper-trades qualifying candidates.
-5. Runs an exit pass on the same interval, closing positions that hit their exit rules.
-6. Tracks forward outcomes for recently scored candidates (MFE/MAE) on the same interval.
-7. Prints a compact processing + exit + outcome summary each pass.
-8. Closes the websocket and SQLite store on shutdown.
-
-Useful options:
-
-```bash
-npm run bot -- run --process-interval-seconds 30 --process-limit 50
-npm run bot -- run --seconds 60 --process-interval-seconds 10
-```
-
-Use `--seconds` for bounded smoke tests. Omit it for always-running mode.
-
-## SQLite persistence
-
-Default DB path:
-
-```text
-data/hermes-paper-bot.sqlite
-```
-
-This path is ignored by Git.
-
-Current tables:
-
-```text
-scored_candidates
-open_positions
-closed_trades
-pumpportal_events
-```
-
-### `scored_candidates`
-
-Stores every scored candidate from `scan`, `paper`, or `pump-process`. It also holds forward-outcome columns (`outcome_high_usd`, `outcome_low_usd`, `outcome_last_usd`, `outcome_samples`, `outcome_done`) populated by `track-outcomes` so candidate excursions can be analyzed later. Each row includes:
-
-- token identity
-- liquidity and volume data
-- route availability
-- estimated slippage
-- selected route input asset
-- score
-- recommendation
-- reasons and risks
-
-### `open_positions`
-
-Stores currently open simulated paper positions.
-
-### `closed_trades`
-
-Stores simulated closed trades and PnL.
-
-### `pumpportal_events`
-
-Stores raw and normalized PumpPortal new-token/migration events.
-
-## Scoring and recommendations
-
-Candidates are scored deterministically. The score produces one of these recommendations:
-
-```text
-ignore
-watch
-paper_trade
-```
-
-Signals that can improve a score include liquidity, volume, positive momentum, and healthy buy/sell flow.
-
-Risks that can reduce or block a candidate include:
-
-- weak liquidity
-- weak volume
-- weak buy pressure
-- old token age
-- negative momentum
-- no Jupiter route
-- high estimated slippage
-
-A paper position should only be opened when the score meets the configured threshold and the paper broker has capacity.
-
-## Paper broker behavior
-
-The paper broker tracks simulated cash and positions using config values:
-
-```text
-startingBalanceUsd
-positionSizeUsd
-maxOpenPositions
-```
-
-When a candidate is accepted for paper trading, the broker calculates simulated token quantity from the candidate price and configured position size. No on-chain transaction is created.
-
-### Trading-cost model
-
-Paper fills are not frictionless. The `fees` config block worsens both legs so PnL is closer to reality, which matters most for thin pump.fun liquidity:
-
-```yaml
-fees:
-  swapFeeBps: 30          # per-leg swap + priority fee, charged on entry and exit
-  applyRouteSlippage: true # also charge the candidate's estimatedSlippageBps per leg
-```
-
-- **Entry:** the effective buy price is the mid worsened by the per-leg cost, so the same `positionSizeUsd` buys fewer tokens. The position's `entryPriceUsd` records this actual fill (so exit-rule PnL is measured against what was really paid), while the high-water and last marks track the observed mid for trailing-stop math.
-- **Exit:** realized proceeds are reduced by the per-leg cost; the persisted `exitPriceUsd` is this net price, so reported PnL and cash reflect what the position would actually have fetched.
-
-Slippage sourcing differs by leg. The entry leg uses the candidate's Jupiter route estimate (a small fixed buy probe). The exit leg, when `applyRouteSlippage` is on, fetches a **fresh sell-direction quote sized to the position** — a Jupiter ExactOut quote (token → exactly the position's USD value in USDC, so no token decimals are needed) whose price impact reflects what unwinding the actual position would cost. This is best-effort: if no sell quote is available, the broker falls back to the entry estimate. The sell quote is only requested for positions that are actually closing and only when the cost model applies route slippage, so frictionless runs make no extra network calls. When the `fees` block is omitted, fills are frictionless (the historical behavior).
-
-Exit rules are enforced by the exit engine (`bot/exitPositions.ts`):
-
-```text
-stopLossPct        close when PnL <= -stopLossPct
-takeProfitPct      close when PnL >= takeProfitPct
-trailingStopPct    once price rose above entry, close on a drop of this % from the peak
-maxHoldMinutes     close when the position has been held longer than this
-```
-
-Each open position carries a `highWaterMarkUsd` (initialized to the entry price and ratcheted up on every higher print) so trailing stops measure the drop from the peak, not from entry, plus a `lastMarkUsd` (the most recent observed price, not ratcheted). Exit priority is take-profit > stop-loss > trailing-stop > timeout.
-
-When a pass has no fresh price for a position, the price-based exits (stop-loss, take-profit, trailing-stop) are skipped — they must react to a real current price. The time-based `maxHoldMinutes` timeout still fires, closing the position at its `lastMarkUsd` (or the entry price if it was never marked), so an unpriceable position cannot hold its slot indefinitely. A position that is neither priceable nor timed out is left open and retried on the next pass.
-
-The exit engine rehydrates the `PaperBroker` from SQLite (open positions, cash, the daily-loss breaker, and the position-id sequence) so state is correct across passes and restarts. The same rehydration is used when opening positions, so `maxOpenPositions`, cash, and `maxDailyLossUsd` are enforced across passes — not just within a single process run.
-
-### `maxDailyLossUsd` circuit breaker
-
-`paper.maxDailyLossUsd` blocks new entries once the current UTC day's net realized PnL reaches `-maxDailyLossUsd`. The breaker is scoped per UTC day, so it resets at the day boundary even during a long-running `run`. Exits are never blocked by the breaker.
-
-## Current limitations
-
-- Base and Ethereum modules are config placeholders only.
-- No live trading exists.
-- Exit re-pricing reuses the DexScreener + Raydium lookup. Price-based exits need a fresh price, so a position with no current market data is only acted on once it hits its `maxHoldMinutes` timeout (closed at its last known mark); until then it is left open and retried.
-- Exits are evaluated only on the process interval, so a position can move past its stop/target between passes. Acceptable for paper; revisit (real-time price triggers) before live trading.
-- Exit-leg slippage uses a fresh Jupiter sell-quote when available, but falls back to the entry route estimate when no sell quote can be fetched.
-- Outcome tracking (`track-outcomes`) shares the exit price source, so candidates that go unpriceable are not sampled — `outcomes` MFE/MAE skews toward names that stayed liquid. A high "no price" rate is itself a rug signal.
-- Route checks depend on Jupiter availability and may fail or rate-limit (keyless by default; a key raises limits).
-- DexScreener search can return older tokens; PumpPortal and Raydium improve freshness.
-
-## Recommended next steps
-
-Performance analytics (`stats`) and candidate-outcome capture (`outcomes`) now exist, so the strategy can be tuned from data. Sensible next moves:
-
-1. Accumulate a meaningful paper sample, then use `stats` vs `outcomes` to retune `minimumScoreToEnter` and the exit rules.
-2. Add sellability / rug screening (mint & freeze authority, LP burned/locked, holder concentration, sell-quote sanity) — existential for pump.fun realism.
-3. Measure entry latency (event → fill price) to quantify the paper-vs-live gap.
-4. Once a labeled dataset exists, fit the scoring weights instead of hand-tuning them.
-5. Add Base paper support only after Solana paper results are useful.
-
-## Development checks
-
-Before committing changes, run:
-
-```bash
-npm test
-npm run typecheck
-```
-
-Optional CLI smoke checks:
-
-```bash
-npm run bot -- --help
-npm run bot -- scan
-npm run bot -- report
-```
-
-## Git and secret hygiene
-
-Before committing, verify sensitive files are not staged:
-
-```bash
-git status --short
-```
-
-Files that must remain uncommitted/ignored:
-
-```text
-wallet/
-.env
-node_modules/
-data/
-logs/
-```
-
-Do not paste private keys, seed phrases, API keys, or wallet credential file contents into chat, commits, logs, or docs.
+Never commit: `wallet/`, `.env`, `data/`, `logs/`, `node_modules/`.
+Never log or commit: private keys, seed phrases, API keys.

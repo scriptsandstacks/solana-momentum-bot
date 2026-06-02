@@ -161,6 +161,58 @@ describe('processPumpPortalEvents', () => {
     });
   });
 
+  it('attaches mint/freeze authority flags to the scored candidate when checkAuthority is provided', async () => {
+    const scored: Array<{ candidate: TokenCandidate; score: OpportunityScore }> = [];
+
+    await processPumpPortalEvents({
+      store: {
+        listPendingPumpPortalEvents: () => [
+          { id: 20, eventType: 'new_token', tokenMint: 'mint-safe', rawJson: '{}', receivedAt: '2026-01-01T00:00:00Z' },
+        ],
+        markPumpPortalEventProcessed: () => undefined,
+        saveScoredCandidate: (c, s) => scored.push({ candidate: c, score: s }),
+        saveOpenPosition: () => undefined,
+      },
+      solanaConfig: { enabled: true, minLiquidityUsd: 10_000, minVolume5mUsd: 5_000, maxSlippageBps: 500 },
+      paper: { startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 3 },
+      minimumScoreToEnter: 75,
+      fetchCandidates: async () => [strongCandidate('mint-safe')],
+      checkRoute: async () => ({ routeAvailable: true, estimatedSlippageBps: 100, routeInputMint: 'u', routeInputSymbol: 'USDC', sellRouteAvailable: true }),
+      checkAuthority: async () => ({ mintAuthorityRevoked: true, freezeAuthorityRevoked: true }),
+    });
+
+    expect(scored[0].candidate.mintAuthorityRevoked).toBe(true);
+    expect(scored[0].candidate.freezeAuthorityRevoked).toBe(true);
+    // Safe flags add bonus points — score should be higher than without the check.
+    expect(scored[0].score.reasons).toContain('mint_authority_revoked');
+    expect(scored[0].score.reasons).toContain('freeze_authority_revoked');
+  });
+
+  it('penalizes score when mint authority is still held', async () => {
+    const scored: Array<{ candidate: TokenCandidate; score: OpportunityScore }> = [];
+
+    await processPumpPortalEvents({
+      store: {
+        listPendingPumpPortalEvents: () => [
+          { id: 21, eventType: 'new_token', tokenMint: 'mint-risky', rawJson: '{}', receivedAt: '2026-01-01T00:00:00Z' },
+        ],
+        markPumpPortalEventProcessed: () => undefined,
+        saveScoredCandidate: (c, s) => scored.push({ candidate: c, score: s }),
+        saveOpenPosition: () => undefined,
+      },
+      solanaConfig: { enabled: true, minLiquidityUsd: 10_000, minVolume5mUsd: 5_000, maxSlippageBps: 500 },
+      paper: { startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 3 },
+      minimumScoreToEnter: 75,
+      fetchCandidates: async () => [strongCandidate('mint-risky')],
+      checkRoute: async () => ({ routeAvailable: true, estimatedSlippageBps: 100, routeInputMint: 'u', routeInputSymbol: 'USDC', sellRouteAvailable: true }),
+      checkAuthority: async () => ({ mintAuthorityRevoked: false, freezeAuthorityRevoked: false }),
+    });
+
+    expect(scored[0].candidate.mintAuthorityRevoked).toBe(false);
+    expect(scored[0].score.risks).toContain('mint_authority_held');
+    expect(scored[0].score.risks).toContain('freeze_authority_held');
+  });
+
   it('marks events failed when the Jupiter route check throws', async () => {
     const statuses: Array<{ id: number; status: string; note?: string }> = [];
 

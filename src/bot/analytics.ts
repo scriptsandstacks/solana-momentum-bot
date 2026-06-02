@@ -9,6 +9,7 @@ export interface AnalyticsTrade {
   exitPriceSource: string;
   score: number;
   source: string;
+  strategyId: string;
   pnlUsd: number;
   pnlPct: number;
   openedAt: string;
@@ -40,6 +41,7 @@ export interface TradeAnalytics {
   byExitPriceSource: AnalyticsBucket[];
   byScoreBucket: AnalyticsBucket[];
   bySource: AnalyticsBucket[];
+  byStrategy: AnalyticsBucket[];
 }
 
 const SCORE_BUCKETS: Array<{ label: string; min: number; max: number }> = [
@@ -108,6 +110,7 @@ export function computeTradeAnalytics(trades: AnalyticsTrade[]): TradeAnalytics 
     byExitPriceSource: groupAndSummarize(trades, (trade) => trade.exitPriceSource || 'unknown'),
     byScoreBucket: groupAndSummarize(trades, (trade) => scoreBucketLabel(trade.score)),
     bySource: groupAndSummarize(trades, (trade) => trade.source || 'unknown'),
+    byStrategy: groupAndSummarize(trades, (trade) => trade.strategyId || 'unknown'),
   };
 }
 
@@ -305,6 +308,7 @@ export function renderAnalyticsReport(analytics: TradeAnalytics): string {
     for (const bucket of buckets) lines.push(bucketLine(bucket));
   };
 
+  section('By strategy', analytics.byStrategy);
   section('By exit reason', analytics.byReason);
   section('By exit price source', analytics.byExitPriceSource);
   section('By score bucket', analytics.byScoreBucket);

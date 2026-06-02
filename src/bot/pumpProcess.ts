@@ -1,9 +1,11 @@
 import { fetchPumpPortalMarketCandidates } from './pumpCandidates.js';
 import { checkJupiterRoute, type JupiterRouteCheck } from '../discovery/jupiter.js';
+import { checkMintAuthority, type MintAuthorityInfo } from '../chains/solana/mintAuthority.js';
 import { PaperBroker, type PaperBrokerOptions } from '../paper/paperBroker.js';
 import { restoreBrokerFromStore, isBrokerStateStore } from '../paper/restoreBroker.js';
-import { scoreTokenCandidate } from '../scoring/scoreToken.js';
-import { tagFreshLaunchMomentum } from '../strategies/freshLaunchMomentum.js';
+import { freshLaunchMomentumStrategy } from '../strategies/freshLaunchMomentum.js';
+import type { TradingStrategy } from '../strategies/types.js';
+import type { Reporter } from './reporter.js';
 import type { ChainConfig } from '../config/schema.js';
 import type { OpportunityScore, PaperPosition, TokenCandidate } from '../types/domain.js';
 
@@ -36,10 +38,18 @@ interface PumpProcessOptions {
   solanaConfig: ChainConfig;
   paper: PaperBrokerOptions;
   minimumScoreToEnter: number;
+  // Ordered list of strategies. Each event is routed to the first strategy that
+  // returns true from acceptsEventType(). Events with no matching strategy are
+  // scored by the first strategy as a fallback. At minimum one strategy required.
+  strategies?: TradingStrategy[];
   limit?: number;
   maxPendingAttempts?: number;
   fetchCandidates?: (tokenMints: string[]) => Promise<TokenCandidate[]>;
   checkRoute?: (outputMint: string) => Promise<JupiterRouteCheck>;
+  // Injectable for testing; defaults to the real Solana RPC call.
+  // Pass null to skip authority checks entirely (e.g. when no RPC URL is available).
+  checkAuthority?: ((mint: string) => Promise<MintAuthorityInfo>) | null;
+  reporter?: Reporter;
 }
 
 export interface PumpProcessResult {
@@ -63,6 +73,11 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
   };
 
   if (events.length === 0) return result;
+
+  // Use the provided strategy list or fall back to the singleton for backward compat.
+  const strategies = options.strategies && options.strategies.length > 0
+    ? options.strategies
+    : [freshLaunchMomentumStrategy];
 
   const mints = [...new Set(events.map((event) => event.tokenMint).filter((mint): mint is string => Boolean(mint)))];
   const fetchCandidates = options.fetchCandidates ?? fetchPumpPortalMarketCandidates;
@@ -114,27 +129,54 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
       continue;
     }
 
+    // Route event to the appropriate strategy. First strategy whose acceptsEventType
+    // returns true wins; falls back to the first strategy when none match.
+    const strategy = strategies.find((s) => s.acceptsEventType(event.eventType)) ?? strategies[0];
+
     try {
       const route = await checkRoute(candidate.address);
-      const enriched: TokenCandidate = tagFreshLaunchMomentum({
+
+      // Mint/freeze authority check — best-effort on-chain signal.
+      // Runs when an explicit checkAuthority function is provided, or when
+      // solanaConfig.rpcUrlEnv resolves to a URL in the environment.
+      // Pass checkAuthority: null to explicitly disable the check.
+      let authorityInfo: MintAuthorityInfo = { mintAuthorityRevoked: null, freezeAuthorityRevoked: null };
+      if (options.checkAuthority !== null) {
+        const rpcUrl = options.solanaConfig.rpcUrlEnv ? (process.env[options.solanaConfig.rpcUrlEnv] ?? undefined) : undefined;
+        if (options.checkAuthority) {
+          authorityInfo = await options.checkAuthority(candidate.address);
+        } else if (rpcUrl) {
+          authorityInfo = await checkMintAuthority(candidate.address, rpcUrl);
+        }
+        // No explicit function and no RPC URL configured → skip silently (unknown).
+      }
+
+      const enriched: TokenCandidate = strategy.tagCandidate({
         ...candidate,
         source: `${candidate.source}+${event.eventType}`,
         ...route,
+        mintAuthorityRevoked: authorityInfo.mintAuthorityRevoked ?? undefined,
+        freezeAuthorityRevoked: authorityInfo.freezeAuthorityRevoked ?? undefined,
       });
-      const score = scoreTokenCandidate(enriched);
+      const score = strategy.scoreCandidate(enriched);
       options.store.saveScoredCandidate(enriched, score);
       result.scored += 1;
 
-      let note = `score=${score.total} recommendation=${score.recommendation}`;
-      if (score.total >= options.minimumScoreToEnter && score.recommendation === 'paper_trade') {
-        // A blocked entry (cap/cash/daily-loss) is an expected outcome, not a
-        // failure: still mark the event processed, just note why we held off.
-        const capacity = broker.canOpenPosition();
+      // Use strategy-specific entry threshold, not the global minimumScoreToEnter
+      // (which is kept in options for the retry pass compatibility).
+      const entryThreshold = strategy.config.minScoreToEnter;
+      let note = `strategy=${strategy.id} score=${score.total} recommendation=${score.recommendation}`;
+      if (score.total >= entryThreshold && score.recommendation === 'paper_trade') {
+        // Size the position by the strategy's conviction tier before capacity check
+        // so we know how much cash is required.
+        const positionSizeUsd = strategy.resolvePositionSizeUsd(score.total, options.paper.positionSizeUsd);
+        const capacity = broker.canOpenPosition(undefined, positionSizeUsd);
         if (capacity.ok) {
-          const position = broker.openPosition(enriched, score.total);
+          const position = broker.openPosition(enriched, score.total, undefined, positionSizeUsd);
           options.store.saveOpenPosition(position);
+          options.reporter?.onPositionOpened?.({ position, strategyId: strategy.id });
           result.openedPositions += 1;
-          note += ' opened';
+          note += ` opened sizeUsd=${positionSizeUsd.toFixed(2)}`;
         } else {
           note += ` not opened (${capacity.reason})`;
         }

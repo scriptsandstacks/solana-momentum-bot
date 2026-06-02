@@ -32,10 +32,15 @@ paper:
   maxDailyLossUsd: 100
 
 exits:
+  # Hard floor — exit immediately if down this much from entry.
   stopLossPct: 20
-  takeProfitPct: 50
-  trailingStopPct: 20
-  maxHoldMinutes: 45
+  # Safety ceiling — set high so the trailing stop is the real exit, not this.
+  takeProfitPct: 300
+  # How far price may fall from the high-water mark before exiting (phase 2).
+  trailingStopPct: 15
+  # Trailing stop only arms once position is up this much (phase 1 → phase 2).
+  trailingArmPct: 30
+  maxHoldMinutes: 60
 
 # Paper fill cost model. swapFeeBps is charged per leg (entry and exit) for
 # swap + priority fees; applyRouteSlippage also charges the candidate's estimated

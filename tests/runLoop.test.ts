@@ -94,7 +94,7 @@ describe('runBotLoop', () => {
       solanaConfig: { enabled: true, minLiquidityUsd: 10_000, minVolume5mUsd: 5_000, maxSlippageBps: 500 },
       paper: { startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 3 },
       minimumScoreToEnter: 75,
-      exits: { stopLossPct: 20, takeProfitPct: 50, trailingStopPct: 20, maxHoldMinutes: 45 },
+      exits: { stopLossPct: 20, takeProfitPct: 50, trailingStopPct: 20, trailingArmPct: 0, maxHoldMinutes: 45 },
       ClientCtor: FakePumpClient,
       processPumpEvents: async () => ({
         eventsRead: 0,
@@ -141,7 +141,7 @@ describe('runBotLoop', () => {
       solanaConfig: { enabled: true, minLiquidityUsd: 10_000, minVolume5mUsd: 5_000, maxSlippageBps: 500 },
       paper: { startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 3 },
       minimumScoreToEnter: 75,
-      exits: { stopLossPct: 20, takeProfitPct: 50, trailingStopPct: 20, maxHoldMinutes: 45 },
+      exits: { stopLossPct: 20, takeProfitPct: 50, trailingStopPct: 20, trailingArmPct: 0, maxHoldMinutes: 45 },
       ClientCtor: FakePumpClient,
       processPumpEvents: async () => ({
         eventsRead: 0,

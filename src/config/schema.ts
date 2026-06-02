@@ -12,7 +12,7 @@ const chainConfigSchema = z.object({
 });
 
 export const botConfigSchema = z.object({
-  mode: z.literal('paper'),
+  mode: z.enum(['paper', 'live']),
   chains: z.object({
     solana: chainConfigSchema,
     base: chainConfigSchema,
@@ -26,8 +26,15 @@ export const botConfigSchema = z.object({
   }),
   exits: z.object({
     stopLossPct: z.number().positive().max(100),
+    // Set high (200-500) for memecoin strategies so the trailing stop — not a
+    // fixed ceiling — is the actual exit. A low value (e.g. 50) cuts winners
+    // short on assets that routinely move 200-1000%.
     takeProfitPct: z.number().positive(),
     trailingStopPct: z.number().positive().max(100),
+    // Minimum unrealized gain (%) before the trailing stop arms.
+    // Below this level only the hard stop-loss applies (phase 1).
+    // At or above, the trailing stop becomes the downside gate (phase 2).
+    trailingArmPct: z.number().nonnegative().max(100).default(0),
     maxHoldMinutes: z.number().int().positive(),
   }),
   // Trading-cost model for paper fills. Defaulted so older configs stay valid;
@@ -53,6 +60,14 @@ export const botConfigSchema = z.object({
       scoredCandidateDays: z.number().positive(),
     })
     .default({ scoredCandidateDays: 30 }),
+  // Controls whether trade open/close/cycle events are formatted as human-readable
+  // summary lines during `run` (separate from the raw [run:process] logs).
+  // Omitting the section defaults to console=true so the run loop is legible.
+  notifications: z
+    .object({
+      console: z.boolean().default(true),
+    })
+    .default({ console: true }),
 });
 
 export type ChainName = keyof z.infer<typeof botConfigSchema>['chains'];

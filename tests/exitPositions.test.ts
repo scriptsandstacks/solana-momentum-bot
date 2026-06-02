@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { decideExit, processExits } from '../src/bot/exitPositions.js';
 import type { PaperPosition, PaperTrade, TokenCandidate } from '../src/types/domain.js';
 
-const exits = { stopLossPct: 20, takeProfitPct: 50, trailingStopPct: 20, maxHoldMinutes: 45 };
+const exits = { stopLossPct: 20, takeProfitPct: 50, trailingStopPct: 20, trailingArmPct: 0, maxHoldMinutes: 45 };
 
 function token(address: string): TokenCandidate {
   return {
@@ -86,6 +86,45 @@ describe('decideExit', () => {
 
   it('returns undefined when the position is comfortably within all rules', () => {
     expect(decideExit({ ...base, highWaterMarkUsd: 0.0105 }, 0.0105, 0.0105, exits, now)).toBeUndefined();
+  });
+
+  describe('two-phase trailing stop (trailingArmPct > 0)', () => {
+    // trailingArmPct: 30 means trailing stop only arms once HWM >= entry * 1.30.
+    const twoPhase = { stopLossPct: 20, takeProfitPct: 300, trailingStopPct: 15, trailingArmPct: 30, maxHoldMinutes: 60 };
+
+    it('does not trail in phase 1 even when price drops from a small peak', () => {
+      // HWM is +10% (below the 30% arm threshold) — trailing stop must not fire.
+      // Only the hard stop-loss at -20% applies in phase 1.
+      const hwm = 0.011; // +10%
+      const price = 0.0093; // -7% from HWM — would trail at 15%, but not armed
+      expect(decideExit({ ...base, highWaterMarkUsd: hwm }, price, hwm, twoPhase, now)).toBeUndefined();
+    });
+
+    it('applies hard stop-loss in phase 1 when below trailingArmPct', () => {
+      // HWM is +10% but price is down -20% from entry → stop-loss fires.
+      const hwm = 0.011;
+      expect(decideExit({ ...base, highWaterMarkUsd: hwm }, 0.008, hwm, twoPhase, now)).toBe('stop_loss');
+    });
+
+    it('arms and fires trailing stop once HWM reaches trailingArmPct', () => {
+      // HWM reached +40% (above the 30% arm threshold).
+      // Price pulled back 16% from that peak → trailing stop fires (trail=15%).
+      const hwm = 0.014; // +40%
+      const price = 0.0117; // 0.014 * (1 - 0.16) — 16% drop from peak
+      expect(decideExit({ ...base, highWaterMarkUsd: hwm }, price, hwm, twoPhase, now)).toBe('trailing_stop');
+    });
+
+    it('does not trail when HWM is exactly at arm threshold but price has not dropped enough', () => {
+      const hwm = 0.013; // +30% exactly (arm threshold)
+      const price = 0.0112; // only -13.8% from HWM — below the 15% trail width
+      expect(decideExit({ ...base, highWaterMarkUsd: hwm }, price, hwm, twoPhase, now)).toBeUndefined();
+    });
+
+    it('safety-ceiling take-profit still fires at high TP threshold', () => {
+      // Price is up 300% — safety TP fires even with no fixed ceiling strategy.
+      const hwm = 0.04; // +300%
+      expect(decideExit({ ...base, highWaterMarkUsd: hwm }, 0.04, hwm, twoPhase, now)).toBe('take_profit');
+    });
   });
 });
 
@@ -224,5 +263,28 @@ describe('processExits', () => {
     expect(result).toMatchObject({ closed: 1, timeout: 1 });
     expect(store._closed[0]).toMatchObject({ reason: 'timeout', exitPriceUsd: 0.01, exitPriceSource: 'entry_fallback' });
     expect(store._closed[0].pnlUsd).toBeCloseTo(0);
+  });
+
+  it('uses strategy exit overrides when resolveExits returns them for the position strategyId', async () => {
+    // Position tagged freshLaunchMomentum with tight take-profit (20% instead of global 50%).
+    const pos = position({ id: 'paper-1', address: 'mint-1' });
+    pos.token = { ...pos.token, strategyId: 'freshLaunchMomentum' };
+    const store = fakeStore([pos]);
+
+    const result = await processExits({
+      store,
+      paper,
+      exits, // global: tp=50%
+      resolveExits: (strategyId) =>
+        strategyId === 'freshLaunchMomentum'
+          ? { ...exits, takeProfitPct: 20, trailingArmPct: 0 } // strategy override: tp=20%
+          : undefined,
+      now,
+      fetchPrices: async () => new Map([['mint-1', 0.012]]), // +20% from entry 0.01
+    });
+
+    // With global exits (tp=50%) this would be held; with strategy override (tp=20%) it closes.
+    expect(result).toMatchObject({ closed: 1, takeProfit: 1 });
+    expect(store._closed[0].reason).toBe('take_profit');
   });
 });
