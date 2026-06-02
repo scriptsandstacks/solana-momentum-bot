@@ -14,7 +14,8 @@ export interface LiveReadinessInput {
   walletFileExists?: boolean;
   closedTrades: number;
   trackedOutcomes: number;
-  liveBrokerImplemented?: boolean;
+  liveBrokerAvailable?: boolean;
+  liveExecutionImplemented?: boolean;
 }
 
 export interface LiveReadinessReport {
@@ -31,9 +32,15 @@ export function evaluateLiveReadiness(input: LiveReadinessInput): LiveReadinessR
   const solana = input.config.chains.solana;
 
   checks.push(
-    input.liveBrokerImplemented
-      ? pass('Live broker implementation', 'LiveBroker is available for execution.')
-      : block('Live broker implementation', 'LiveBroker is not implemented yet; live mode must remain blocked.'),
+    input.liveBrokerAvailable
+      ? pass('Live broker scaffold', 'LiveBroker scaffold is available for the paper/live broker switch.')
+      : block('Live broker scaffold', 'LiveBroker scaffold is missing.'),
+  );
+
+  checks.push(
+    input.liveExecutionImplemented
+      ? pass('Live execution implementation', 'Live transaction submission is implemented.')
+      : block('Live execution implementation', 'Live transaction submission is not implemented yet; no live trades can be placed.'),
   );
 
   checks.push(

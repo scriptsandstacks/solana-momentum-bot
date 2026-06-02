@@ -140,7 +140,8 @@ program
         walletFileExists,
         closedTrades: store.loadClosedTradeStats().length,
         trackedOutcomes: store.loadScoredOutcomeStats().length,
-        liveBrokerImplemented: false,
+        liveBrokerAvailable: true,
+        liveExecutionImplemented: false,
       });
       process.stdout.write(renderLiveReadinessReport(report));
     } finally {

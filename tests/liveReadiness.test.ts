@@ -63,18 +63,22 @@ const config: BotConfig = {
 };
 
 describe('evaluateLiveReadiness', () => {
-  it('blocks live readiness while LiveBroker is missing even when prerequisites are present', () => {
+  it('blocks live readiness while live execution is missing even when prerequisites are present', () => {
     const report = evaluateLiveReadiness({
       config,
       env: { SOLANA_RPC_URL: 'https://rpc.example' },
       walletFileExists: true,
       closedTrades: 60,
       trackedOutcomes: 120,
+      liveBrokerAvailable: true,
     });
 
     expect(report.ready).toBe(false);
     expect(report.block).toBe(1);
-    expect(report.checks.find((check) => check.label === 'Live broker implementation')).toMatchObject({
+    expect(report.checks.find((check) => check.label === 'Live broker scaffold')).toMatchObject({
+      status: 'pass',
+    });
+    expect(report.checks.find((check) => check.label === 'Live execution implementation')).toMatchObject({
       status: 'block',
     });
     expect(renderLiveReadinessReport(report)).toContain('Live Readiness Audit');
@@ -102,7 +106,8 @@ describe('evaluateLiveReadiness', () => {
       walletFileExists: true,
       closedTrades: 0,
       trackedOutcomes: 0,
-      liveBrokerImplemented: true,
+      liveBrokerAvailable: true,
+      liveExecutionImplemented: true,
     });
 
     expect(report.ready).toBe(true);
