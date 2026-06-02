@@ -31,6 +31,19 @@ export function scoreTokenCandidate(candidate: TokenCandidate): OpportunityScore
     risks.push('low_5m_volume');
   }
 
+  if (candidate.volumeAcceleration5mZ !== undefined) {
+    if (candidate.volumeAcceleration5mZ >= 2) {
+      total += 8;
+      reasons.push('volume_acceleration');
+    } else if (candidate.volumeAcceleration5mZ >= 1) {
+      total += 4;
+      reasons.push('volume_acceleration_moderate');
+    } else if (candidate.volumeAcceleration5mZ <= -1.5) {
+      total -= 6;
+      risks.push('volume_deceleration');
+    }
+  }
+
   const totalTrades = candidate.buys5m + candidate.sells5m;
   const buyRatio = totalTrades === 0 ? 0 : candidate.buys5m / totalTrades;
   if (buyRatio >= 0.65 && totalTrades >= 50) {
@@ -78,6 +91,39 @@ export function scoreTokenCandidate(candidate: TokenCandidate): OpportunityScore
   } else if (candidate.estimatedSlippageBps > 500) {
     total -= 10;
     risks.push('high_slippage');
+  }
+
+  // Explicit false = sell probe ran and found no route (honeypot). undefined = not checked; no penalty.
+  if (candidate.sellRouteAvailable === false) {
+    total -= 50;
+    risks.push('no_sell_route');
+  }
+
+  // On-chain authority checks. false = authority still held (rug risk); undefined = not checked.
+  if (candidate.mintAuthorityRevoked === false) {
+    total -= 20;
+    risks.push('mint_authority_held');
+  } else if (candidate.mintAuthorityRevoked === true) {
+    total += 5;
+    reasons.push('mint_authority_revoked');
+  }
+
+  if (candidate.freezeAuthorityRevoked === false) {
+    total -= 15;
+    risks.push('freeze_authority_held');
+  } else if (candidate.freezeAuthorityRevoked === true) {
+    total += 3;
+    reasons.push('freeze_authority_revoked');
+  }
+
+  if (candidate.top5HolderPct !== undefined) {
+    if (candidate.top5HolderPct >= 80) {
+      total -= 60;
+      risks.push('holder_concentration_high');
+    } else if (candidate.top5HolderPct <= 50) {
+      total += 3;
+      reasons.push('holder_distribution_ok');
+    }
   }
 
   const bounded = clampScore(total);

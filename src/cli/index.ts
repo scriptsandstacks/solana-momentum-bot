@@ -1,16 +1,123 @@
 import { Command } from 'commander';
+import fs from 'node:fs';
+import path from 'node:path';
+import { createInterface } from 'node:readline/promises';
+import { stdin as input, stdout as output } from 'node:process';
 import { renderReport } from '../bot/report.js';
 import { runPaperCycle } from '../bot/paperCycle.js';
 import { renderStorageReport } from '../bot/storageReport.js';
+import { computeTradeAnalytics, renderAnalyticsReport, computeOutcomeAnalytics, renderOutcomeAnalytics } from '../bot/analytics.js';
+import { trackCandidateOutcomes } from '../bot/trackOutcomes.js';
 import { runPumpWatch } from '../bot/pumpWatch.js';
 import { processPumpPortalEvents } from '../bot/pumpProcess.js';
 import { processExits } from '../bot/exitPositions.js';
 import { runBotLoop } from '../bot/runLoop.js';
+import { consoleReporter } from '../bot/reporter.js';
+import {
+  applyTuneConfigUpdates,
+  computeStrategyTuneRecommendations,
+  computeTuneRecommendations,
+  deriveTuneConfigUpdates,
+  renderStrategyTuneReport,
+  renderTuneApplyPreview,
+  renderTuneReport,
+} from '../bot/tune.js';
 import { loadConfigFromFile } from '../config/loadConfig.js';
 import { scanSolanaCandidates } from '../chains/solana/scanner.js';
+import { checkJupiterRoute } from '../discovery/jupiter.js';
 import { PaperBroker } from '../paper/paperBroker.js';
 import { scoreTokenCandidate } from '../scoring/scoreToken.js';
 import { SqliteStore } from '../storage/sqliteStore.js';
+import { buildStrategies, strategyThresholdMap } from '../strategies/buildStrategies.js';
+import { evaluateLiveReadiness, renderLiveReadinessReport } from '../execution/liveReadiness.js';
+import { LiveBroker } from '../execution/liveBroker.js';
+import { loadSolanaKeypair, createLiveBrokerDeps, queryWalletCashUsd } from '../execution/liveDeps.js';
+import { TokenActivityWatcher, rpcUrlToWs } from '../execution/tokenActivityWatcher.js';
+import { reconcileWalletPositions, renderReconciliationReport } from '../execution/walletReconciler.js';
+import {
+  buildStaleRecovery,
+  buildOrphanedRecovery,
+  renderRecoveryPlan,
+  renderRecoverySummary,
+  RECOVERY_STRATEGY_ID,
+} from '../execution/positionRecovery.js';
+import { fetchPumpPortalMarketCandidates } from '../bot/pumpCandidates.js';
+import type { ExitRules } from '../bot/exitPositions.js';
+import type { TradingStrategy } from '../strategies/types.js';
+import type { PaperBrokerOptions } from '../paper/paperBroker.js';
+import type { BotConfig } from '../config/schema.js';
+
+// Build the broker options shared by every real-trading command, including the
+// daily-loss breaker and the trading-cost model so paper fills carry realistic
+// slippage + fees.
+function paperBrokerOptions(config: BotConfig): PaperBrokerOptions {
+  return {
+    startingBalanceUsd: config.paper.startingBalanceUsd,
+    positionSizeUsd: config.paper.positionSizeUsd,
+    maxOpenPositions: config.paper.maxOpenPositions,
+    maxDailyLossUsd: config.paper.maxDailyLossUsd,
+    costModel: {
+      feeBps: config.fees.swapFeeBps,
+      applyRouteSlippage: config.fees.applyRouteSlippage,
+    },
+  };
+}
+
+async function buildLiveBrokerIfNeeded(
+  config: BotConfig,
+  store: { loadOpenPositions(): any; getRealizedPnlUsd(): number; getRealizedPnlUsdSince(s: string): number; getNextPositionSeq(): number },
+): Promise<LiveBroker | undefined> {
+  if (config.mode !== 'live') return undefined;
+
+  const solana = config.chains.solana;
+  if (!solana.walletFile) throw new Error('chains.solana.walletFile must be set for live mode');
+  const rpcUrl = solana.rpcUrlEnv ? process.env[solana.rpcUrlEnv] : undefined;
+  if (!rpcUrl) throw new Error(`Solana RPC URL env var "${solana.rpcUrlEnv ?? 'rpcUrlEnv'}" is not set or not configured`);
+
+  const keypair = loadSolanaKeypair(solana.walletFile);
+  const deps = createLiveBrokerDeps(keypair, {
+    rpcUrl,
+    maxSlippageBps: solana.maxSlippageBps,
+    priorityFeeLamports: solana.priorityFeeLamports ?? 'auto',
+  });
+
+  const initialCashUsd = await queryWalletCashUsd(keypair.publicKey.toBase58(), deps, async (method, params) => {
+    const res = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    });
+    const json = await res.json() as { result?: unknown };
+    return json.result;
+  });
+
+  const brokerOptions = {
+    solana,
+    positionSizeUsd: config.paper.positionSizeUsd,
+    maxOpenPositions: config.paper.maxOpenPositions,
+    maxDailyLossUsd: config.paper.maxDailyLossUsd,
+  };
+
+  return LiveBroker.restore(store, brokerOptions, deps, initialCashUsd);
+}
+
+// Build a per-position exit resolver that merges each strategy's exit overrides
+// over the global exits. Keyed by strategyId so any number of strategies can
+// define their own thresholds without touching each other's positions.
+function buildExitResolver(strategies: TradingStrategy[], globalExits: ExitRules) {
+  const byId = new Map(strategies.map((s) => [s.id, s]));
+  return (strategyId: string | undefined): ExitRules | undefined => {
+    const strategy = strategyId ? byId.get(strategyId) : undefined;
+    if (!strategy?.config.exits) return undefined; // fall back to global exits
+    return {
+      stopLossPct: strategy.config.exits.stopLossPct ?? globalExits.stopLossPct,
+      takeProfitPct: strategy.config.exits.takeProfitPct ?? globalExits.takeProfitPct,
+      trailingStopPct: strategy.config.exits.trailingStopPct ?? globalExits.trailingStopPct,
+      trailingArmPct: strategy.config.exits.trailingArmPct ?? globalExits.trailingArmPct,
+      maxHoldMinutes: strategy.config.exits.maxHoldMinutes ?? globalExits.maxHoldMinutes,
+    };
+  };
+}
 
 const program = new Command();
 
@@ -44,17 +151,55 @@ program.command('scan').description('Scan enabled chains and print scored candid
   store.close();
 });
 
+program
+  .command('check-route')
+  .description('Smoke-test a Jupiter route for one token mint (read-only quote; no trade)')
+  .argument('<mint>', 'output token mint to quote a swap into')
+  .action(async (mint: string) => {
+    const usingKey = Boolean(process.env.JUPITER_API_KEY);
+    process.stdout.write(`Checking Jupiter route for ${mint} (host=${usingKey ? 'api.jup.ag (keyed)' : 'lite-api.jup.ag (keyless)'})...\n`);
+    const route = await checkJupiterRoute(mint);
+    if (route.routeAvailable) {
+      process.stdout.write(
+        `Route available via ${route.routeInputSymbol} (${route.routeInputMint}); estimatedSlippage=${route.estimatedSlippageBps}bps\n`,
+      );
+    } else {
+      process.stdout.write('No buy route available (token may be unswappable, illiquid, or the quote API is unreachable).\n');
+    }
+    process.stdout.write(`Sell route (token→USDC): ${route.sellRouteAvailable ? 'available' : 'UNAVAILABLE — possible honeypot'}\n`);
+  });
+
+program
+  .command('live-readiness')
+  .description('Audit live-trading prerequisites without reading wallet contents or placing trades')
+  .action(() => {
+    const config = loadConfigFromFile(program.opts().config);
+    const store = new SqliteStore();
+    try {
+      const walletFile = config.chains.solana.walletFile;
+      const walletFileExists = walletFile ? fs.existsSync(path.resolve(process.cwd(), walletFile)) : false;
+      const report = evaluateLiveReadiness({
+        config,
+        env: process.env,
+        walletFileExists,
+        closedTrades: store.loadClosedTradeStats().length,
+        trackedOutcomes: store.loadScoredOutcomeStats().length,
+        liveBrokerAvailable: true,
+        liveExecutionImplemented: true,
+      });
+      process.stdout.write(renderLiveReadinessReport(report));
+    } finally {
+      store.close();
+    }
+  });
+
 program.command('paper').description('Run one paper-trading scan cycle').action(async () => {
   const config = loadConfigFromFile(program.opts().config);
   const store = new SqliteStore();
   const candidates = config.chains.solana.enabled ? await scanSolanaCandidates(config.chains.solana) : [];
-  const { broker, scored } = runPaperCycle({
+  const { broker, scored } = await runPaperCycle({
     candidates,
-    paper: {
-      startingBalanceUsd: config.paper.startingBalanceUsd,
-      positionSizeUsd: config.paper.positionSizeUsd,
-      maxOpenPositions: config.paper.maxOpenPositions,
-    },
+    paper: paperBrokerOptions(config),
     minimumScoreToEnter: config.scoring.minimumScoreToEnter,
     store,
   });
@@ -82,6 +227,305 @@ program.command('report').description('Print persisted scan, position, and trade
   );
   store.close();
 });
+
+program
+  .command('stats')
+  .description('Aggregate paper-trade performance: expectancy, win rate, and PnL by reason / score / source / strategy')
+  .action(() => {
+    const store = new SqliteStore();
+    const analytics = computeTradeAnalytics(store.loadClosedTradeStats());
+    process.stdout.write(renderAnalyticsReport(analytics));
+    store.close();
+  });
+
+program
+  .command('strategies')
+  .description('Per-strategy performance summary: trades, win rate, expectancy, and P&L')
+  .action(() => {
+    const store = new SqliteStore();
+    const trades = store.loadClosedTradeStats();
+    if (trades.length === 0) {
+      process.stdout.write('No closed trades yet — run the bot to accumulate paper results.\n');
+      store.close();
+      return;
+    }
+    const analytics = computeTradeAnalytics(trades);
+    const lines = [
+      'Strategy Performance Summary',
+      `Total trades: ${analytics.overall.trades}  Total P&L: $${analytics.overall.totalPnlUsd.toFixed(2)}`,
+      '',
+      'Per-strategy breakdown:',
+    ];
+    for (const bucket of analytics.byStrategy) {
+      const pf = bucket.profitFactor === Number.POSITIVE_INFINITY ? 'inf' : bucket.profitFactor.toFixed(2);
+      lines.push(
+        `  ${bucket.label.padEnd(28)}` +
+          ` trades=${String(bucket.trades).padStart(4)}` +
+          ` win%=${bucket.winRatePct.toFixed(1).padStart(5)}` +
+          ` pnl=$${bucket.totalPnlUsd.toFixed(2).padStart(8)}` +
+          ` exp=$${bucket.expectancyUsd.toFixed(2).padStart(7)}` +
+          ` pf=${pf.padStart(5)}` +
+          ` hold=${bucket.avgHoldMinutes.toFixed(1)}m`,
+      );
+    }
+    process.stdout.write(`${lines.join('\n')}\n`);
+    store.close();
+  });
+
+program
+  .command('track-outcomes')
+  .description('Re-price recently scored candidates to capture forward MFE/MAE for threshold tuning')
+  .option('--limit <limit>', 'maximum candidates to re-price this pass', '200')
+  .action(async (options: { limit: string }) => {
+    const limit = Number(options.limit);
+    if (!Number.isFinite(limit) || limit <= 0) {
+      throw new Error('--limit must be a positive number');
+    }
+    const config = loadConfigFromFile(program.opts().config);
+    const store = new SqliteStore();
+    const result = await trackCandidateOutcomes({
+      store,
+      horizonMinutes: config.exits.maxHoldMinutes,
+      thresholds: { takeProfitPct: config.exits.takeProfitPct, stopLossPct: config.exits.stopLossPct },
+      limit,
+    });
+    store.close();
+    process.stdout.write(
+      `Outcome tracking complete. finalized=${result.finalized} tracked=${result.tracked} updated=${result.updated} completed=${result.completed} noPrice=${result.missingPrice}\n`,
+    );
+  });
+
+program
+  .command('outcomes')
+  .description('Counterfactual analytics: forward MFE/MAE of scored candidates by score bucket')
+  .action(() => {
+    const config = loadConfigFromFile(program.opts().config);
+    const store = new SqliteStore();
+    const thresholds = { takeProfitPct: config.exits.takeProfitPct, stopLossPct: config.exits.stopLossPct };
+    const analytics = computeOutcomeAnalytics(store.loadScoredOutcomeStats(), thresholds);
+    process.stdout.write(renderOutcomeAnalytics(analytics, thresholds));
+    store.close();
+  });
+
+program
+  .command('tune')
+  .description('Analyze outcome data and recommend adjustments to entry threshold and exit parameters')
+  .option('--apply', 'write concrete recommendations back to the config file after confirmation', false)
+  .option('--yes', 'skip confirmation when used with --apply', false)
+  .action(async (options: { apply: boolean; yes: boolean }) => {
+    const configPath = path.resolve(process.cwd(), program.opts().config);
+    const config = loadConfigFromFile(configPath);
+    const store = new SqliteStore();
+    const thresholds = { takeProfitPct: config.exits.takeProfitPct, stopLossPct: config.exits.stopLossPct };
+    const outcomeRows = store.loadScoredOutcomeStats();
+    store.close();
+
+    if (outcomeRows.length === 0) {
+      process.stdout.write(
+        'No outcome data yet.\nRun the bot with `run` or `track-outcomes` to accumulate forward price data, then re-run `tune`.\n',
+      );
+      return;
+    }
+
+    const analytics = computeOutcomeAnalytics(outcomeRows, thresholds);
+    const result = computeTuneRecommendations(analytics, thresholds, config.scoring.minimumScoreToEnter);
+    process.stdout.write(renderTuneReport(result, analytics, thresholds, config.scoring.minimumScoreToEnter));
+    const strategies = buildStrategies(config);
+    const strategyResults = computeStrategyTuneRecommendations(
+      outcomeRows,
+      thresholds,
+      strategyThresholdMap(strategies),
+    );
+    process.stdout.write(renderStrategyTuneReport(strategyResults, thresholds));
+
+    if (!options.apply) return;
+
+    const updates = deriveTuneConfigUpdates([
+      ...result.recommendations,
+      ...strategyResults.flatMap((strategy) => strategy.result.recommendations),
+    ]);
+    process.stdout.write(`\n${renderTuneApplyPreview(updates)}`);
+    if (updates.length === 0) return;
+
+    if (!options.yes) {
+      if (!process.stdin.isTTY) {
+        throw new Error('Cannot confirm --apply in a non-interactive shell. Re-run with --yes to apply concrete recommendations.');
+      }
+      const rl = createInterface({ input, output });
+      try {
+        const answer = await rl.question(`Apply ${updates.length} update(s) to ${configPath}? Type "yes" to continue: `);
+        if (answer.trim().toLowerCase() !== 'yes') {
+          process.stdout.write('No changes applied.\n');
+          return;
+        }
+      } finally {
+        rl.close();
+      }
+    }
+
+    const currentText = fs.readFileSync(configPath, 'utf8');
+    const updatedText = applyTuneConfigUpdates(currentText, updates);
+    fs.writeFileSync(configPath, updatedText);
+    process.stdout.write(`Applied ${updates.length} config update(s) to ${configPath}.\n`);
+  });
+
+program
+  .command('recover-positions')
+  .description('Detect and fix wallet/SQLite discrepancies: close stale positions and register orphaned on-chain holdings')
+  .option('--dry-run', 'show recovery plan without writing to SQLite', false)
+  .option('--yes', 'apply all recoveries without interactive confirmation', false)
+  .action(async (options: { dryRun: boolean; yes: boolean }) => {
+    const config = loadConfigFromFile(program.opts().config);
+    const solana = config.chains.solana;
+
+    if (!solana.walletFile) {
+      throw new Error('chains.solana.walletFile must be configured to run recovery.');
+    }
+    const rpcUrl = solana.rpcUrlEnv ? process.env[solana.rpcUrlEnv] : undefined;
+    if (!rpcUrl) {
+      throw new Error(`Solana RPC URL env var "${solana.rpcUrlEnv ?? 'rpcUrlEnv'}" is not set.`);
+    }
+
+    const keypair = loadSolanaKeypair(solana.walletFile);
+    const walletPublicKey = keypair.publicKey.toBase58();
+
+    const store = new SqliteStore();
+    try {
+      const openPositions = store.loadOpenPositions();
+      process.stdout.write(`Querying on-chain balances for wallet ${walletPublicKey}...\n`);
+
+      const reconciliation = await reconcileWalletPositions({ walletPublicKey, openPositions, rpcUrl });
+
+      if (reconciliation.error) {
+        process.stdout.write(`${renderReconciliationReport(reconciliation)}\n`);
+        process.stdout.write('Cannot proceed with recovery — fix RPC connectivity and retry.\n');
+        return;
+      }
+
+      process.stdout.write(renderReconciliationReport(reconciliation));
+      if (reconciliation.orphaned.length === 0 && reconciliation.stale.length === 0) {
+        process.stdout.write('\n');
+        return;
+      }
+      process.stdout.write('\n');
+
+      // ── build recovery plan ─────────────────────────────────────────────
+      const staleRecoveries = reconciliation.stale.map((s) => {
+        const pos = openPositions.find((p) => p.id === s.positionId)!;
+        return buildStaleRecovery(pos);
+      });
+
+      // Fetch market prices for orphaned holdings.
+      const orphanedMints = reconciliation.orphaned.map((h) => h.mint);
+      const marketCandidates = orphanedMints.length > 0
+        ? await fetchPumpPortalMarketCandidates(orphanedMints)
+        : [];
+      const candidateByMint = new Map(marketCandidates.map((c) => [c.address, c]));
+
+      let nextSeq = store.getNextPositionSeq();
+      const orphanedRecoveries = reconciliation.orphaned.map((h) => {
+        const candidate = candidateByMint.get(h.mint);
+        const positionId = `live-${nextSeq++}`;
+        return buildOrphanedRecovery(h, candidate, positionId);
+      });
+
+      // ── show plan ───────────────────────────────────────────────────────
+      const plan = renderRecoveryPlan(staleRecoveries, orphanedRecoveries);
+      process.stdout.write(`${plan}\n`);
+
+      const actionable = [
+        ...staleRecoveries,
+        ...orphanedRecoveries.filter((r) => r.currentPriceUsd !== undefined),
+      ];
+      const skipped = orphanedRecoveries.filter((r) => r.currentPriceUsd === undefined).length;
+
+      if (actionable.length === 0) {
+        process.stdout.write(renderRecoverySummary(0, 0, skipped));
+        process.stdout.write('\n');
+        return;
+      }
+
+      if (options.dryRun) {
+        process.stdout.write(`Dry run — no changes written.\n`);
+        return;
+      }
+
+      // ── confirm ─────────────────────────────────────────────────────────
+      if (!options.yes) {
+        if (!process.stdin.isTTY) {
+          throw new Error('Non-interactive shell — re-run with --yes to apply recoveries.');
+        }
+        const rl = createInterface({ input, output });
+        try {
+          const answer = await rl.question(
+            `Apply ${actionable.length} recovery(s)? This modifies SQLite. Type "yes" to continue: `,
+          );
+          if (answer.trim().toLowerCase() !== 'yes') {
+            process.stdout.write('No changes applied.\n');
+            return;
+          }
+        } finally {
+          rl.close();
+        }
+      }
+
+      // ── execute ─────────────────────────────────────────────────────────
+      let staleDone = 0;
+      let orphanedDone = 0;
+
+      for (const r of staleRecoveries) {
+        store.saveClosedTrade(r.trade);
+        staleDone += 1;
+        process.stdout.write(
+          `  Closed stale: ${r.position.id} ${r.position.token.symbol} pnl=$${r.pnlUsd.toFixed(4)}\n`,
+        );
+      }
+
+      for (const r of orphanedRecoveries) {
+        if (r.currentPriceUsd === undefined) continue;
+        // Tag as the default strategy — operator can re-assign via a future command if needed.
+        r.position.token.strategyId = r.position.token.strategyId ?? RECOVERY_STRATEGY_ID;
+        store.saveOpenPosition(r.position);
+        orphanedDone += 1;
+        process.stdout.write(
+          `  Registered orphan: ${r.position.id} ${r.position.token.symbol} qty=${r.position.quantity.toFixed(4)} entry=$${r.position.entryPriceUsd.toFixed(6)}\n`,
+        );
+      }
+
+      process.stdout.write(`\n${renderRecoverySummary(staleDone, orphanedDone, skipped)}\n`);
+    } finally {
+      store.close();
+    }
+  });
+
+program
+  .command('prune')
+  .description('Delete old scored candidates that never led to a position (trades are always kept)')
+  .option('--days <days>', 'retention window in days; defaults to config retention.scoredCandidateDays')
+  .option('--dry-run', 'report what would be deleted without deleting', false)
+  .option('--no-vacuum', 'skip reclaiming disk with VACUUM after deleting')
+  .action(async (options: { days?: string; dryRun: boolean; vacuum: boolean }) => {
+    const config = loadConfigFromFile(program.opts().config);
+    const days = options.days === undefined ? config.retention.scoredCandidateDays : Number(options.days);
+    if (!Number.isFinite(days) || days <= 0) {
+      throw new Error('--days must be a positive number');
+    }
+    const cutoffIso = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const store = new SqliteStore();
+    try {
+      const prunable = store.countPrunableScoredCandidates(cutoffIso);
+      if (options.dryRun) {
+        process.stdout.write(`Dry run: ${prunable} scored candidate(s) older than ${days}d (before ${cutoffIso}) would be deleted.\n`);
+        return;
+      }
+      const deleted = store.pruneScoredCandidates(cutoffIso);
+      if (deleted > 0 && options.vacuum) store.vacuum();
+      const reclaimed = deleted > 0 && options.vacuum ? ' (disk reclaimed)' : '';
+      process.stdout.write(`Pruned ${deleted} scored candidate(s) older than ${days}d.${reclaimed}\n`);
+    } finally {
+      store.close();
+    }
+  });
 
 program
   .command('pump-watch')
@@ -121,12 +565,7 @@ program
     const result = await processPumpPortalEvents({
       store,
       solanaConfig: config.chains.solana,
-      paper: {
-        startingBalanceUsd: config.paper.startingBalanceUsd,
-        positionSizeUsd: config.paper.positionSizeUsd,
-        maxOpenPositions: config.paper.maxOpenPositions,
-        maxDailyLossUsd: config.paper.maxDailyLossUsd,
-      },
+      paper: paperBrokerOptions(config),
       minimumScoreToEnter: config.scoring.minimumScoreToEnter,
       limit,
     });
@@ -141,16 +580,13 @@ program
   .description('Re-price open paper positions and apply stop-loss / take-profit / trailing-stop / max-hold exits')
   .action(async () => {
     const config = loadConfigFromFile(program.opts().config);
+    const strategies = buildStrategies(config);
     const store = new SqliteStore();
     const result = await processExits({
       store,
-      paper: {
-        startingBalanceUsd: config.paper.startingBalanceUsd,
-        positionSizeUsd: config.paper.positionSizeUsd,
-        maxOpenPositions: config.paper.maxOpenPositions,
-        maxDailyLossUsd: config.paper.maxDailyLossUsd,
-      },
+      paper: paperBrokerOptions(config),
       exits: config.exits,
+      resolveExits: buildExitResolver(strategies, config.exits),
     });
     store.close();
     process.stdout.write(
@@ -163,11 +599,14 @@ program
   .description('Continuously watch PumpPortal and process pending events into paper candidates')
   .option('--api-key <key>', 'PumpPortal API key; defaults to PUMPPORTAL_API_KEY')
   .option('--process-interval-seconds <seconds>', 'seconds between PumpPortal processing passes', '30')
+  .option('--exit-interval-seconds <seconds>', 'seconds between exit-only passes in live mode (default: 10 in live, disabled in paper)')
   .option('--process-limit <limit>', 'maximum pending PumpPortal events per processing pass', '50')
+  .option('--analytics-every <passes>', 'emit full analytics summary every N passes (0=off)', '10')
   .option('--seconds <seconds>', 'optional bounded runtime in seconds; omit to run until Ctrl-C')
-  .action(async (options: { apiKey?: string; processIntervalSeconds: string; processLimit: string; seconds?: string }) => {
+  .action(async (options: { apiKey?: string; processIntervalSeconds: string; exitIntervalSeconds?: string; processLimit: string; analyticsEvery: string; seconds?: string }) => {
     const processIntervalSeconds = Number(options.processIntervalSeconds);
     const processLimit = Number(options.processLimit);
+    const analyticsIntervalPasses = Number(options.analyticsEvery);
     const seconds = options.seconds === undefined ? undefined : Number(options.seconds);
     if (!Number.isFinite(processIntervalSeconds) || processIntervalSeconds <= 0) {
       throw new Error('--process-interval-seconds must be a positive number');
@@ -184,6 +623,10 @@ program
       throw new Error('Solana must be enabled to run the bot.');
     }
 
+    const strategies = buildStrategies(config);
+    const log = (message: string) => process.stdout.write(`${message}\n`);
+    const reporter = config.notifications.console ? consoleReporter(log) : undefined;
+
     const stopController = new AbortController();
     const stop = () => stopController.abort();
     process.once('SIGINT', stop);
@@ -191,26 +634,76 @@ program
 
     const store = new SqliteStore();
     try {
+      const liveBroker = await buildLiveBrokerIfNeeded(config, store);
+      if (liveBroker) {
+        log(`[run] mode=live wallet=${config.chains.solana.walletFile} cash=$${liveBroker.getCashUsd().toFixed(2)} positions=${liveBroker.getOpenPositions().length}`);
+
+        // Cross-check on-chain SPL balances against SQLite open_positions so any
+        // crash-recovery gaps are surfaced before the run loop starts.
+        const rpcUrl = config.chains.solana.rpcUrlEnv
+          ? process.env[config.chains.solana.rpcUrlEnv]
+          : undefined;
+        const walletPublicKey = liveBroker.getWalletPublicKey();
+        if (rpcUrl && walletPublicKey) {
+          const reconciliation = await reconcileWalletPositions({
+            walletPublicKey,
+            openPositions: store.loadOpenPositions(),
+            rpcUrl,
+          });
+          const report = renderReconciliationReport(reconciliation);
+          if (report) log(report);
+        }
+      }
+
+      // Resolve the exit-only interval: explicit flag > live-mode default (10s) > disabled.
+      const exitIntervalSeconds = options.exitIntervalSeconds !== undefined
+        ? Number(options.exitIntervalSeconds)
+        : liveBroker ? 10 : undefined;
+      if (exitIntervalSeconds !== undefined && (!Number.isFinite(exitIntervalSeconds) || exitIntervalSeconds <= 0)) {
+        throw new Error('--exit-interval-seconds must be a positive number');
+      }
+
       const result = await runBotLoop({
         apiKey: options.apiKey,
         durationMs: seconds === undefined ? undefined : seconds * 1000,
         processIntervalMs: processIntervalSeconds * 1000,
+        exitIntervalMs: exitIntervalSeconds !== undefined ? exitIntervalSeconds * 1000 : undefined,
         processLimit,
         store,
         solanaConfig: config.chains.solana,
-        paper: {
-          startingBalanceUsd: config.paper.startingBalanceUsd,
-          positionSizeUsd: config.paper.positionSizeUsd,
-          maxOpenPositions: config.paper.maxOpenPositions,
-          maxDailyLossUsd: config.paper.maxDailyLossUsd,
-        },
-        minimumScoreToEnter: config.scoring.minimumScoreToEnter,
+        paper: paperBrokerOptions(config),
+        // Use the minimum threshold across all strategies so the run loop's
+        // retry pass doesn't filter out candidates that belong to a lower-threshold
+        // strategy (e.g. migration at 70 vs fresh launch at 75).
+        minimumScoreToEnter: Math.min(...strategies.map((s) => s.config.minScoreToEnter)),
+        strategies,
         exits: config.exits,
+        resolveExits: buildExitResolver(strategies, config.exits),
+        analyticsIntervalPasses,
         stopSignal: stopController.signal,
-        onLog: (message) => process.stdout.write(`${message}\n`),
+        onLog: log,
+        reporter,
+        broker: liveBroker,
+        // In live mode, create a real-time watcher so exit evaluations fire the
+        // moment a held token has on-chain activity, not just on the next interval.
+        createTokenWatcher: liveBroker
+          ? (onActivity) => {
+              const rpcUrl = config.chains.solana.rpcUrlEnv
+                ? process.env[config.chains.solana.rpcUrlEnv]
+                : undefined;
+              const watcher = new TokenActivityWatcher({
+                rpcWsUrl: rpcUrlToWs(rpcUrl!),
+                onActivity,
+                onLog: log,
+                onError: (err) => log(`[watcher:error] ${err.message}`),
+              });
+              watcher.connect();
+              return watcher;
+            }
+          : undefined,
       });
       process.stdout.write(
-        `Run complete. eventsSaved=${result.eventsSaved} processRuns=${result.processRuns} events=${result.eventsRead} enriched=${result.candidatesEnriched} scored=${result.scored} opened=${result.openedPositions} closed=${result.closedPositions} skipped=${result.skipped} failed=${result.failed}\n`,
+        `Run complete. eventsSaved=${result.eventsSaved} processRuns=${result.processRuns} events=${result.eventsRead} enriched=${result.candidatesEnriched} scored=${result.scored} opened=${result.openedPositions} closed=${result.closedPositions} outcomes=${result.outcomesUpdated} skipped=${result.skipped} failed=${result.failed}\n`,
       );
     } finally {
       process.off('SIGINT', stop);

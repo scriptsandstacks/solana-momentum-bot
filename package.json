@@ -1,5 +1,5 @@
 {
-  "name": "hermes-agent",
+  "name": "crypto-bot",
   "version": "0.1.0",
   "description": "Multi-chain-ready crypto paper trading bot; Solana-first MVP.",
   "type": "module",
@@ -23,6 +23,7 @@
   "author": "",
   "license": "UNLICENSED",
   "dependencies": {
+    "@solana/web3.js": "^1.98.4",
     "better-sqlite3": "^12.10.0",
     "commander": "^15.0.0",
     "pino": "^10.3.1",

@@ -55,6 +55,117 @@ describe('SqliteStore', () => {
       recommendation: 'paper_trade',
       routeInputSymbol: 'USDC',
       routeInputMint: 'usdc-mint',
+      strategyId: 'freshLaunchMomentum',
+    });
+    store.close();
+  });
+
+  it('persists sellRouteAvailable as a tristate: true=1, false=0, undefined=null', () => {
+    const store = createStore();
+
+    store.saveScoredCandidate({ ...candidate, address: 'mint-sell-ok', sellRouteAvailable: true }, score);
+    store.saveScoredCandidate({ ...candidate, address: 'mint-honeypot', sellRouteAvailable: false }, score);
+    store.saveScoredCandidate({ ...candidate, address: 'mint-unchecked' }, score);
+
+    const rows = store.listRecentScores(10);
+    const byMint = Object.fromEntries(rows.map((r) => [r.address, r.sellRouteAvailable]));
+
+    expect(byMint['mint-sell-ok']).toBe(1);
+    expect(byMint['mint-honeypot']).toBe(0);
+    expect(byMint['mint-unchecked']).toBeNull();
+    store.close();
+  });
+
+  it('persists authority flags as queryable scored-candidate columns', () => {
+    const store = createStore();
+
+    store.saveScoredCandidate(
+      {
+        ...candidate,
+        address: 'mint-authority-held',
+        mintAuthorityRevoked: false,
+        freezeAuthorityRevoked: true,
+        top5HolderPct: 85,
+        volumeAcceleration5mZ: 2.5,
+        volumeAccelerationSamples: 4,
+      },
+      score,
+    );
+    store.saveScoredCandidate({ ...candidate, address: 'mint-authority-unknown' }, score);
+
+    const rows = store.listRecentScores(10);
+    const byMint = Object.fromEntries(rows.map((r) => [r.address, r]));
+
+    expect(byMint['mint-authority-held']).toMatchObject({
+      mintAuthorityRevoked: 0,
+      freezeAuthorityRevoked: 1,
+      top5HolderPct: 85,
+      volumeAcceleration5mZ: 2.5,
+      volumeAccelerationSamples: 4,
+    });
+    expect(byMint['mint-authority-unknown']).toMatchObject({
+      mintAuthorityRevoked: null,
+      freezeAuthorityRevoked: null,
+      top5HolderPct: null,
+      volumeAcceleration5mZ: null,
+      volumeAccelerationSamples: null,
+    });
+    store.close();
+  });
+
+  it('records volume snapshots for future acceleration scoring', () => {
+    const store = createStore();
+
+    store.saveScoredCandidate({ ...candidate, volume5mUsd: 10_000, volume1hUsd: 80_000 }, score);
+    store.saveScoredCandidate({ ...candidate, volume5mUsd: 25_000, volume1hUsd: 120_000 }, score);
+
+    const rows = store.listTokenVolumeSnapshots(candidate.address, 10);
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      address: candidate.address,
+      symbol: 'MOCK',
+      strategyId: 'freshLaunchMomentum',
+      volume5mUsd: 25_000,
+      volume1hUsd: 120_000,
+    });
+    expect(rows[1]).toMatchObject({ volume5mUsd: 10_000, volume1hUsd: 80_000 });
+    expect(store.listRecentTokenVolumeSnapshots({ address: candidate.address, sinceIso: rows[1].observedAt })).toHaveLength(2);
+    store.close();
+  });
+
+  it('projects queryable risk and acceleration fields into outcome stats', () => {
+    const store = createStore();
+
+    store.saveScoredCandidate(
+      {
+        ...candidate,
+        mintAuthorityRevoked: false,
+        freezeAuthorityRevoked: true,
+        top5HolderPct: 85,
+        volumeAcceleration5mZ: 2.5,
+        volumeAccelerationSamples: 4,
+      },
+      score,
+    );
+    const [trackable] = store.listTrackableScoredCandidates(1);
+    store.recordScoredOutcome({
+      id: trackable.id,
+      outcomeHighUsd: 0.018,
+      outcomeLowUsd: 0.009,
+      outcomeLastUsd: 0.015,
+      outcomeLastAt: '2026-01-01T00:05:00.000Z',
+      outcomeFirstTakeProfitAt: '2026-01-01T00:03:00.000Z',
+      outcomeFirstStopLossAt: null,
+      done: true,
+    });
+
+    expect(store.loadScoredOutcomeStats()[0]).toMatchObject({
+      strategyId: 'freshLaunchMomentum',
+      mintAuthorityRevoked: 0,
+      freezeAuthorityRevoked: 1,
+      top5HolderPct: 85,
+      volumeAcceleration5mZ: 2.5,
     });
     store.close();
   });
@@ -73,12 +184,14 @@ describe('SqliteStore', () => {
     const trade: PaperTrade = {
       positionId: position.id,
       token: candidate,
+      score: 82,
       entryPriceUsd: 0.01,
       exitPriceUsd: 0.015,
       quantity: 2500,
       openedAt: position.openedAt,
       closedAt: new Date('2026-01-01T00:05:00Z'),
       reason: 'take_profit',
+      exitPriceSource: 'fresh',
       pnlUsd: 12.5,
       pnlPct: 50,
     };
@@ -89,7 +202,58 @@ describe('SqliteStore', () => {
     store.saveClosedTrade(trade);
     expect(store.listOpenPositions()).toHaveLength(0);
     expect(store.listClosedTrades()).toHaveLength(1);
-    expect(store.listClosedTrades()[0]).toMatchObject({ positionId: 'paper-1', pnlUsd: 12.5 });
+    expect(store.listClosedTrades()[0]).toMatchObject({
+      positionId: 'paper-1',
+      pnlUsd: 12.5,
+      exitPriceSource: 'fresh',
+      strategyId: 'freshLaunchMomentum',
+    });
+    // Analytics projection carries the entry score, discovery source, and strategy id.
+    const stats = store.loadClosedTradeStats();
+    expect(stats).toHaveLength(1);
+    expect(stats[0]).toMatchObject({
+      reason: 'take_profit',
+      score: 82,
+      source: 'test',
+      strategyId: 'freshLaunchMomentum',
+      exitPriceSource: 'fresh',
+      pnlUsd: 12.5,
+    });
+    store.close();
+  });
+
+  it('prunes old scored candidates but keeps mints that led to a trade', () => {
+    const store = createStore();
+
+    store.saveScoredCandidate({ ...candidate, address: 'mint-traded' }, score);
+    store.saveScoredCandidate({ ...candidate, address: 'mint-skipped' }, score);
+    // mint-traded was actually traded, so its scored row must be preserved.
+    store.saveClosedTrade({
+      positionId: 'paper-1',
+      token: { ...candidate, address: 'mint-traded' },
+      score: 82,
+      entryPriceUsd: 0.01,
+      exitPriceUsd: 0.015,
+      quantity: 2500,
+      openedAt: new Date('2026-01-01T00:00:00Z'),
+      closedAt: new Date('2026-01-01T00:05:00Z'),
+      reason: 'take_profit',
+      exitPriceSource: 'fresh',
+      pnlUsd: 12.5,
+      pnlPct: 50,
+    });
+
+    const future = new Date(Date.now() + 60_000).toISOString();
+    const past = new Date(Date.now() - 60_000).toISOString();
+
+    // Nothing is older than a past cutoff.
+    expect(store.countPrunableScoredCandidates(past)).toBe(0);
+    expect(store.pruneScoredCandidates(past)).toBe(0);
+
+    // With a future cutoff both rows qualify by age, but the traded mint is kept.
+    expect(store.countPrunableScoredCandidates(future)).toBe(1);
+    expect(store.pruneScoredCandidates(future)).toBe(1);
+    expect(store.listRecentScores(10).map((r) => r.address)).toEqual(['mint-traded']);
     store.close();
   });
 
@@ -113,6 +277,7 @@ describe('SqliteStore', () => {
       openedAt: position.openedAt,
       closedAt: new Date('2026-01-01T00:05:00Z'),
       reason: 'take_profit',
+      exitPriceSource: 'fresh',
       pnlUsd: 12.5,
       pnlPct: 50,
     };
@@ -137,6 +302,7 @@ describe('SqliteStore', () => {
       quantity: 2500,
       openedAt: new Date('2026-01-01T00:00:00Z'),
       highWaterMarkUsd: 0.018,
+      lastMarkUsd: 0.016,
     };
     const closed: PaperTrade = {
       positionId: 'paper-1',
@@ -147,6 +313,7 @@ describe('SqliteStore', () => {
       openedAt: new Date('2026-01-01T00:00:00Z'),
       closedAt: new Date('2026-01-01T00:05:00Z'),
       reason: 'take_profit',
+      exitPriceSource: 'fresh',
       pnlUsd: 12.5,
       pnlPct: 50,
     };
@@ -157,7 +324,7 @@ describe('SqliteStore', () => {
 
     const loaded = store.loadOpenPositions();
     expect(loaded).toHaveLength(1);
-    expect(loaded[0]).toMatchObject({ id: 'paper-3', highWaterMarkUsd: 0.018 });
+    expect(loaded[0]).toMatchObject({ id: 'paper-3', highWaterMarkUsd: 0.018, lastMarkUsd: 0.016 });
     expect(loaded[0].token).toMatchObject({ address: 'token-1', symbol: 'MOCK' });
     expect(loaded[0].openedAt).toBeInstanceOf(Date);
 
@@ -256,6 +423,17 @@ describe('SqliteStore', () => {
     // without throwing, and the pre-existing row must remain queryable with
     // sensible defaults for the new columns.
     const store = new SqliteStore(dbPath);
+    store.saveScoredCandidate(candidate, score);
+    expect(store.listRecentScores(1)[0]).toMatchObject({
+      strategyId: 'freshLaunchMomentum',
+      mintAuthorityRevoked: null,
+      freezeAuthorityRevoked: null,
+      top5HolderPct: null,
+      volumeAcceleration5mZ: null,
+      volumeAccelerationSamples: null,
+    });
+    expect(store.listTokenVolumeSnapshots(candidate.address, 5)).toHaveLength(1);
+
     const rows = store.listPumpPortalEvents(10);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
@@ -326,6 +504,7 @@ describe('SqliteStore', () => {
     // Opening through SqliteStore runs migrate(); it must not throw.
     const store = new SqliteStore(dbPath);
     expect(store.listClosedTrades(50)).toHaveLength(1);
+    expect(store.listClosedTrades(50)[0]).toMatchObject({ exitPriceSource: 'fresh' });
     expect(store.getRealizedPnlUsd()).toBeCloseTo(12.5);
 
     // The unique index is now in force: a duplicate close is ignored, not added.
@@ -338,10 +517,67 @@ describe('SqliteStore', () => {
       openedAt: new Date('2026-01-01T00:00:00Z'),
       closedAt: new Date('2026-01-01T00:10:00Z'),
       reason: 'take_profit',
+      exitPriceSource: 'fresh',
       pnlUsd: 25,
       pnlPct: 100,
     });
     expect(store.listClosedTrades(50)).toHaveLength(1);
+    store.close();
+  });
+
+  it('listRetriableScoredCandidates returns fresh high-scoring untouched candidates deduplicated by address', () => {
+    const store = createStore();
+    const cutoff = '2026-01-01T00:00:00.000Z';
+
+    // scored twice — only the highest score should come back
+    store.saveScoredCandidate({ ...candidate, address: 'mint-a' }, { ...score, total: 80 });
+    store.saveScoredCandidate({ ...candidate, address: 'mint-a' }, { ...score, total: 90 });
+    // below threshold
+    store.saveScoredCandidate({ ...candidate, address: 'mint-low' }, { ...score, total: 70 });
+    // open position exists — should be excluded
+    store.saveScoredCandidate({ ...candidate, address: 'mint-open' }, score);
+    store.saveOpenPosition({ id: 'paper-x', token: { ...candidate, address: 'mint-open' }, score: 82, entryPriceUsd: 0.01, quantity: 100, openedAt: new Date('2026-01-01T00:01:00Z'), highWaterMarkUsd: 0.01 });
+
+    const rows = store.listRetriableScoredCandidates({ minScore: 75, cutoffIso: cutoff });
+
+    const addresses = rows.map((r) => r.address);
+    expect(addresses).toContain('mint-a');
+    expect(addresses).not.toContain('mint-low');
+    expect(addresses).not.toContain('mint-open');
+    // deduplication: mint-a appears only once
+    expect(addresses.filter((a) => a === 'mint-a')).toHaveLength(1);
+    // the row for mint-a has the higher score
+    expect(rows.find((r) => r.address === 'mint-a')?.score).toBe(90);
+    expect(rows.find((r) => r.address === 'mint-a')).toMatchObject({
+      strategyId: 'freshLaunchMomentum',
+      mintAuthorityRevoked: null,
+      freezeAuthorityRevoked: null,
+      top5HolderPct: null,
+      volumeAcceleration5mZ: null,
+      volumeAccelerationSamples: null,
+    });
+    store.close();
+  });
+
+  it('applies strategy-specific thresholds before limiting retriable scored candidates', () => {
+    const store = createStore();
+    const cutoff = '2026-01-01T00:00:00.000Z';
+
+    store.saveScoredCandidate({ ...candidate, address: 'fresh-too-low', strategyId: 'freshLaunchMomentum' }, { ...score, total: 70 });
+    store.saveScoredCandidate({ ...candidate, address: 'migration-ok', strategyId: 'migrationMomentum' }, { ...score, total: 70 });
+
+    const rows = store.listRetriableScoredCandidates({
+      minScore: 70,
+      cutoffIso: cutoff,
+      limit: 1,
+      strategyMinScores: {
+        freshLaunchMomentum: 75,
+        migrationMomentum: 70,
+      },
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ address: 'migration-ok', strategyId: 'migrationMomentum', score: 70 });
     store.close();
   });
 });

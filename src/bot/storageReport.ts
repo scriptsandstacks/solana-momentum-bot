@@ -8,6 +8,8 @@ interface RecentScoreRow {
   liquidityUsd: number;
   volume5mUsd: number;
   routeInputSymbol?: string;
+  // SQLite INTEGER tristate: 1=ok, 0=no sell route, null=not checked
+  sellRouteAvailable?: number | null;
   score: number;
   recommendation: string;
   createdAt: string;
@@ -18,6 +20,7 @@ interface OpenPositionRow {
   chain: string;
   address?: string;
   symbol: string;
+  strategyId?: string;
   entryPriceUsd: number;
   quantity: number;
   score: number;
@@ -29,11 +32,13 @@ interface ClosedTradeRow {
   chain: string;
   address?: string;
   symbol: string;
+  strategyId?: string;
   entryPriceUsd?: number;
   exitPriceUsd?: number;
   quantity?: number;
   openedAt?: string;
   reason: string;
+  exitPriceSource?: string;
   pnlUsd: number;
   pnlPct: number;
   closedAt: string;
@@ -75,22 +80,27 @@ export function renderStorageReport(input: StorageReportInput): string {
 
   lines.push('', 'Top recent scores:');
   for (const row of input.recentScores.slice(0, 10)) {
+    const sellTag =
+      row.sellRouteAvailable === 1 ? ' sell=ok' : row.sellRouteAvailable === 0 ? ' sell=NO' : '';
     lines.push(
-      `${row.chain.toUpperCase()} ${row.symbol} score=${row.score} rec=${row.recommendation} route=${row.routeInputSymbol ?? 'none'} price=$${row.priceUsd} liq=$${Math.round(row.liquidityUsd)} vol5m=$${Math.round(row.volume5mUsd)} at=${row.createdAt}`,
+      `${row.chain.toUpperCase()} ${row.symbol} score=${row.score} rec=${row.recommendation} route=${row.routeInputSymbol ?? 'none'}${sellTag} price=$${row.priceUsd} liq=$${Math.round(row.liquidityUsd)} vol5m=$${Math.round(row.volume5mUsd)} at=${row.createdAt}`,
     );
   }
 
   lines.push('', 'Open positions:');
   for (const row of input.openPositions.slice(0, 10)) {
+    const strat = row.strategyId ? ` strat=${row.strategyId}` : '';
     lines.push(
-      `${row.id} ${row.chain.toUpperCase()} ${row.symbol} entry=$${row.entryPriceUsd} qty=${row.quantity.toFixed(4)} score=${row.score} opened=${row.openedAt}`,
+      `${row.id} ${row.chain.toUpperCase()} ${row.symbol}${strat} entry=$${row.entryPriceUsd} qty=${row.quantity.toFixed(4)} score=${row.score} opened=${row.openedAt}`,
     );
   }
 
   lines.push('', 'Recent closed trades:');
   for (const row of input.closedTrades.slice(0, 10)) {
+    const source = row.exitPriceSource ? ` source=${row.exitPriceSource}` : '';
+    const strat = row.strategyId ? ` strat=${row.strategyId}` : '';
     lines.push(
-      `${row.positionId} ${row.chain.toUpperCase()} ${row.symbol} reason=${row.reason} pnl=$${row.pnlUsd.toFixed(2)} pct=${row.pnlPct.toFixed(2)} closed=${row.closedAt}`,
+      `${row.positionId} ${row.chain.toUpperCase()} ${row.symbol}${strat} reason=${row.reason}${source} pnl=$${row.pnlUsd.toFixed(2)} pct=${row.pnlPct.toFixed(2)} closed=${row.closedAt}`,
     );
   }
 

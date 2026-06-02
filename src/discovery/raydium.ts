@@ -23,13 +23,27 @@ export interface RaydiumPool {
 
 type FetchJson = (url: string) => Promise<any>;
 
-export function mapRaydiumPoolToCandidate(pool: RaydiumPool, requestedMint: string): TokenCandidate {
+export function mapRaydiumPoolToCandidate(
+  pool: RaydiumPool,
+  requestedMint: string,
+  nowMs: number = Date.now(),
+): TokenCandidate {
   const matchesMintA = pool.mintA?.address === requestedMint;
   const matchesMintB = pool.mintB?.address === requestedMint;
   const token = matchesMintA ? pool.mintA : matchesMintB ? pool.mintB : undefined;
-  const openedMs = Number(pool.openTime ?? 0) > 0 ? Number(pool.openTime) * 1000 : Date.now();
-  const ageMinutes = Math.max(0, Math.floor((Date.now() - openedMs) / 60_000));
+  const openedMs = Number(pool.openTime ?? 0) > 0 ? Number(pool.openTime) * 1000 : nowMs;
+  const ageMinutes = Math.max(0, Math.floor((nowMs - openedMs) / 60_000));
   const dayVolume = Number(pool.day?.volume ?? 0);
+
+  // Raydium reports a trailing-24h `day.volume`, not a recent rate. A flat
+  // /288 (5m) or /24 (1h) split assumes the volume was spread evenly over a
+  // full day, which badly understates a fresh pool whose volume all accrued in
+  // its short lifetime — exactly the new mints this enrichment exists to catch.
+  // Prorate by the pool's actual active lifetime instead (floored at 5m to
+  // avoid exploding on brand-new pools, capped at a day for mature ones, where
+  // it converges back to the old /288 and /24 behavior).
+  const activeMinutes = Math.min(Math.max(ageMinutes, 5), 1_440);
+  const perMinuteVolume = dayVolume / activeMinutes;
 
   return {
     chain: 'solana',
@@ -39,8 +53,8 @@ export function mapRaydiumPoolToCandidate(pool: RaydiumPool, requestedMint: stri
     pairAddress: pool.id ?? '',
     priceUsd: normalizeRaydiumPrice(pool, requestedMint),
     liquidityUsd: Number(pool.tvl ?? 0),
-    volume5mUsd: roundUsd(dayVolume / 288),
-    volume1hUsd: roundUsd(dayVolume / 24),
+    volume5mUsd: roundUsd(perMinuteVolume * 5),
+    volume1hUsd: roundUsd(perMinuteVolume * 60),
     priceChange5mPct: 0,
     buys5m: 0,
     sells5m: 0,

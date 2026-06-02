@@ -22,10 +22,10 @@ const candidate: TokenCandidate = {
 };
 
 describe('PaperBroker', () => {
-  it('opens a paper position and deducts cash', () => {
+  it('opens a paper position and deducts cash', async () => {
     const broker = new PaperBroker({ startingBalanceUsd: 100, positionSizeUsd: 25, maxOpenPositions: 3 });
 
-    const position = broker.openPosition(candidate, 82, new Date('2026-01-01T00:00:00Z'));
+    const position = await broker.openPosition(candidate, 82, new Date('2026-01-01T00:00:00Z'));
 
     expect(position.entryPriceUsd).toBe(0.01);
     expect(position.quantity).toBe(2500);
@@ -33,11 +33,11 @@ describe('PaperBroker', () => {
     expect(broker.getOpenPositions()).toHaveLength(1);
   });
 
-  it('closes a paper position and records pnl', () => {
+  it('closes a paper position and records pnl', async () => {
     const broker = new PaperBroker({ startingBalanceUsd: 100, positionSizeUsd: 25, maxOpenPositions: 3 });
-    const position = broker.openPosition(candidate, 82, new Date('2026-01-01T00:00:00Z'));
+    const position = await broker.openPosition(candidate, 82, new Date('2026-01-01T00:00:00Z'));
 
-    const trade = broker.closePosition(position.id, 0.015, 'take_profit', new Date('2026-01-01T00:05:00Z'));
+    const trade = await broker.closePosition(position.id, 0.015, 'take_profit', new Date('2026-01-01T00:05:00Z'));
 
     expect(trade.pnlUsd).toBeCloseTo(12.5);
     expect(trade.pnlPct).toBeCloseTo(50);
@@ -46,45 +46,93 @@ describe('PaperBroker', () => {
     expect(broker.getClosedTrades()).toHaveLength(1);
   });
 
-  it('refuses to exceed max open positions', () => {
-    const broker = new PaperBroker({ startingBalanceUsd: 100, positionSizeUsd: 25, maxOpenPositions: 1 });
-    broker.openPosition(candidate, 82, new Date('2026-01-01T00:00:00Z'));
+  it('applies the cost model: entry buys fewer tokens and exit nets less', async () => {
+    // 1% route slippage + 0.30% fee = 1.30% friction per leg.
+    const broker = new PaperBroker({
+      startingBalanceUsd: 100,
+      positionSizeUsd: 25,
+      maxOpenPositions: 3,
+      costModel: { feeBps: 30, applyRouteSlippage: true },
+    });
 
-    expect(() => broker.openPosition({ ...candidate, address: 'token-2', pairAddress: 'pair-2' }, 80, new Date('2026-01-01T00:01:00Z'))).toThrow(/max open/i);
+    const position = await broker.openPosition(candidate, 82, new Date('2026-01-01T00:00:00Z'));
+
+    // Effective buy price = 0.01 * 1.013; quantity = 25 / that.
+    expect(position.entryPriceUsd).toBeCloseTo(0.01013);
+    expect(position.quantity).toBeCloseTo(25 / 0.01013);
+    // Cash still deducts the full position size, preserving the restore invariant.
+    expect(broker.getCashUsd()).toBe(75);
+    // Marks track observed mid, not the worsened fill.
+    expect(position.highWaterMarkUsd).toBe(0.01);
+    expect(position.lastMarkUsd).toBe(0.01);
+
+    // Sell at a +30% mid; proceeds are reduced by the same 1.30% exit friction.
+    const trade = await broker.closePosition(position.id, 0.013, 'take_profit', new Date('2026-01-01T00:05:00Z'));
+    expect(trade.exitPriceUsd).toBeCloseTo(0.013 * 0.987);
+    const expectedPnl = 0.013 * 0.987 * position.quantity - 0.01013 * position.quantity;
+    expect(trade.pnlUsd).toBeCloseTo(expectedPnl);
   });
 
-  it('initializes the high-water mark to entry and only ratchets upward', () => {
+  it('is frictionless when no cost model is configured', async () => {
     const broker = new PaperBroker({ startingBalanceUsd: 100, positionSizeUsd: 25, maxOpenPositions: 3 });
-    const position = broker.openPosition(candidate, 82, new Date('2026-01-01T00:00:00Z'));
+    const position = await broker.openPosition(candidate, 82, new Date('2026-01-01T00:00:00Z'));
+    expect(position.entryPriceUsd).toBe(0.01);
+    expect(position.quantity).toBe(2500);
+    const trade = await broker.closePosition(position.id, 0.015, 'take_profit', new Date('2026-01-01T00:05:00Z'));
+    expect(trade.exitPriceUsd).toBe(0.015);
+    expect(trade.pnlUsd).toBeCloseTo(12.5);
+  });
+
+  it('refuses to exceed max open positions', async () => {
+    const broker = new PaperBroker({ startingBalanceUsd: 100, positionSizeUsd: 25, maxOpenPositions: 1 });
+    await broker.openPosition(candidate, 82, new Date('2026-01-01T00:00:00Z'));
+
+    await expect(
+      broker.openPosition({ ...candidate, address: 'token-2', pairAddress: 'pair-2' }, 80, new Date('2026-01-01T00:01:00Z')),
+    ).rejects.toThrow(/max open/i);
+  });
+
+  it('records marks: high-water ratchets up only, last-mark always tracks latest', async () => {
+    const broker = new PaperBroker({ startingBalanceUsd: 100, positionSizeUsd: 25, maxOpenPositions: 3 });
+    const position = await broker.openPosition(candidate, 82, new Date('2026-01-01T00:00:00Z'));
 
     expect(position.highWaterMarkUsd).toBe(0.01);
-    expect(broker.updateHighWaterMark(position.id, 0.02).highWaterMarkUsd).toBe(0.02);
-    // A lower print must not lower the mark.
-    expect(broker.updateHighWaterMark(position.id, 0.015).highWaterMarkUsd).toBe(0.02);
+    expect(position.lastMarkUsd).toBe(0.01);
+
+    const up = broker.recordMark(position.id, 0.02);
+    expect(up.highWaterMarkUsd).toBe(0.02);
+    expect(up.lastMarkUsd).toBe(0.02);
+
+    // A lower print must not lower the high-water mark, but is the new last-mark.
+    const down = broker.recordMark(position.id, 0.015);
+    expect(down.highWaterMarkUsd).toBe(0.02);
+    expect(down.lastMarkUsd).toBe(0.015);
   });
 
-  it('blocks new entries once the daily loss limit is reached, but still allows exits', () => {
+  it('blocks new entries once the daily loss limit is reached, but still allows exits', async () => {
     const broker = new PaperBroker({
       startingBalanceUsd: 1000,
       positionSizeUsd: 100,
       maxOpenPositions: 5,
       maxDailyLossUsd: 50,
     });
-    const position = broker.openPosition(candidate, 82, new Date('2026-01-01T00:00:00Z'));
+    const position = await broker.openPosition(candidate, 82, new Date('2026-01-01T00:00:00Z'));
     // Close at a 60% loss: -$60 realized, past the $50 daily limit.
-    broker.closePosition(position.id, 0.004, 'stop_loss', new Date('2026-01-01T00:05:00Z'));
+    await broker.closePosition(position.id, 0.004, 'stop_loss', new Date('2026-01-01T00:05:00Z'));
 
     expect(broker.getDailyRealizedPnlUsd(new Date('2026-01-01T01:00:00Z'))).toBeCloseTo(-60);
     const check = broker.canOpenPosition(new Date('2026-01-01T01:00:00Z'));
     expect(check.ok).toBe(false);
     expect(check.reason).toMatch(/daily loss/i);
-    expect(() => broker.openPosition(candidate, 82, new Date('2026-01-01T01:00:00Z'))).toThrow(/daily loss/i);
+    await expect(
+      broker.openPosition(candidate, 82, new Date('2026-01-01T01:00:00Z')),
+    ).rejects.toThrow(/daily loss/i);
 
     // The breaker is scoped to the day the loss was booked: the next UTC day is clear.
     expect(broker.canOpenPosition(new Date('2026-01-02T00:00:00Z')).ok).toBe(true);
   });
 
-  it('restores cash, open positions, breaker state, and the id sequence', () => {
+  it('restores cash, open positions, breaker state, and the id sequence', async () => {
     const restored = PaperBroker.restore(
       { startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 3, maxDailyLossUsd: 50 },
       {
@@ -112,7 +160,7 @@ describe('PaperBroker', () => {
     expect(restored.canOpenPosition(new Date('2026-01-01T12:30:00Z')).reason).toMatch(/daily loss/i);
     expect(restored.canOpenPosition(new Date('2026-01-02T00:00:00Z')).ok).toBe(true);
     // New positions continue the persisted sequence rather than colliding with paper-7.
-    const next = restored.openPosition(
+    const next = await restored.openPosition(
       { ...candidate, address: 'token-9', pairAddress: 'pair-9' },
       80,
       new Date('2026-01-02T00:00:00Z'),

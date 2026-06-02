@@ -54,10 +54,12 @@ describe('config loading', () => {
     expect(config.chains.base.enabled).toBe(false);
     expect(config.chains.ethereum.enabled).toBe(false);
     expect(config.paper.positionSizeUsd).toBe(25);
+    expect(config.strategies.freshLaunchMomentum.minScoreToEnter).toBeUndefined();
   });
 
-  it('rejects live mode until explicitly implemented', () => {
-    expect(() => parseConfig({ ...validConfig, mode: 'live' })).toThrow(/mode/i);
+  it('accepts live mode in config (CLI guards against running it)', () => {
+    const config = parseConfig({ ...validConfig, mode: 'live' });
+    expect(config.mode).toBe('live');
   });
 
   it('loads config.yaml from disk', () => {
@@ -79,5 +81,30 @@ describe('config loading', () => {
     });
 
     expect(config.chains.solana.walletFile).toBeUndefined();
+  });
+
+  it('accepts strategy-specific entry and exit overrides', () => {
+    const config = parseConfig({
+      ...validConfig,
+      strategies: {
+        freshLaunchMomentum: {
+          minScoreToEnter: 80,
+          exits: {
+            maxHoldMinutes: 45,
+          },
+        },
+        migrationMomentum: {
+          minScoreToEnter: 72,
+          exits: {
+            stopLossPct: 16,
+          },
+        },
+      },
+    });
+
+    expect(config.strategies.freshLaunchMomentum.minScoreToEnter).toBe(80);
+    expect(config.strategies.freshLaunchMomentum.exits?.maxHoldMinutes).toBe(45);
+    expect(config.strategies.migrationMomentum.minScoreToEnter).toBe(72);
+    expect(config.strategies.migrationMomentum.exits?.stopLossPct).toBe(16);
   });
 });

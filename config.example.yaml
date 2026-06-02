@@ -5,9 +5,17 @@ chains:
     enabled: true
     # walletFile is only read in live mode; safe to leave set while paper-trading.
     walletFile: ./wallet/chain-solana.txt
+    # Name of the env var that holds your Solana RPC URL (e.g. from Helius, QuickNode).
+    # Required for live trading and for on-chain risk signals (mint authority, holder concentration).
+    # Example: export SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<key>
+    rpcUrlEnv: SOLANA_RPC_URL
     minLiquidityUsd: 10000
     minVolume5mUsd: 5000
     maxSlippageBps: 500
+    # Priority fee added to every live trade transaction (lamports).
+    # 'auto' lets Jupiter set a dynamic fee based on current network congestion.
+    # Increase during high-traffic periods if transactions are not landing.
+    priorityFeeLamports: auto
 
   base:
     enabled: false
@@ -32,10 +40,47 @@ paper:
   maxDailyLossUsd: 100
 
 exits:
+  # Hard floor — exit immediately if down this much from entry.
   stopLossPct: 20
-  takeProfitPct: 50
-  trailingStopPct: 20
-  maxHoldMinutes: 45
+  # Safety ceiling — set high so the trailing stop is the real exit, not this.
+  takeProfitPct: 300
+  # How far price may fall from the high-water mark before exiting (phase 2).
+  trailingStopPct: 15
+  # Trailing stop only arms once position is up this much (phase 1 → phase 2).
+  trailingArmPct: 30
+  maxHoldMinutes: 60
+
+# Paper fill cost model. swapFeeBps is charged per leg (entry and exit) for
+# swap + priority fees; applyRouteSlippage also charges the candidate's estimated
+# route price impact per leg so thin-liquidity PnL is not frictionless fantasy.
+fees:
+  swapFeeBps: 30
+  applyRouteSlippage: true
 
 scoring:
   minimumScoreToEnter: 75
+
+# Optional per-strategy overrides. Omit any value to use the strategy default.
+# `tune --apply` may write concrete per-strategy recommendations here.
+strategies:
+  freshLaunchMomentum:
+    minScoreToEnter: 75
+    exits:
+      trailingArmPct: 30
+      trailingStopPct: 15
+      maxHoldMinutes: 60
+      takeProfitPct: 300
+  migrationMomentum:
+    minScoreToEnter: 70
+    exits:
+      stopLossPct: 18
+      trailingArmPct: 15
+      trailingStopPct: 12
+      maxHoldMinutes: 25
+      takeProfitPct: 200
+
+# Data retention. `prune` deletes scored candidates older than this that never
+# led to a position (trades are always kept). Also the counterfactual window for
+# the `outcomes` report.
+retention:
+  scoredCandidateDays: 30
