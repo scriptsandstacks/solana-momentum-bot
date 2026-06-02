@@ -134,6 +134,41 @@ describe('SqliteStore', () => {
     store.close();
   });
 
+  it('projects queryable risk and acceleration fields into outcome stats', () => {
+    const store = createStore();
+
+    store.saveScoredCandidate(
+      {
+        ...candidate,
+        mintAuthorityRevoked: false,
+        freezeAuthorityRevoked: true,
+        top5HolderPct: 85,
+        volumeAcceleration5mZ: 2.5,
+        volumeAccelerationSamples: 4,
+      },
+      score,
+    );
+    const [trackable] = store.listTrackableScoredCandidates(1);
+    store.recordScoredOutcome({
+      id: trackable.id,
+      outcomeHighUsd: 0.018,
+      outcomeLowUsd: 0.009,
+      outcomeLastUsd: 0.015,
+      outcomeLastAt: '2026-01-01T00:05:00.000Z',
+      outcomeFirstTakeProfitAt: '2026-01-01T00:03:00.000Z',
+      outcomeFirstStopLossAt: null,
+      done: true,
+    });
+
+    expect(store.loadScoredOutcomeStats()[0]).toMatchObject({
+      mintAuthorityRevoked: 0,
+      freezeAuthorityRevoked: 1,
+      top5HolderPct: 85,
+      volumeAcceleration5mZ: 2.5,
+    });
+    store.close();
+  });
+
   it('saves paper positions and closed trades', () => {
     const store = createStore();
     const position: PaperPosition = {

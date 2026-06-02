@@ -115,6 +115,10 @@ export interface ScoredOutcomeStatRow {
   outcomeLastUsd: number;
   outcomeFirstTakeProfitAt: string | null;
   outcomeFirstStopLossAt: string | null;
+  mintAuthorityRevoked: number | null;
+  freezeAuthorityRevoked: number | null;
+  top5HolderPct: number | null;
+  volumeAcceleration5mZ: number | null;
 }
 
 // A recently scored candidate that was never opened into a position. Used by the
@@ -576,7 +580,11 @@ export class SqliteStore {
         `SELECT score, recommendation, price_usd as scoredPriceUsd,
                 outcome_high_usd as outcomeHighUsd, outcome_low_usd as outcomeLowUsd,
                 outcome_last_usd as outcomeLastUsd,
-                outcome_first_tp_at as outcomeFirstTakeProfitAt, outcome_first_sl_at as outcomeFirstStopLossAt
+                outcome_first_tp_at as outcomeFirstTakeProfitAt, outcome_first_sl_at as outcomeFirstStopLossAt,
+                mint_authority_revoked as mintAuthorityRevoked,
+                freeze_authority_revoked as freezeAuthorityRevoked,
+                top5_holder_pct as top5HolderPct,
+                volume_acceleration_5m_z as volumeAcceleration5mZ
          FROM scored_candidates
          WHERE outcome_samples > 0 AND outcome_high_usd IS NOT NULL AND price_usd > 0`,
       )
