@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { PumpPortalRawEvent } from '../discovery/pumpPortal.js';
+import { FRESH_LAUNCH_MOMENTUM_STRATEGY_ID } from '../strategies/freshLaunchMomentum.js';
 import type { OpportunityScore, PaperPosition, PaperTrade, TokenCandidate } from '../types/domain.js';
 
 interface RecentScoreRow {
@@ -15,6 +16,7 @@ interface RecentScoreRow {
   volume5mUsd: number;
   routeInputMint?: string;
   routeInputSymbol?: string;
+  strategyId: string;
   sellRouteAvailable: number | null;
   score: number;
   recommendation: string;
@@ -26,6 +28,7 @@ interface OpenPositionRow {
   chain: string;
   address: string;
   symbol: string;
+  strategyId: string;
   entryPriceUsd: number;
   quantity: number;
   score: number;
@@ -37,6 +40,7 @@ interface ClosedTradeRow {
   chain: string;
   address: string;
   symbol: string;
+  strategyId: string;
   entryPriceUsd: number;
   exitPriceUsd: number;
   quantity: number;
@@ -68,6 +72,7 @@ export interface ClosedTradeStatRow {
   exitPriceSource: string;
   score: number;
   source: string;
+  strategyId: string;
   pnlUsd: number;
   pnlPct: number;
   openedAt: string;
@@ -149,13 +154,13 @@ export class SqliteStore {
           chain, address, symbol, name, pair_address, price_usd, liquidity_usd, volume_5m_usd,
           volume_1h_usd, price_change_5m_pct, buys_5m, sells_5m, age_minutes, source,
           route_available, estimated_slippage_bps, route_input_mint, route_input_symbol,
-          sell_route_available,
+          strategy_id, sell_route_available,
           score, recommendation, reasons_json, risks_json, created_at
         ) VALUES (
           @chain, @address, @symbol, @name, @pairAddress, @priceUsd, @liquidityUsd, @volume5mUsd,
           @volume1hUsd, @priceChange5mPct, @buys5m, @sells5m, @ageMinutes, @source,
           @routeAvailable, @estimatedSlippageBps, @routeInputMint, @routeInputSymbol,
-          @sellRouteAvailable,
+          @strategyId, @sellRouteAvailable,
           @score, @recommendation, @reasonsJson, @risksJson, @createdAt
         )`,
       )
@@ -164,6 +169,7 @@ export class SqliteStore {
         routeAvailable: candidate.routeAvailable ? 1 : 0,
         routeInputMint: candidate.routeInputMint ?? null,
         routeInputSymbol: candidate.routeInputSymbol ?? null,
+        strategyId: candidate.strategyId ?? FRESH_LAUNCH_MOMENTUM_STRATEGY_ID,
         sellRouteAvailable: candidate.sellRouteAvailable === undefined ? null : candidate.sellRouteAvailable ? 1 : 0,
         score: score.total,
         recommendation: score.recommendation,
@@ -179,7 +185,7 @@ export class SqliteStore {
         `SELECT chain, address, symbol, name, pair_address as pairAddress, price_usd as priceUsd,
                 liquidity_usd as liquidityUsd, volume_5m_usd as volume5mUsd,
                 route_input_mint as routeInputMint, route_input_symbol as routeInputSymbol,
-                sell_route_available as sellRouteAvailable,
+                strategy_id as strategyId, sell_route_available as sellRouteAvailable,
                 score, recommendation, created_at as createdAt
          FROM scored_candidates
          ORDER BY id DESC
@@ -231,9 +237,9 @@ export class SqliteStore {
     this.db
       .prepare(
         `INSERT OR REPLACE INTO open_positions (
-          id, chain, address, symbol, token_json, score, entry_price_usd, quantity, opened_at,
+          id, chain, address, symbol, strategy_id, token_json, score, entry_price_usd, quantity, opened_at,
           high_water_mark_usd, last_mark_usd
-        ) VALUES (@id, @chain, @address, @symbol, @tokenJson, @score, @entryPriceUsd, @quantity, @openedAt,
+        ) VALUES (@id, @chain, @address, @symbol, @strategyId, @tokenJson, @score, @entryPriceUsd, @quantity, @openedAt,
           @highWaterMarkUsd, @lastMarkUsd)`,
       )
       .run({
@@ -241,7 +247,11 @@ export class SqliteStore {
         chain: position.token.chain,
         address: position.token.address,
         symbol: position.token.symbol,
-        tokenJson: JSON.stringify(position.token),
+        strategyId: position.token.strategyId ?? FRESH_LAUNCH_MOMENTUM_STRATEGY_ID,
+        tokenJson: JSON.stringify({
+          ...position.token,
+          strategyId: position.token.strategyId ?? FRESH_LAUNCH_MOMENTUM_STRATEGY_ID,
+        }),
         score: position.score,
         entryPriceUsd: position.entryPriceUsd,
         quantity: position.quantity,
@@ -256,7 +266,7 @@ export class SqliteStore {
   loadOpenPositions(): PaperPosition[] {
     const rows = this.db
       .prepare(
-        `SELECT id, token_json as tokenJson, score, entry_price_usd as entryPriceUsd,
+        `SELECT id, token_json as tokenJson, strategy_id as strategyId, score, entry_price_usd as entryPriceUsd,
                 quantity, opened_at as openedAt, high_water_mark_usd as highWaterMarkUsd,
                 last_mark_usd as lastMarkUsd
          FROM open_positions
@@ -265,6 +275,7 @@ export class SqliteStore {
       .all() as Array<{
       id: string;
       tokenJson: string;
+      strategyId: string;
       score: number;
       entryPriceUsd: number;
       quantity: number;
@@ -273,17 +284,21 @@ export class SqliteStore {
       lastMarkUsd: number | null;
     }>;
 
-    return rows.map((row) => ({
-      id: row.id,
-      token: JSON.parse(row.tokenJson) as TokenCandidate,
-      score: row.score,
-      entryPriceUsd: row.entryPriceUsd,
-      quantity: row.quantity,
-      openedAt: new Date(row.openedAt),
-      // Older rows predating the columns fall back to the entry price.
-      highWaterMarkUsd: row.highWaterMarkUsd ?? row.entryPriceUsd,
-      lastMarkUsd: row.lastMarkUsd ?? row.entryPriceUsd,
-    }));
+    return rows.map((row) => {
+      const token = JSON.parse(row.tokenJson) as TokenCandidate;
+      token.strategyId = token.strategyId ?? row.strategyId ?? FRESH_LAUNCH_MOMENTUM_STRATEGY_ID;
+      return {
+        id: row.id,
+        token,
+        score: row.score,
+        entryPriceUsd: row.entryPriceUsd,
+        quantity: row.quantity,
+        openedAt: new Date(row.openedAt),
+        // Older rows predating the columns fall back to the entry price.
+        highWaterMarkUsd: row.highWaterMarkUsd ?? row.entryPriceUsd,
+        lastMarkUsd: row.lastMarkUsd ?? row.entryPriceUsd,
+      };
+    });
   }
 
   getRealizedPnlUsd(): number {
@@ -325,7 +340,7 @@ export class SqliteStore {
   listOpenPositions(): OpenPositionRow[] {
     return this.db
       .prepare(
-        `SELECT id, chain, address, symbol, entry_price_usd as entryPriceUsd,
+        `SELECT id, chain, address, symbol, strategy_id as strategyId, entry_price_usd as entryPriceUsd,
                 quantity, score, opened_at as openedAt
          FROM open_positions
          ORDER BY opened_at ASC`,
@@ -336,10 +351,10 @@ export class SqliteStore {
   saveClosedTrade(trade: PaperTrade): void {
     const insert = this.db.prepare(
       `INSERT OR IGNORE INTO closed_trades (
-        position_id, chain, address, symbol, token_json, score, source, entry_price_usd, exit_price_usd,
+        position_id, chain, address, symbol, strategy_id, token_json, score, source, entry_price_usd, exit_price_usd,
         quantity, reason, exit_price_source, pnl_usd, pnl_pct, opened_at, closed_at
       ) VALUES (
-        @positionId, @chain, @address, @symbol, @tokenJson, @score, @source, @entryPriceUsd, @exitPriceUsd,
+        @positionId, @chain, @address, @symbol, @strategyId, @tokenJson, @score, @source, @entryPriceUsd, @exitPriceUsd,
         @quantity, @reason, @exitPriceSource, @pnlUsd, @pnlPct, @openedAt, @closedAt
       )`,
     );
@@ -351,7 +366,8 @@ export class SqliteStore {
         chain: trade.token.chain,
         address: trade.token.address,
         symbol: trade.token.symbol,
-        tokenJson: JSON.stringify(trade.token),
+        strategyId: trade.token.strategyId ?? FRESH_LAUNCH_MOMENTUM_STRATEGY_ID,
+        tokenJson: JSON.stringify({ ...trade.token, strategyId: trade.token.strategyId ?? FRESH_LAUNCH_MOMENTUM_STRATEGY_ID }),
         score: trade.score ?? 0,
         source: trade.token.source ?? '',
         entryPriceUsd: trade.entryPriceUsd,
@@ -374,7 +390,7 @@ export class SqliteStore {
   loadClosedTradeStats(): ClosedTradeStatRow[] {
     return this.db
       .prepare(
-        `SELECT reason, exit_price_source as exitPriceSource, score, source,
+        `SELECT reason, exit_price_source as exitPriceSource, score, source, strategy_id as strategyId,
                 pnl_usd as pnlUsd, pnl_pct as pnlPct, opened_at as openedAt, closed_at as closedAt
          FROM closed_trades
          ORDER BY closed_at ASC`,
@@ -385,7 +401,7 @@ export class SqliteStore {
   listClosedTrades(limit = 50): ClosedTradeRow[] {
     return this.db
       .prepare(
-        `SELECT position_id as positionId, chain, address, symbol,
+        `SELECT position_id as positionId, chain, address, symbol, strategy_id as strategyId,
                 entry_price_usd as entryPriceUsd, exit_price_usd as exitPriceUsd,
                 quantity, reason, exit_price_source as exitPriceSource, pnl_usd as pnlUsd, pnl_pct as pnlPct,
                 opened_at as openedAt, closed_at as closedAt
@@ -583,6 +599,7 @@ export class SqliteStore {
         estimated_slippage_bps INTEGER NOT NULL,
         route_input_mint TEXT,
         route_input_symbol TEXT,
+        strategy_id TEXT NOT NULL DEFAULT 'freshLaunchMomentum',
         sell_route_available INTEGER,
         score INTEGER NOT NULL,
         recommendation TEXT NOT NULL,
@@ -607,6 +624,7 @@ export class SqliteStore {
         chain TEXT NOT NULL,
         address TEXT NOT NULL,
         symbol TEXT NOT NULL,
+        strategy_id TEXT NOT NULL DEFAULT 'freshLaunchMomentum',
         token_json TEXT NOT NULL,
         score INTEGER NOT NULL,
         entry_price_usd REAL NOT NULL,
@@ -622,6 +640,7 @@ export class SqliteStore {
         chain TEXT NOT NULL,
         address TEXT NOT NULL,
         symbol TEXT NOT NULL,
+        strategy_id TEXT NOT NULL DEFAULT 'freshLaunchMomentum',
         token_json TEXT NOT NULL,
         score INTEGER NOT NULL DEFAULT 0,
         source TEXT NOT NULL DEFAULT '',
@@ -662,13 +681,16 @@ export class SqliteStore {
       CREATE INDEX IF NOT EXISTS idx_pumpportal_events_received_at ON pumpportal_events(received_at);
       CREATE INDEX IF NOT EXISTS idx_pumpportal_events_type_mint ON pumpportal_events(event_type, token_mint);
     `);
+    this.addColumnIfMissing('open_positions', 'strategy_id', "TEXT NOT NULL DEFAULT 'freshLaunchMomentum'");
     this.addColumnIfMissing('open_positions', 'high_water_mark_usd', 'REAL');
     this.addColumnIfMissing('open_positions', 'last_mark_usd', 'REAL');
+    this.addColumnIfMissing('closed_trades', 'strategy_id', "TEXT NOT NULL DEFAULT 'freshLaunchMomentum'");
     this.addColumnIfMissing('closed_trades', 'exit_price_source', "TEXT NOT NULL DEFAULT 'fresh'");
     this.addColumnIfMissing('closed_trades', 'score', 'INTEGER NOT NULL DEFAULT 0');
     this.addColumnIfMissing('closed_trades', 'source', "TEXT NOT NULL DEFAULT ''");
     this.addColumnIfMissing('scored_candidates', 'route_input_mint', 'TEXT');
     this.addColumnIfMissing('scored_candidates', 'route_input_symbol', 'TEXT');
+    this.addColumnIfMissing('scored_candidates', 'strategy_id', "TEXT NOT NULL DEFAULT 'freshLaunchMomentum'");
     this.addColumnIfMissing('scored_candidates', 'sell_route_available', 'INTEGER');
     this.addColumnIfMissing('scored_candidates', 'outcome_high_usd', 'REAL');
     this.addColumnIfMissing('scored_candidates', 'outcome_low_usd', 'REAL');

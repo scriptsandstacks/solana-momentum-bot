@@ -55,6 +55,7 @@ describe('SqliteStore', () => {
       recommendation: 'paper_trade',
       routeInputSymbol: 'USDC',
       routeInputMint: 'usdc-mint',
+      strategyId: 'freshLaunchMomentum',
     });
     store.close();
   });
@@ -107,11 +108,23 @@ describe('SqliteStore', () => {
     store.saveClosedTrade(trade);
     expect(store.listOpenPositions()).toHaveLength(0);
     expect(store.listClosedTrades()).toHaveLength(1);
-    expect(store.listClosedTrades()[0]).toMatchObject({ positionId: 'paper-1', pnlUsd: 12.5, exitPriceSource: 'fresh' });
-    // Analytics projection carries the entry score and discovery source.
+    expect(store.listClosedTrades()[0]).toMatchObject({
+      positionId: 'paper-1',
+      pnlUsd: 12.5,
+      exitPriceSource: 'fresh',
+      strategyId: 'freshLaunchMomentum',
+    });
+    // Analytics projection carries the entry score, discovery source, and strategy id.
     const stats = store.loadClosedTradeStats();
     expect(stats).toHaveLength(1);
-    expect(stats[0]).toMatchObject({ reason: 'take_profit', score: 82, source: 'test', exitPriceSource: 'fresh', pnlUsd: 12.5 });
+    expect(stats[0]).toMatchObject({
+      reason: 'take_profit',
+      score: 82,
+      source: 'test',
+      strategyId: 'freshLaunchMomentum',
+      exitPriceSource: 'fresh',
+      pnlUsd: 12.5,
+    });
     store.close();
   });
 

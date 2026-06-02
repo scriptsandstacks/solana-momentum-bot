@@ -75,7 +75,9 @@ describe('processPumpPortalEvents', () => {
       routeInputSymbol: 'USDC',
     });
     expect(scored[0].score.recommendation).toBe('paper_trade');
+    expect(scored[0].candidate.strategyId).toBe('freshLaunchMomentum');
     expect(opened).toHaveLength(1);
+    expect(opened[0].token.strategyId).toBe('freshLaunchMomentum');
     expect(statuses[0]).toMatchObject({ id: 1, status: 'processed' });
   });
 
