@@ -1,104 +1,323 @@
-# Claude Handoff — Trading Realism + Analytics
+# Claude Handoff — Strategy Abstraction Foundation
 
-**Last updated:** 2026-06-01 · **Branch:** `development` (post-session)
-**Reviewer:** Codex (review this doc after Claude sessions). Counterpart: `docs/codex-handoff.md`.
+**Last updated:** 2026-06-01 · **Branch:** `feature/strategy-abstraction`
+**Reviewer:** Codex. Counterpart: `docs/codex-handoff.md`.
 
-This is a living handoff, rewritten at the end of each Claude session to reflect the **current**
-state. The bot is paper-only, Solana-first.
+This is the current handoff for Claude to continue from Codex's first strategy-abstraction slice.
+The bot is still **paper-only** and **Solana-first**. Do not introduce live wallet/private-key use.
 
 ---
 
 ## Current state
 
-Four review-driven sprints plus one Claude follow-up session have landed since the paper-exit
-lifecycle work:
+Recent landed work on `development` before this branch:
 
-1. **Trading blockers + paper-fill realism** — merged via **PR #5** (`feature-claude-review`).
-2. **Analytics, outcome capture, retention** — merged via **PR #6** (`feature-scrutinize`).
-3. **Path-dependent outcome thresholds** — merged via **PR #7** (`feature/outcome-path-order`).
-4. **Rug screening + capacity retry** — Claude follow-up session, committed directly to `development`.
+1. **PR #5 — trading blockers + paper-fill realism** (`feature-claude-review`).
+2. **PR #6 — analytics, outcome capture, retention** (`feature-scrutinize`).
+3. **PR #7 — path-dependent outcome thresholds** (`feature/outcome-path-order`).
+4. **PR #8 / Claude Session 4 — rug screening + capacity retry** (`claude-next-steps`).
+5. **Codex docs refresh** — `docs/codex-handoff.md` was refreshed on `development` after PR #8.
 
-**Health:** `npm test` → 104 passing · `npm run typecheck` → clean · all CLI commands smoke OK.
+Current branch work:
+
+6. **Codex strategy-abstraction foundation** — branch `feature/strategy-abstraction`, commit
+   `c4cd813 feat: tag trades with fresh launch strategy`.
+
+**Health on current branch:**
+
+```text
+npm test          -> 20 files, 104 tests passing
+npm run typecheck -> clean
+```
 
 ---
 
-## What landed since the last handoff
+## What Codex just changed on `feature/strategy-abstraction`
 
-### Session 4 — rug screening + capacity retry (direct commits, `development`)
+The first multi-strategy foundation slice is implemented and pushed.
 
-Six commits; all on `development`:
+### Strategy identity module
 
-**Outcome analytics cleanup**
-- `ambiguous` vs `unknown` split in path-order outcomes: legacy rows (no timestamps, both TP/SL
-  hit) are now `unknown`; same-millisecond ties remain `ambiguous`. `OutcomeBucket` gains
-  `unknownRatePct`; display shows `ambig=` and `unkn=` as separate columns. New test covers the
-  same-millisecond tie case.
+Created:
 
-**Honeypot / sell-route screening**
-- `checkJupiterRoute` now probes the sell direction (token→USDC ExactOut, $5) after the buy-route
-  check. `JupiterRouteCheck` and `TokenCandidate` gain `sellRouteAvailable: boolean` (optional on
-  raw DexScreener/Raydium candidates). Scoring applies a −50 penalty and `no_sell_route` risk tag
-  when the sell probe explicitly fails; `undefined` (not checked) is neutral.
-- `sell_route_available INTEGER` column added to `scored_candidates` (NULL = not checked, 0 = no
-  sell route, 1 = ok). Migration adds the column to existing databases.
-- `report` output annotates scored-candidate lines with `sell=ok` / `sell=NO`; old rows without the
-  field are silently clean.
+- `src/strategies/freshLaunchMomentum.ts`
 
-**Capacity-blocked retry**
-- `listRetriableScoredCandidates` — new `SqliteStore` query using a CTE with `ROW_NUMBER` to
-  return the best-scored, most-recent row per address for candidates that are within the trade
-  horizon, above the score threshold, and have no open position or recent closed trade.
-- `retryBlockedOpens` — opens positions for retriable candidates using the scored price as the
-  paper entry (no re-fetch; only called within `maxHoldMinutes` so the price is a reasonable
-  approximation). Stops as soon as the broker is at capacity.
-- `runLoop` calls `retryBlockedOpens` after each exit pass (capacity is most likely to have freed
-  there), accumulates `retriedPositions` in the result, and logs only when positions are actually
-  opened to avoid per-tick noise.
+Exports:
+
+- `FRESH_LAUNCH_MOMENTUM_STRATEGY_ID = 'freshLaunchMomentum'`
+- `tagFreshLaunchMomentum(candidate)`
+
+Purpose: keep the existing launch-token strategy explicitly named instead of having implicit
+strategy behavior scattered through discovery/scoring/paper trading.
+
+### Domain type
+
+Modified:
+
+- `src/types/domain.ts`
+
+`TokenCandidate` now has optional `strategyId?: string`.
+
+Notes:
+
+- Raw discovery candidates may omit `strategyId`.
+- Strategy-processed candidates should carry it.
+- Current PumpPortal flow tags candidates as `freshLaunchMomentum`.
+
+### PumpPortal processing
+
+Modified:
+
+- `src/bot/pumpProcess.ts`
+
+Behavior:
+
+- Enriched PumpPortal candidates are tagged through `tagFreshLaunchMomentum()`.
+- Paper positions opened from those candidates inherit `token.strategyId`.
+
+### SQLite persistence and migrations
+
+Modified:
+
+- `src/storage/sqliteStore.ts`
+
+Added `strategy_id TEXT NOT NULL DEFAULT 'freshLaunchMomentum'` to:
+
+- `scored_candidates`
+- `open_positions`
+- `closed_trades`
+
+Migration/backfill behavior:
+
+- Existing DBs get the columns via `addColumnIfMissing`.
+- Legacy rows default to `freshLaunchMomentum`.
+
+Read/write behavior now preserves or projects `strategyId` through:
+
+- scored candidate inserts/listing
+- open position save/restore/listing
+- closed trade recording/listing
+- closed-trade analytics summaries
+
+### Tests
+
+Modified:
+
+- `tests/pumpProcess.test.ts`
+- `tests/sqliteStore.test.ts`
+
+Coverage added/updated for:
+
+- PumpPortal candidates and opened positions receiving `freshLaunchMomentum`.
+- scored candidates preserving `strategyId`.
+- open positions restoring `strategyId`.
+- closed trades and closed-trade analytics preserving `strategyId`.
+
+---
+
+## Why this matters
+
+The bot currently has one implicit strategy: fresh launch momentum from PumpPortal/Dex-style token
+flow. Before adding Base/EVM support, on-chain risk checks, or alternate tactics, results need to
+be attributable to a specific strategy. This branch creates that attribution path without changing
+trading behavior.
+
+The next Claude pass should extend this from a label into a real strategy abstraction/config layer,
+but should keep scope tight and paper-safe.
+
+---
+
+## Plan moving forward for Claude
+
+Recommended implementation order. Keep each step test-first where practical and commit in small
+slices.
+
+### Task 1 — Review current branch before editing
+
+**Objective:** Confirm the current strategy-id plumbing is correct and no behavior changed besides
+metadata attribution.
+
+**Files to inspect:**
+
+- `src/strategies/freshLaunchMomentum.ts`
+- `src/bot/pumpProcess.ts`
+- `src/storage/sqliteStore.ts`
+- `src/types/domain.ts`
+- `tests/pumpProcess.test.ts`
+- `tests/sqliteStore.test.ts`
+
+**Commands:**
+
+```bash
+git status --short --branch
+git log --oneline -5
+npm test
+npm run typecheck
+```
+
+**Expected:** clean working tree, current branch `feature/strategy-abstraction`, tests/typecheck
+pass.
+
+### Task 2 — Introduce a minimal strategy interface
+
+**Objective:** Define a small interface for strategy identity and candidate preparation without
+rewriting the bot around plugins yet.
+
+**Suggested files:**
+
+- Create: `src/strategies/types.ts`
+- Modify: `src/strategies/freshLaunchMomentum.ts`
+
+**Suggested shape:**
+
+```ts
+import type { TokenCandidate } from '../types/domain.js';
+
+export interface TradingStrategy {
+  id: string;
+  tagCandidate(candidate: TokenCandidate): TokenCandidate;
+}
+```
+
+Then make `freshLaunchMomentum` export a concrete strategy object:
+
+```ts
+export const freshLaunchMomentumStrategy: TradingStrategy = {
+  id: FRESH_LAUNCH_MOMENTUM_STRATEGY_ID,
+  tagCandidate: tagFreshLaunchMomentum,
+};
+```
+
+**Tests:** Add a small strategy unit test if useful, or extend existing PumpPortal tests to assert
+`freshLaunchMomentumStrategy.id` is used rather than a duplicated string.
+
+### Task 3 — Route PumpPortal through the strategy object
+
+**Objective:** Replace direct helper usage in `pumpProcess.ts` with the strategy object so the
+current flow resembles a future multi-strategy flow.
+
+**Suggested files:**
+
+- Modify: `src/bot/pumpProcess.ts`
+- Test: `tests/pumpProcess.test.ts`
+
+**Expected behavior:** unchanged except implementation uses `freshLaunchMomentumStrategy`.
+
+**Verification:**
+
+```bash
+npm test -- tests/pumpProcess.test.ts
+npm run typecheck
+```
+
+### Task 4 — Add strategy-aware analytics/report grouping
+
+**Objective:** Make the new `strategy_id` visible enough to be useful.
+
+**Suggested files to inspect/modify:**
+
+- `src/storage/sqliteStore.ts`
+- report/CLI files under `src/cli/` or wherever report rendering currently lives
+- existing report tests, if present
+
+**Possible output changes:**
+
+- closed-trade analytics grouped by strategy, or
+- strategy column in existing closed-trade/stat lines, or
+- optional per-strategy summary section.
+
+**Important:** Do not overbuild dashboards. The immediate goal is to let a paper run answer:
+"How did `freshLaunchMomentum` perform?" and later compare it with another strategy.
+
+### Task 5 — Add strategy config boundaries without adding new strategies yet
+
+**Objective:** Separate strategy-specific knobs from generic bot/runtime config only where current
+code already has fresh-launch-specific assumptions.
+
+**Candidate fields to identify:**
+
+- scoring threshold / max open decisions if they are strategy-specific
+- candidate age / trade horizon assumptions
+- risk penalties tied to fresh launches
+
+**Non-goals for this task:**
+
+- Do not add Base live trading.
+- Do not add wallet use.
+- Do not add a full plugin registry.
+- Do not add multiple simultaneous strategy execution unless the current config boundary is already
+  clean and tests make it obvious.
+
+### Task 6 — Then resume risk-screening work
+
+Once strategy attribution/config is stable, the next highest-value product work remains:
+
+1. **Solana mint/freeze authority checks**
+   - Add Solana RPC account inspection.
+   - Persist/report risk flags.
+   - Penalize or reject candidates with unsafe authority status.
+2. **Longer paper run inspection**
+   - Run paper session.
+   - Inspect report/outcomes by strategy.
+   - Tune scoring/exits from observed data.
+3. **Base paper support, disabled by default**
+   - Only after Solana paper flow is stable and strategy attribution is visible.
 
 ---
 
 ## Known remaining items
 
-Resolved since the prior handoff:
+Resolved previously:
+
 - ~~path-dependent outcome win/loss labeling~~ (PR #7)
-- ~~ambiguous vs unknown outcome classification~~ (session 4)
-- ~~No sellability/rug screening~~ (sell-route honeypot check, session 4 — partial; on-chain
-  mint/freeze authority still missing)
-- ~~Capacity-blocked candidates not retried~~ (session 4)
+- ~~ambiguous vs unknown outcome classification~~ (Claude Session 4 / PR #8)
+- ~~capacity-blocked candidates not retried~~ (Claude Session 4 / PR #8)
+- ~~initial strategy attribution path missing~~ (this branch)
 
 Still open:
 
-1. **On-chain mint/freeze authority check** — sell-route screening catches honeypots; mint
-   authority (creator can dilute) and freeze authority (creator can lock accounts) require a
-   Solana RPC call not yet in the pipeline.
-2. **Migrate-time `closed_trades` dedup runs on every startup** — negligible for a paper bot.
-3. **Package name** still `hermes-agent` in `package.json` (cosmetic).
-4. **No live trading** — paper-only by design.
-5. **Exits only fire on the process interval** — a position can move past its stop/target between
-   passes. Accepted for paper; needs real-time triggers before live.
-6. **Outcome-tracking selection bias** — unpriceable candidates aren't sampled, so `outcomes`
-   MFE/MAE skews toward names that stayed liquid.
-7. **Retry uses scored price, not re-fetched price** — acceptable for paper within the horizon
-   window; should be noted if ever ported to live.
+1. **Strategy abstraction is only partially done** — current branch tags existing behavior but does
+   not yet provide a full strategy interface/config boundary.
+2. **On-chain mint/freeze authority check** — sell-route screening catches many honeypot/no-sell
+   cases, but mint/freeze authority still require Solana RPC checks.
+3. **Retry uses scored price, not re-fetched price** — acceptable for paper within the horizon
+   window; should be re-quoted/re-checked before live.
+4. **Retry cooldown semantics** — recent-closed guard currently uses trade horizon
+   (`maxHoldMinutes`); product decision needed on a dedicated cooldown.
+5. **Migrate-time `closed_trades` dedup runs on every startup** — negligible for paper.
+6. **Package name** still `hermes-agent` in `package.json` — cosmetic.
+7. **No live trading** — paper-only by design.
+8. **Exits only fire on the process interval** — accepted for paper; live needs real-time triggers or
+   tighter monitoring.
+9. **Outcome-tracking selection bias** — unpriceable candidates are not sampled, so MFE/MAE skews
+   toward names that stayed liquid.
 
 ---
 
-## Suggested Codex review focus
+## Suggested Claude review focus
 
-- **Retry query correctness**: `listRetriableScoredCandidates` uses `ROW_NUMBER() OVER (PARTITION
-  BY address ORDER BY score DESC, id DESC)` to deduplicate. The `NOT IN (SELECT address FROM
-  closed_trades WHERE opened_at >= @cutoffIso)` guard prevents re-entering recently exited
-  positions. Confirm the cutoff semantics are right — should "recently" be `maxHoldMinutes` (trade
-  horizon) or something shorter?
-- **Retry fires every tick, not just after closes**: `retryBlockedOpens` runs after every exit
-  pass, not only when `exitResult.closed > 0`. The broker's `canOpenPosition()` check makes it a
-  no-op at capacity, but it does hit SQLite on every pass. Acceptable overhead?
-- **Silent thresholds skip confirmed acceptable**: both real callers (`run` loop and `track-outcomes`
-  CLI) pass thresholds from the exits config, so crossing times are always stamped in production.
-  Test-only callers without thresholds correctly produce `unknownRatePct` rather than silent zeros.
-- **Prune preservation rule**: keeping *all* historical scored rows for any mint ever traded (vs
-  time-correlating the scored row to the specific position). Over-preserves slightly — acceptable?
-- **Exit slippage fallback**: when no Jupiter sell-quote is available the exit reuses the entry
-  route estimate. Confirm that's the right degradation vs refusing to apply slippage.
-- **Cost model accounting**: entry cost is folded into `entryPriceUsd` (fill price) with quantity
-  reduced so the cash invariant holds — confirm that's the right place vs a separate fee ledger.
+Before implementing the next slice, please scrutinize:
+
+- Are the SQLite defaults/backfills for `strategy_id` safe for existing paper DBs?
+- Should `strategyId` remain optional on raw `TokenCandidate`, or should discovery produce a
+  separate raw-candidate type and strategy output be required to include `strategyId`?
+- Should strategy attribution live on the token JSON, the table column, or both? Current branch does
+  both for compatibility and queryability.
+- Is `freshLaunchMomentum` the right stable ID string for reports/analytics? If renamed, migrate now
+  before more paper data accumulates.
+- What is the smallest useful strategy interface that avoids premature plugin architecture?
+
+---
+
+## Safe continuation checklist
+
+Run before handing back or opening/merging a PR:
+
+```bash
+npm test
+npm run typecheck
+git diff --check
+```
+
+If behavior changes beyond metadata/config boundaries, add a focused test that proves the old paper
+trading behavior is preserved or explicitly documents the new behavior.

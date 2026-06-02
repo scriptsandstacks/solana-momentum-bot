@@ -3,9 +3,12 @@
 **Last updated:** 2026-06-01 · **Branch:** `development`
 **Counterpart:** `docs/claude-handoff.md`
 
-This is the current Codex-side handoff for reviewing the latest Claude follow-up work on the
-Solana-first paper trading bot. The older PR #7 path-order notes have been superseded by Claude
-Session 4 and are summarized here only where still relevant.
+This is the Codex-side review handoff for the Claude Session 4 work that landed on `development`.
+For the current in-flight strategy-abstraction branch and the forward implementation plan for
+Claude, use `docs/claude-handoff.md` on `feature/strategy-abstraction`.
+
+The older PR #7 path-order notes have been superseded by Claude Session 4 and are summarized here
+only where still relevant.
 
 ---
 
