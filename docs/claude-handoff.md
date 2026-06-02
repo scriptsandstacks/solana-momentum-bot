@@ -10,7 +10,7 @@ Paper-only. Do not introduce live wallet/private-key use.
 ## Current health
 
 ```
-npm test          → 25 files, 155 tests passing
+npm test          → 26 files, 160 tests passing
 npm run typecheck → clean
 git diff --check  → clean
 ```
@@ -67,6 +67,7 @@ Built on updated `development` after the prior Codex branch was merged/pulled, o
 | `585e986` Add volume acceleration scoring signal | Added `src/bot/volumeAcceleration.ts` to compute current 5m volume against recent per-token baseline snapshots. `pumpProcess` reads the last 30 minutes from `token_volume_snapshots` before saving the current score, attaches `volumeAcceleration5mZ` and `volumeAccelerationSamples`, and both active strategies add modest bonuses for z≥1/z≥2 or a risk for sharp deceleration. `scored_candidates` now persists `volume_acceleration_5m_z` and `volume_acceleration_samples`; retry preserves the fields. No-history behavior is unchanged. |
 | `2577d69` Add signal buckets to outcome analytics | `outcomes` now groups MFE/MAE by authority status, holder concentration, and volume acceleration buckets. `loadScoredOutcomeStats()` projects the persisted signal columns so the report can validate whether held authorities, high top-five concentration, or acceleration/deceleration correlate with paper outcomes. |
 | `37d3e60` Add strategy-specific tune reporting | `tune` still prints the global calibration view, then adds per-strategy sections using each active strategy's own entry threshold. Outcome rows now carry `strategyId`, and score buckets were split into `<70`, `70-74`, `75-79`, `80-89`, `90-100` so migration's 70 threshold is tunable. `--apply` remains conservative and only writes concrete global config updates. |
+| `4f4ebb6` Add live readiness audit | Added `live-readiness` CLI command and pure `evaluateLiveReadiness()` audit. It checks live blockers/prereqs without reading wallet contents or placing trades: missing LiveBroker, mode gate, Solana enabled, RPC env, wallet-file presence, sizing/loss-limit sanity, paper cost model, closed trade sample, and tracked outcome sample. |
 
 ---
 
@@ -111,6 +112,7 @@ To add live trading:
 | `strategies` | Compact per-strategy P&L table |
 | `outcomes` | Candidate MFE/MAE counterfactual by score bucket |
 | `tune` | Outcome data → specific threshold recommendations with confidence ratings. `--apply` writes concrete numeric suggestions after confirmation; `--yes` skips confirmation. |
+| `live-readiness` | Audits live-trading prerequisites without reading wallet contents, signing, or placing trades |
 | `pump-watch` | Bounded PumpPortal listener |
 | `pump-process` | Process pending events into scored candidates |
 | `manage-exits` | One-shot exit pass on open positions |
@@ -124,7 +126,7 @@ To add live trading:
 
 ### Highest priority
 
-No paper-trading architecture blockers currently called out. Keep paper-only validation running before live-trading work.
+Keep paper-only validation running before live-trading implementation. `live-readiness` now makes the remaining blockers explicit, including the intentionally missing `LiveBroker`.
 
 ### Medium priority
 
@@ -142,6 +144,7 @@ Holder concentration ≥80%, authority penalties, and volume acceleration weight
 1. `LiveBroker implements ExecutionBroker` — Jupiter swap submission + keypair signing
 2. Real-time exit triggers — WebSocket price feeds rather than interval polling
 3. Base paper support — after Solana paper results are confirmed meaningful
+4. Re-quote/re-price retry opens before live trading; current retry still uses scored price.
 
 ### Minor
 
@@ -154,16 +157,16 @@ Holder concentration ≥80%, authority penalties, and volume acceleration weight
 
 State at laptop-close handoff:
 - Current branch: `codex/volume-acceleration-signal`
-- Latest code commit before this handoff edit: `37d3e60 Add strategy-specific tune reporting`
+- Latest code commit before this handoff edit: `4f4ebb6 Add live readiness audit`
 - All verification passed after latest code commit:
   - `npm run typecheck`
-  - `npm test` → 25 files, 158 tests passing
+  - `npm test` → 26 files, 160 tests passing
   - `git diff --check`
 - Paper-only invariant is still intact. No wallet/private-key/live trading code was added.
 
 Suggested next move:
 1. Commit this handoff update after reviewing it.
-2. Next practical work is schema/config support for strategy-specific tunables, or collecting paper data and using the expanded `outcomes`/`tune` reports to tune signal thresholds.
+2. Next practical work is schema/config support for strategy-specific tunables, re-quote-on-retry for live safety, or collecting paper data and using `live-readiness` plus the expanded reports.
 3. Do not start live trading implementation until paper results justify it.
 
 ---
