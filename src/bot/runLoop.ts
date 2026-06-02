@@ -40,7 +40,12 @@ interface RunLoopStore {
   markStaleScoredOutcomesDone?(cutoffIso: string): number;
   recordScoredOutcome?(update: ScoredOutcomeUpdate): void;
   // Retry pass: re-opens positions for capacity-blocked scored candidates.
-  listRetriableScoredCandidates?(options: { minScore: number; cutoffIso: string; limit?: number }): RetriableScoredCandidateRow[];
+  listRetriableScoredCandidates?(options: {
+    minScore: number;
+    cutoffIso: string;
+    limit?: number;
+    strategyMinScores?: Record<string, number>;
+  }): RetriableScoredCandidateRow[];
   // Analytics: when present the run loop can emit periodic performance summaries.
   loadClosedTradeStats?(): ClosedTradeStatRow[];
 }
@@ -75,6 +80,7 @@ type RetryBlockedOpens = (options: {
   store: RunLoopStore;
   paper: PaperBrokerOptions;
   minimumScoreToEnter: number;
+  strategies?: TradingStrategy[];
   cutoffIso: string;
 }) => Promise<RetryBlockedOpensResult>;
 
@@ -252,6 +258,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
             store: options.store,
             paper: options.paper,
             minimumScoreToEnter: options.minimumScoreToEnter,
+            strategies: options.strategies,
             cutoffIso,
           });
           result.openedPositions += retryResult.openedPositions;

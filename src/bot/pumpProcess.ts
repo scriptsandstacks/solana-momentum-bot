@@ -1,6 +1,7 @@
 import { fetchPumpPortalMarketCandidates } from './pumpCandidates.js';
 import { checkJupiterRoute, type JupiterRouteCheck } from '../discovery/jupiter.js';
 import { checkMintAuthority, type MintAuthorityInfo } from '../chains/solana/mintAuthority.js';
+import { checkHolderConcentration, type HolderConcentrationInfo } from '../chains/solana/holderConcentration.js';
 import { PaperBroker, type PaperBrokerOptions } from '../paper/paperBroker.js';
 import { restoreBrokerFromStore, isBrokerStateStore } from '../paper/restoreBroker.js';
 import { freshLaunchMomentumStrategy } from '../strategies/freshLaunchMomentum.js';
@@ -49,6 +50,9 @@ interface PumpProcessOptions {
   // Injectable for testing; defaults to the real Solana RPC call.
   // Pass null to skip authority checks entirely (e.g. when no RPC URL is available).
   checkAuthority?: ((mint: string) => Promise<MintAuthorityInfo>) | null;
+  // Injectable for testing; defaults to the real Solana RPC call when rpcUrlEnv resolves.
+  // Pass null to skip holder concentration checks entirely.
+  checkHolderConcentration?: ((mint: string) => Promise<HolderConcentrationInfo>) | null;
   reporter?: Reporter;
 }
 
@@ -141,14 +145,22 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
       // solanaConfig.rpcUrlEnv resolves to a URL in the environment.
       // Pass checkAuthority: null to explicitly disable the check.
       let authorityInfo: MintAuthorityInfo = { mintAuthorityRevoked: null, freezeAuthorityRevoked: null };
+      let holderInfo: HolderConcentrationInfo = { top5HolderPct: null };
+      const rpcUrl = options.solanaConfig.rpcUrlEnv ? (process.env[options.solanaConfig.rpcUrlEnv] ?? undefined) : undefined;
       if (options.checkAuthority !== null) {
-        const rpcUrl = options.solanaConfig.rpcUrlEnv ? (process.env[options.solanaConfig.rpcUrlEnv] ?? undefined) : undefined;
         if (options.checkAuthority) {
           authorityInfo = await options.checkAuthority(candidate.address);
         } else if (rpcUrl) {
           authorityInfo = await checkMintAuthority(candidate.address, rpcUrl);
         }
         // No explicit function and no RPC URL configured → skip silently (unknown).
+      }
+      if (options.checkHolderConcentration !== null) {
+        if (options.checkHolderConcentration) {
+          holderInfo = await options.checkHolderConcentration(candidate.address);
+        } else if (rpcUrl) {
+          holderInfo = await checkHolderConcentration(candidate.address, rpcUrl);
+        }
       }
 
       const enriched: TokenCandidate = strategy.tagCandidate({
@@ -157,6 +169,7 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
         ...route,
         mintAuthorityRevoked: authorityInfo.mintAuthorityRevoked ?? undefined,
         freezeAuthorityRevoked: authorityInfo.freezeAuthorityRevoked ?? undefined,
+        top5HolderPct: holderInfo.top5HolderPct ?? undefined,
       });
       const score = strategy.scoreCandidate(enriched);
       options.store.saveScoredCandidate(enriched, score);

@@ -1,4 +1,8 @@
 import { Command } from 'commander';
+import fs from 'node:fs';
+import path from 'node:path';
+import { createInterface } from 'node:readline/promises';
+import { stdin as input, stdout as output } from 'node:process';
 import { renderReport } from '../bot/report.js';
 import { runPaperCycle } from '../bot/paperCycle.js';
 import { renderStorageReport } from '../bot/storageReport.js';
@@ -9,7 +13,7 @@ import { processPumpPortalEvents } from '../bot/pumpProcess.js';
 import { processExits } from '../bot/exitPositions.js';
 import { runBotLoop } from '../bot/runLoop.js';
 import { consoleReporter } from '../bot/reporter.js';
-import { computeTuneRecommendations, renderTuneReport } from '../bot/tune.js';
+import { applyTuneConfigUpdates, computeTuneRecommendations, deriveTuneConfigUpdates, renderTuneApplyPreview, renderTuneReport } from '../bot/tune.js';
 import { loadConfigFromFile } from '../config/loadConfig.js';
 import { scanSolanaCandidates } from '../chains/solana/scanner.js';
 import { checkJupiterRoute } from '../discovery/jupiter.js';
@@ -240,8 +244,11 @@ program
 program
   .command('tune')
   .description('Analyze outcome data and recommend adjustments to entry threshold and exit parameters')
-  .action(() => {
-    const config = loadConfigFromFile(program.opts().config);
+  .option('--apply', 'write concrete recommendations back to the config file after confirmation', false)
+  .option('--yes', 'skip confirmation when used with --apply', false)
+  .action(async (options: { apply: boolean; yes: boolean }) => {
+    const configPath = path.resolve(process.cwd(), program.opts().config);
+    const config = loadConfigFromFile(configPath);
     const store = new SqliteStore();
     const thresholds = { takeProfitPct: config.exits.takeProfitPct, stopLossPct: config.exits.stopLossPct };
     const outcomeRows = store.loadScoredOutcomeStats();
@@ -257,6 +264,33 @@ program
     const analytics = computeOutcomeAnalytics(outcomeRows, thresholds);
     const result = computeTuneRecommendations(analytics, thresholds, config.scoring.minimumScoreToEnter);
     process.stdout.write(renderTuneReport(result, analytics, thresholds, config.scoring.minimumScoreToEnter));
+
+    if (!options.apply) return;
+
+    const updates = deriveTuneConfigUpdates(result.recommendations);
+    process.stdout.write(`\n${renderTuneApplyPreview(updates)}`);
+    if (updates.length === 0) return;
+
+    if (!options.yes) {
+      if (!process.stdin.isTTY) {
+        throw new Error('Cannot confirm --apply in a non-interactive shell. Re-run with --yes to apply concrete recommendations.');
+      }
+      const rl = createInterface({ input, output });
+      try {
+        const answer = await rl.question(`Apply ${updates.length} update(s) to ${configPath}? Type "yes" to continue: `);
+        if (answer.trim().toLowerCase() !== 'yes') {
+          process.stdout.write('No changes applied.\n');
+          return;
+        }
+      } finally {
+        rl.close();
+      }
+    }
+
+    const currentText = fs.readFileSync(configPath, 'utf8');
+    const updatedText = applyTuneConfigUpdates(currentText, updates);
+    fs.writeFileSync(configPath, updatedText);
+    process.stdout.write(`Applied ${updates.length} config update(s) to ${configPath}.\n`);
   });
 
 program
@@ -341,11 +375,13 @@ program
   .description('Re-price open paper positions and apply stop-loss / take-profit / trailing-stop / max-hold exits')
   .action(async () => {
     const config = loadConfigFromFile(program.opts().config);
+    const strategies = buildStrategies(config);
     const store = new SqliteStore();
     const result = await processExits({
       store,
       paper: paperBrokerOptions(config),
       exits: config.exits,
+      resolveExits: buildExitResolver(strategies, config.exits),
     });
     store.close();
     process.stdout.write(

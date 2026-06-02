@@ -25,7 +25,11 @@ function row(overrides: Partial<RetriableScoredCandidateRow> = {}): RetriableSco
     estimatedSlippageBps: 100,
     routeInputMint: 'usdc-mint',
     routeInputSymbol: 'USDC',
+    strategyId: 'freshLaunchMomentum',
     sellRouteAvailable: 1,
+    mintAuthorityRevoked: null,
+    freezeAuthorityRevoked: null,
+    top5HolderPct: null,
     score: 85,
     ...overrides,
   };
@@ -89,5 +93,51 @@ describe('retryBlockedOpens', () => {
     await retryBlockedOpens({ store, paper, minimumScoreToEnter: 75, cutoffIso: CUTOFF });
 
     expect(store._saved[0].token.sellRouteAvailable).toBe(false);
+  });
+
+  it('applies strategy-specific retry thresholds after querying the lowest active threshold', async () => {
+    const store = fakeStore([
+      row({ address: 'fresh-too-low', strategyId: 'freshLaunchMomentum', score: 70 }),
+      row({ address: 'migration-ok', strategyId: 'migrationMomentum', score: 70 }),
+    ]);
+
+    const result = await retryBlockedOpens({
+      store,
+      paper,
+      minimumScoreToEnter: 75,
+      cutoffIso: CUTOFF,
+      strategies: [
+        {
+          id: 'freshLaunchMomentum',
+          config: { minScoreToEnter: 75 },
+          acceptsEventType: () => true,
+          tagCandidate: (candidate) => candidate,
+          scoreCandidate: () => ({ total: 0, recommendation: 'ignore', reasons: [], risks: [] }),
+          resolvePositionSizeUsd: (_score, base) => base,
+        },
+        {
+          id: 'migrationMomentum',
+          config: { minScoreToEnter: 70 },
+          acceptsEventType: () => true,
+          tagCandidate: (candidate) => candidate,
+          scoreCandidate: () => ({ total: 0, recommendation: 'ignore', reasons: [], risks: [] }),
+          resolvePositionSizeUsd: (_score, base) => base,
+        },
+      ],
+    });
+
+    expect(result.candidates).toBe(1);
+    expect(result.openedPositions).toBe(1);
+    expect(store._saved[0].token).toMatchObject({ address: 'migration-ok', strategyId: 'migrationMomentum' });
+  });
+
+  it('maps authority flags onto retried candidates', async () => {
+    const store = fakeStore([row({ mintAuthorityRevoked: 1, freezeAuthorityRevoked: 0, top5HolderPct: 85 })]);
+
+    await retryBlockedOpens({ store, paper, minimumScoreToEnter: 75, cutoffIso: CUTOFF });
+
+    expect(store._saved[0].token.mintAuthorityRevoked).toBe(true);
+    expect(store._saved[0].token.freezeAuthorityRevoked).toBe(false);
+    expect(store._saved[0].token.top5HolderPct).toBe(85);
   });
 });

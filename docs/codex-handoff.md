@@ -102,14 +102,11 @@ This resolves the prior known issue that capacity-blocked candidates were perman
 5. **Migrate-time `closed_trades` dedup runs on every startup**
    - Currently negligible for paper trading.
 
-6. **Package name remains `hermes-agent`**
-   - Cosmetic cleanup.
-
-7. **Paper-only / no live trading**
+6. **Paper-only / no live trading**
    - This remains intentional.
    - Do not introduce wallet/private-key use into paper commands.
 
-8. **Exit timing is interval-based**
+7. **Exit timing is interval-based**
    - Positions can cross stops/targets between loop passes.
    - Accepted for paper; live trading needs real-time or much tighter monitoring.
 

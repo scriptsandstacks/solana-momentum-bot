@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { computeTuneRecommendations, renderTuneReport } from '../src/bot/tune.js';
+import {
+  applyTuneConfigUpdates,
+  computeTuneRecommendations,
+  deriveTuneConfigUpdates,
+  renderTuneApplyPreview,
+  renderTuneReport,
+} from '../src/bot/tune.js';
 import { computeOutcomeAnalytics, type OutcomeRow } from '../src/bot/analytics.js';
 
 const thresholds = { takeProfitPct: 50, stopLossPct: 20 };
@@ -116,5 +122,81 @@ describe('renderTuneReport', () => {
     const result = computeTuneRecommendations(analytics, thresholds, currentEntry);
     const report = renderTuneReport(result, analytics, thresholds, currentEntry);
     expect(report).toContain('Not enough data');
+  });
+});
+
+describe('tune config updates', () => {
+  it('derives concrete numeric updates and skips ambiguous suggestions', () => {
+    const updates = deriveTuneConfigUpdates([
+      {
+        parameter: 'scoring.minimumScoreToEnter',
+        currentValue: 75,
+        suggestion: 'Raise to 80',
+        rationale: 'test',
+        confidence: 'high',
+      },
+      {
+        parameter: 'exits.stopLossPct',
+        currentValue: 20,
+        suggestion: 'Consider tightening to 15%',
+        rationale: 'test',
+        confidence: 'medium',
+      },
+      {
+        parameter: 'exits.takeProfitPct',
+        currentValue: 50,
+        suggestion: 'Raise to 200-300 and rely on trailing stop instead',
+        rationale: 'test',
+        confidence: 'high',
+      },
+      {
+        parameter: 'general',
+        currentValue: '',
+        suggestion: 'No changes recommended',
+        rationale: 'test',
+        confidence: 'low',
+      },
+    ]);
+
+    expect(updates).toHaveLength(2);
+    expect(updates.map((u) => ({ path: u.path.join('.'), value: u.value }))).toEqual([
+      { path: 'scoring.minimumScoreToEnter', value: 80 },
+      { path: 'exits.stopLossPct', value: 15 },
+    ]);
+  });
+
+  it('applies tune updates to YAML while leaving other config intact', () => {
+    const configText = [
+      'mode: paper',
+      'exits:',
+      '  stopLossPct: 20',
+      '  takeProfitPct: 300',
+      'scoring:',
+      '  minimumScoreToEnter: 75',
+      '',
+    ].join('\n');
+    const updates = deriveTuneConfigUpdates([
+      {
+        parameter: 'scoring.minimumScoreToEnter',
+        currentValue: 75,
+        suggestion: 'Consider lowering to 70',
+        rationale: 'test',
+        confidence: 'low',
+      },
+      {
+        parameter: 'exits.stopLossPct',
+        currentValue: 20,
+        suggestion: 'Consider tightening to 15%',
+        rationale: 'test',
+        confidence: 'medium',
+      },
+    ]);
+
+    const updated = applyTuneConfigUpdates(configText, updates);
+
+    expect(updated).toContain('minimumScoreToEnter: 70');
+    expect(updated).toContain('stopLossPct: 15');
+    expect(updated).toContain('takeProfitPct: 300');
+    expect(renderTuneApplyPreview(updates)).toContain('scoring.minimumScoreToEnter = 70');
   });
 });

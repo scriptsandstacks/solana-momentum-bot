@@ -151,6 +151,16 @@ function scoreMigrationCandidate(candidate: TokenCandidate): OpportunityScore {
     reasons.push('freeze_authority_revoked');
   }
 
+  if (candidate.top5HolderPct !== undefined) {
+    if (candidate.top5HolderPct >= 80) {
+      total -= 60;
+      risks.push('holder_concentration_high');
+    } else if (candidate.top5HolderPct <= 50) {
+      total += 3;
+      reasons.push('holder_distribution_ok');
+    }
+  }
+
   const bounded = clampScore(total);
   const recommendation = bounded >= 70 ? 'paper_trade' : bounded >= 45 ? 'watch' : 'ignore';
   return { total: bounded, recommendation, reasons, risks };

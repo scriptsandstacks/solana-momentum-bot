@@ -73,6 +73,12 @@ describe('migrationMomentum scorer', () => {
     expect(score.recommendation).not.toBe('paper_trade');
   });
 
+  it('penalizes high holder concentration', () => {
+    const score = migrationMomentumStrategy.scoreCandidate(migrationCandidate({ top5HolderPct: 85 }));
+    expect(score.risks).toContain('holder_concentration_high');
+    expect(score.recommendation).not.toBe('paper_trade');
+  });
+
   it('uses a lower paper_trade threshold (70) than fresh launch (75)', () => {
     expect(migrationMomentumStrategy.config.minScoreToEnter).toBe(70);
     expect(freshLaunchMomentumStrategy.config.minScoreToEnter).toBe(75);

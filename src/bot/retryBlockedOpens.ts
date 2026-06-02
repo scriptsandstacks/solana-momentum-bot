@@ -3,10 +3,16 @@ import type { PaperBrokerOptions } from '../paper/paperBroker.js';
 import type { PaperPosition, TokenCandidate } from '../types/domain.js';
 import type { RetriableScoredCandidateRow } from '../storage/sqliteStore.js';
 import type { ChainName } from '../config/schema.js';
+import type { TradingStrategy } from '../strategies/types.js';
 
 // Minimal store interface required to run the retry pass.
 export interface RetryBlockedOpensStore extends BrokerStateStore {
-  listRetriableScoredCandidates(options: { minScore: number; cutoffIso: string; limit?: number }): RetriableScoredCandidateRow[];
+  listRetriableScoredCandidates(options: {
+    minScore: number;
+    cutoffIso: string;
+    limit?: number;
+    strategyMinScores?: Record<string, number>;
+  }): RetriableScoredCandidateRow[];
   saveOpenPosition(position: PaperPosition): void;
 }
 
@@ -24,14 +30,21 @@ export async function retryBlockedOpens(options: {
   store: RetryBlockedOpensStore;
   paper: PaperBrokerOptions;
   minimumScoreToEnter: number;
+  strategies?: TradingStrategy[];
   cutoffIso: string;
   limit?: number;
 }): Promise<RetryBlockedOpensResult> {
+  const minScoreByStrategy = new Map(options.strategies?.map((strategy) => [strategy.id, strategy.config.minScoreToEnter]) ?? []);
+  const queryMinScore =
+    minScoreByStrategy.size > 0
+      ? Math.min(...minScoreByStrategy.values())
+      : options.minimumScoreToEnter;
   const rows = options.store.listRetriableScoredCandidates({
-    minScore: options.minimumScoreToEnter,
+    minScore: queryMinScore,
     cutoffIso: options.cutoffIso,
     limit: options.limit ?? 10,
-  });
+    strategyMinScores: Object.fromEntries(minScoreByStrategy),
+  }).filter((row) => row.score >= (minScoreByStrategy.get(row.strategyId) ?? options.minimumScoreToEnter));
 
   const result: RetryBlockedOpensResult = { candidates: rows.length, openedPositions: 0 };
   if (rows.length === 0) return result;
@@ -79,6 +92,10 @@ function rowToCandidate(row: RetriableScoredCandidateRow): TokenCandidate {
     estimatedSlippageBps: row.estimatedSlippageBps,
     routeInputMint: row.routeInputMint ?? undefined,
     routeInputSymbol: row.routeInputSymbol ?? undefined,
+    strategyId: row.strategyId,
     sellRouteAvailable: row.sellRouteAvailable === null ? undefined : row.sellRouteAvailable === 1,
+    mintAuthorityRevoked: row.mintAuthorityRevoked === null ? undefined : row.mintAuthorityRevoked === 1,
+    freezeAuthorityRevoked: row.freezeAuthorityRevoked === null ? undefined : row.freezeAuthorityRevoked === 1,
+    top5HolderPct: row.top5HolderPct ?? undefined,
   };
 }

@@ -60,4 +60,11 @@ describe('scoreTokenCandidate', () => {
     expect(withUndefined.total).toBe(withoutCheck.total);
     expect(withUndefined.risks).not.toContain('no_sell_route');
   });
+
+  it('penalizes high holder concentration', () => {
+    const score = scoreTokenCandidate({ ...baseCandidate, top5HolderPct: 85 });
+
+    expect(score.total).toBeLessThan(75);
+    expect(score.risks).toContain('holder_concentration_high');
+  });
 });

@@ -1,5 +1,5 @@
 {
-  "name": "hermes-agent",
+  "name": "crypto-bot",
   "version": "0.1.0",
   "description": "Multi-chain-ready crypto paper trading bot; Solana-first MVP.",
   "type": "module",
