@@ -23,6 +23,11 @@ interface ProcessExitsOptions {
   store: ExitProcessStore;
   paper: PaperBrokerOptions;
   exits: ExitRules;
+  // Optional per-strategy exit override resolver. When provided, called with the
+  // position's strategyId to return the exits to use for that position, allowing
+  // different strategies to have different stop-loss / take-profit thresholds.
+  // Falls back to options.exits when absent or when the resolver returns undefined.
+  resolveExits?: (strategyId: string | undefined) => ExitRules | undefined;
   // Returns a current USD price per token mint. Defaults to a DexScreener +
   // Raydium lookup. Only positive prices should be returned.
   fetchPrices?: (tokenMints: string[]) => Promise<Map<string, number>>;
@@ -143,13 +148,14 @@ export async function processExits(options: ProcessExitsOptions): Promise<Proces
   };
 
   for (const position of open) {
+    const positionExits = options.resolveExits?.(position.token.strategyId) ?? options.exits;
     const price = prices.get(position.token.address);
 
     if (price === undefined || price <= 0) {
       // No fresh price. Time-based exits still apply: close an over-held position
       // at its last known mark (entry price if it was never marked) so it frees
       // its slot. Price-based exits are skipped until a real price returns.
-      if (minutesHeld(position.openedAt, now) >= options.exits.maxHoldMinutes) {
+      if (minutesHeld(position.openedAt, now) >= positionExits.maxHoldMinutes) {
         const exitPriceSource = position.lastMarkUsd === undefined ? 'entry_fallback' : 'last_mark';
         recordClose(position.id, position.lastMarkUsd ?? position.entryPriceUsd, 'timeout', exitPriceSource);
       } else {
@@ -162,7 +168,7 @@ export async function processExits(options: ProcessExitsOptions): Promise<Proces
     // Record the mark (ratchets the high-water mark) before evaluating exits so
     // trailing-stop math uses the latest peak.
     const updated = broker.recordMark(position.id, price);
-    const reason = decideExit(position, price, updated.highWaterMarkUsd, options.exits, now);
+    const reason = decideExit(position, price, updated.highWaterMarkUsd, positionExits, now);
 
     if (!reason) {
       // No exit: persist the updated marks for the next pass.

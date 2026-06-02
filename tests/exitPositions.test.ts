@@ -225,4 +225,27 @@ describe('processExits', () => {
     expect(store._closed[0]).toMatchObject({ reason: 'timeout', exitPriceUsd: 0.01, exitPriceSource: 'entry_fallback' });
     expect(store._closed[0].pnlUsd).toBeCloseTo(0);
   });
+
+  it('uses strategy exit overrides when resolveExits returns them for the position strategyId', async () => {
+    // Position tagged freshLaunchMomentum with tight take-profit (20% instead of global 50%).
+    const pos = position({ id: 'paper-1', address: 'mint-1' });
+    pos.token = { ...pos.token, strategyId: 'freshLaunchMomentum' };
+    const store = fakeStore([pos]);
+
+    const result = await processExits({
+      store,
+      paper,
+      exits, // global: tp=50%
+      resolveExits: (strategyId) =>
+        strategyId === 'freshLaunchMomentum'
+          ? { ...exits, takeProfitPct: 20 } // strategy override: tp=20%
+          : undefined,
+      now,
+      fetchPrices: async () => new Map([['mint-1', 0.012]]), // +20% from entry 0.01
+    });
+
+    // With global exits (tp=50%) this would be held; with strategy override (tp=20%) it closes.
+    expect(result).toMatchObject({ closed: 1, takeProfit: 1 });
+    expect(store._closed[0].reason).toBe('take_profit');
+  });
 });

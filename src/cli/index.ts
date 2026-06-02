@@ -16,6 +16,8 @@ import { PaperBroker } from '../paper/paperBroker.js';
 import { scoreTokenCandidate } from '../scoring/scoreToken.js';
 import { SqliteStore } from '../storage/sqliteStore.js';
 import { createFreshLaunchStrategy } from '../strategies/freshLaunchMomentum.js';
+import type { ExitRules } from '../bot/exitPositions.js';
+import type { TradingStrategy } from '../strategies/types.js';
 import type { PaperBrokerOptions } from '../paper/paperBroker.js';
 import type { BotConfig } from '../config/schema.js';
 
@@ -47,6 +49,23 @@ function buildStrategy(config: BotConfig) {
   return createFreshLaunchStrategy({
     minScoreToEnter: config.scoring.minimumScoreToEnter,
   });
+}
+
+// Build a per-position exit resolver that merges each strategy's exit overrides
+// over the global exits. Unknown strategy IDs fall back to global exits so new
+// strategies are never silently under-configured.
+function buildExitResolver(strategy: TradingStrategy, globalExits: ExitRules) {
+  return (strategyId: string | undefined): ExitRules | undefined => {
+    if (strategyId === strategy.id && strategy.config.exits) {
+      return {
+        stopLossPct: strategy.config.exits.stopLossPct ?? globalExits.stopLossPct,
+        takeProfitPct: strategy.config.exits.takeProfitPct ?? globalExits.takeProfitPct,
+        trailingStopPct: strategy.config.exits.trailingStopPct ?? globalExits.trailingStopPct,
+        maxHoldMinutes: strategy.config.exits.maxHoldMinutes ?? globalExits.maxHoldMinutes,
+      };
+    }
+    return undefined; // fall back to global exits in exitPositions
+  };
 }
 
 const program = new Command();
@@ -313,10 +332,12 @@ program
   .option('--api-key <key>', 'PumpPortal API key; defaults to PUMPPORTAL_API_KEY')
   .option('--process-interval-seconds <seconds>', 'seconds between PumpPortal processing passes', '30')
   .option('--process-limit <limit>', 'maximum pending PumpPortal events per processing pass', '50')
+  .option('--analytics-every <passes>', 'emit full analytics summary every N passes (0=off)', '10')
   .option('--seconds <seconds>', 'optional bounded runtime in seconds; omit to run until Ctrl-C')
-  .action(async (options: { apiKey?: string; processIntervalSeconds: string; processLimit: string; seconds?: string }) => {
+  .action(async (options: { apiKey?: string; processIntervalSeconds: string; processLimit: string; analyticsEvery: string; seconds?: string }) => {
     const processIntervalSeconds = Number(options.processIntervalSeconds);
     const processLimit = Number(options.processLimit);
+    const analyticsIntervalPasses = Number(options.analyticsEvery);
     const seconds = options.seconds === undefined ? undefined : Number(options.seconds);
     if (!Number.isFinite(processIntervalSeconds) || processIntervalSeconds <= 0) {
       throw new Error('--process-interval-seconds must be a positive number');
@@ -355,6 +376,8 @@ program
         paper: paperBrokerOptions(config),
         minimumScoreToEnter: strategy.config.minScoreToEnter,
         exits: config.exits,
+        resolveExits: buildExitResolver(strategy, config.exits),
+        analyticsIntervalPasses,
         stopSignal: stopController.signal,
         onLog: log,
         reporter,

@@ -3,12 +3,13 @@ import { processPumpPortalEvents, type PumpProcessResult } from './pumpProcess.j
 import { processExits as processExitsImpl, type ExitRules, type ProcessExitsResult } from './exitPositions.js';
 import { trackCandidateOutcomes as trackCandidateOutcomesImpl, type TrackOutcomesResult } from './trackOutcomes.js';
 import { retryBlockedOpens as retryBlockedOpensImpl, canRetryBlockedOpens, type RetryBlockedOpensResult } from './retryBlockedOpens.js';
+import { computeTradeAnalytics, renderAnalyticsReport } from './analytics.js';
 import { isBrokerStateStore, restoreBrokerFromStore } from '../paper/restoreBroker.js';
 import type { Reporter } from './reporter.js';
 import type { ChainConfig } from '../config/schema.js';
 import type { PaperBrokerOptions } from '../paper/paperBroker.js';
 import type { OpportunityScore, PaperPosition, PaperTrade, TokenCandidate } from '../types/domain.js';
-import type { ScoredOutcomeUpdate, TrackableScoredCandidateRow, RetriableScoredCandidateRow } from '../storage/sqliteStore.js';
+import type { ScoredOutcomeUpdate, TrackableScoredCandidateRow, RetriableScoredCandidateRow, ClosedTradeStatRow } from '../storage/sqliteStore.js';
 
 interface RunLoopStore {
   savePumpPortalEvent(event: PumpPortalRawEvent): void;
@@ -39,12 +40,15 @@ interface RunLoopStore {
   recordScoredOutcome?(update: ScoredOutcomeUpdate): void;
   // Retry pass: re-opens positions for capacity-blocked scored candidates.
   listRetriableScoredCandidates?(options: { minScore: number; cutoffIso: string; limit?: number }): RetriableScoredCandidateRow[];
+  // Analytics: when present the run loop can emit periodic performance summaries.
+  loadClosedTradeStats?(): ClosedTradeStatRow[];
 }
 
 type ProcessExits = (options: {
   store: RunLoopStore;
   paper: PaperBrokerOptions;
   exits: ExitRules;
+  resolveExits?: (strategyId: string | undefined) => ExitRules | undefined;
   reporter?: Reporter;
 }) => Promise<ProcessExitsResult>;
 
@@ -107,6 +111,11 @@ interface RunBotLoopOptions {
   // When provided, each processing pass also re-prices open positions and
   // applies these exit rules. Omitted in tests that only exercise discovery.
   exits?: ExitRules;
+  // Per-strategy exit override resolver. Passed through to processExits so each
+  // position is evaluated against its strategy's exit thresholds, not just globals.
+  resolveExits?: (strategyId: string | undefined) => ExitRules | undefined;
+  // Emit a full analytics summary via onLog every N process passes. 0 = disabled.
+  analyticsIntervalPasses?: number;
   ClientCtor?: PumpPortalClientCtor;
   processPumpEvents?: ProcessPumpEvents;
   processExits?: ProcessExits;
@@ -221,6 +230,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
           store: options.store,
           paper: options.paper,
           exits: options.exits,
+          resolveExits: options.resolveExits,
           reporter: options.reporter,
         });
         result.closedPositions += exitResult.closed;
@@ -272,6 +282,19 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
           openedThisCycle: processResult.openedPositions,
           eventsProcessed: processResult.eventsRead,
         });
+      }
+
+      // Periodic analytics summary — emitted every N passes so long-running
+      // sessions stay legible without stopping the bot to run `stats`.
+      const interval = options.analyticsIntervalPasses ?? 0;
+      if (interval > 0 && result.processRuns % interval === 0 && typeof options.store.loadClosedTradeStats === 'function') {
+        const stats = options.store.loadClosedTradeStats();
+        if (stats.length > 0) {
+          const analyticsReport = renderAnalyticsReport(computeTradeAnalytics(stats));
+          for (const line of analyticsReport.split('\n')) {
+            if (line) options.onLog?.(`[analytics] ${line}`);
+          }
+        }
       }
     } finally {
       processInFlight = false;
