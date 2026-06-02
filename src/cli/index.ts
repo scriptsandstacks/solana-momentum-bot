@@ -136,11 +136,45 @@ program.command('report').description('Print persisted scan, position, and trade
 
 program
   .command('stats')
-  .description('Aggregate paper-trade performance: expectancy, win rate, and PnL by reason / score / source')
+  .description('Aggregate paper-trade performance: expectancy, win rate, and PnL by reason / score / source / strategy')
   .action(() => {
     const store = new SqliteStore();
     const analytics = computeTradeAnalytics(store.loadClosedTradeStats());
     process.stdout.write(renderAnalyticsReport(analytics));
+    store.close();
+  });
+
+program
+  .command('strategies')
+  .description('Per-strategy performance summary: trades, win rate, expectancy, and P&L')
+  .action(() => {
+    const store = new SqliteStore();
+    const trades = store.loadClosedTradeStats();
+    if (trades.length === 0) {
+      process.stdout.write('No closed trades yet — run the bot to accumulate paper results.\n');
+      store.close();
+      return;
+    }
+    const analytics = computeTradeAnalytics(trades);
+    const lines = [
+      'Strategy Performance Summary',
+      `Total trades: ${analytics.overall.trades}  Total P&L: $${analytics.overall.totalPnlUsd.toFixed(2)}`,
+      '',
+      'Per-strategy breakdown:',
+    ];
+    for (const bucket of analytics.byStrategy) {
+      const pf = bucket.profitFactor === Number.POSITIVE_INFINITY ? 'inf' : bucket.profitFactor.toFixed(2);
+      lines.push(
+        `  ${bucket.label.padEnd(28)}` +
+          ` trades=${String(bucket.trades).padStart(4)}` +
+          ` win%=${bucket.winRatePct.toFixed(1).padStart(5)}` +
+          ` pnl=$${bucket.totalPnlUsd.toFixed(2).padStart(8)}` +
+          ` exp=$${bucket.expectancyUsd.toFixed(2).padStart(7)}` +
+          ` pf=${pf.padStart(5)}` +
+          ` hold=${bucket.avgHoldMinutes.toFixed(1)}m`,
+      );
+    }
+    process.stdout.write(`${lines.join('\n')}\n`);
     store.close();
   });
 

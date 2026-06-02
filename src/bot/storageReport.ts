@@ -20,6 +20,7 @@ interface OpenPositionRow {
   chain: string;
   address?: string;
   symbol: string;
+  strategyId?: string;
   entryPriceUsd: number;
   quantity: number;
   score: number;
@@ -31,6 +32,7 @@ interface ClosedTradeRow {
   chain: string;
   address?: string;
   symbol: string;
+  strategyId?: string;
   entryPriceUsd?: number;
   exitPriceUsd?: number;
   quantity?: number;
@@ -87,16 +89,18 @@ export function renderStorageReport(input: StorageReportInput): string {
 
   lines.push('', 'Open positions:');
   for (const row of input.openPositions.slice(0, 10)) {
+    const strat = row.strategyId ? ` strat=${row.strategyId}` : '';
     lines.push(
-      `${row.id} ${row.chain.toUpperCase()} ${row.symbol} entry=$${row.entryPriceUsd} qty=${row.quantity.toFixed(4)} score=${row.score} opened=${row.openedAt}`,
+      `${row.id} ${row.chain.toUpperCase()} ${row.symbol}${strat} entry=$${row.entryPriceUsd} qty=${row.quantity.toFixed(4)} score=${row.score} opened=${row.openedAt}`,
     );
   }
 
   lines.push('', 'Recent closed trades:');
   for (const row of input.closedTrades.slice(0, 10)) {
     const source = row.exitPriceSource ? ` source=${row.exitPriceSource}` : '';
+    const strat = row.strategyId ? ` strat=${row.strategyId}` : '';
     lines.push(
-      `${row.positionId} ${row.chain.toUpperCase()} ${row.symbol} reason=${row.reason}${source} pnl=$${row.pnlUsd.toFixed(2)} pct=${row.pnlPct.toFixed(2)} closed=${row.closedAt}`,
+      `${row.positionId} ${row.chain.toUpperCase()} ${row.symbol}${strat} reason=${row.reason}${source} pnl=$${row.pnlUsd.toFixed(2)} pct=${row.pnlPct.toFixed(2)} closed=${row.closedAt}`,
     );
   }
 
