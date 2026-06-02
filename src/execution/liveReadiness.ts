@@ -44,9 +44,9 @@ export function evaluateLiveReadiness(input: LiveReadinessInput): LiveReadinessR
   );
 
   checks.push(
-    input.config.mode === 'paper'
-      ? pass('Mode gate', 'Config is in paper mode while live execution is unavailable.')
-      : warn('Mode gate', 'Config is set to live, but CLI run still blocks live execution until LiveBroker exists.'),
+    input.config.mode === 'live'
+      ? pass('Mode gate', 'Config is set to live mode.')
+      : warn('Mode gate', 'Config is in paper mode — change mode: live in config to enable live trading.'),
   );
 
   checks.push(

@@ -6,6 +6,7 @@ import { retryBlockedOpens as retryBlockedOpensImpl, canRetryBlockedOpens, type 
 import { computeTradeAnalytics, renderAnalyticsReport } from './analytics.js';
 import { fetchPumpPortalMarketCandidates } from './pumpCandidates.js';
 import { isBrokerStateStore, restoreBrokerFromStore } from '../paper/restoreBroker.js';
+import type { ExecutionBroker } from '../execution/broker.js';
 import { checkJupiterRoute } from '../discovery/jupiter.js';
 import type { Reporter } from './reporter.js';
 import type { TradingStrategy } from '../strategies/types.js';
@@ -58,6 +59,8 @@ type ProcessExits = (options: {
   exits: ExitRules;
   resolveExits?: (strategyId: string | undefined) => ExitRules | undefined;
   reporter?: Reporter;
+  broker?: ExecutionBroker;
+  onLog?: (message: string) => void;
 }) => Promise<ProcessExitsResult>;
 
 function canProcessExits(store: RunLoopStore): boolean {
@@ -85,6 +88,7 @@ type RetryBlockedOpens = (options: {
   strategies?: TradingStrategy[];
   cutoffIso: string;
   refreshCandidate?: (candidate: TokenCandidate) => Promise<TokenCandidate | undefined>;
+  broker?: ExecutionBroker;
 }) => Promise<RetryBlockedOpensResult>;
 
 async function refreshRetryCandidate(candidate: TokenCandidate): Promise<TokenCandidate | undefined> {
@@ -114,6 +118,7 @@ type ProcessPumpEvents = (options: {
   strategies?: TradingStrategy[];
   limit?: number;
   reporter?: Reporter;
+  broker?: ExecutionBroker;
 }) => Promise<PumpProcessResult>;
 
 interface RunBotLoopOptions {
@@ -145,6 +150,22 @@ interface RunBotLoopOptions {
   stopSignal?: AbortSignal;
   onLog?: (message: string) => void;
   reporter?: Reporter;
+  // When provided, passed to every sub-pass so live mode uses one long-lived
+  // broker rather than reconstructing a PaperBroker from store each interval.
+  broker?: ExecutionBroker;
+  // When set, exit evaluations also run on this separate, tighter interval so
+  // live positions are protected on timescales shorter than processIntervalMs.
+  // Exit passes running on this interval skip if a main process pass is in flight.
+  exitIntervalMs?: number;
+  // Factory that, given an activity handler, returns a token watcher. The run
+  // loop calls watch(mint)/unwatch(mint) as positions open and close, and the
+  // handler triggers an immediate exit check when on-chain activity is detected.
+  // Only used when broker is provided (live mode).
+  createTokenWatcher?: (onActivity: (mint: string) => void) => {
+    watch(mint: string): void;
+    unwatch(mint: string): void;
+    close(): void;
+  };
 }
 
 export interface RunBotLoopResult {
@@ -216,9 +237,47 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
   });
 
   let interval: NodeJS.Timeout | undefined;
+  let exitOnlyInterval: NodeJS.Timeout | undefined;
   let stopped = false;
   let processInFlight = false;
   let activeProcess: Promise<void> | undefined;
+  // Set when on-chain token activity arrives while a pass is in-flight.
+  // Checked at the end of every pass so the exit runs immediately after.
+  let activityPendingExit = false;
+
+  // Token watcher — created only when broker is set (live mode) and a factory
+  // is provided. Tracks which mints are currently held so subscriptions stay
+  // in sync with open positions after every pass.
+  const watchedMints = new Set<string>();
+  const tokenWatcher = options.broker && options.createTokenWatcher
+    ? options.createTokenWatcher((mint: string) => {
+        if (!watchedMints.has(mint)) return; // stale callback after unwatch
+        if (processInFlight) {
+          activityPendingExit = true;
+        } else {
+          runExitOnlyPass().catch(logProcessError);
+        }
+      })
+    : undefined;
+
+  // After every pass, add subscriptions for newly opened positions and remove
+  // them for positions that have since closed.
+  const syncTokenWatcher = () => {
+    if (!tokenWatcher || !options.broker) return;
+    const currentMints = new Set(options.broker.getOpenPositions().map((p) => p.token.address));
+    for (const mint of watchedMints) {
+      if (!currentMints.has(mint)) {
+        tokenWatcher.unwatch(mint);
+        watchedMints.delete(mint);
+      }
+    }
+    for (const mint of currentMints) {
+      if (!watchedMints.has(mint)) {
+        tokenWatcher.watch(mint);
+        watchedMints.add(mint);
+      }
+    }
+  };
 
   const processOnce = async () => {
     if (stopped) return;
@@ -232,6 +291,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
         strategies: options.strategies,
         limit: options.processLimit,
         reporter: options.reporter,
+        broker: options.broker,
       });
       result.processRuns += 1;
       result.eventsRead += processResult.eventsRead;
@@ -254,10 +314,12 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
           exits: options.exits,
           resolveExits: options.resolveExits,
           reporter: options.reporter,
+          broker: options.broker,
+          onLog: options.onLog,
         });
         result.closedPositions += exitResult.closed;
         options.onLog?.(
-          `[run:exits] checked=${exitResult.positionsChecked} repriced=${exitResult.repriced} closed=${exitResult.closed} sl=${exitResult.stopLoss} tp=${exitResult.takeProfit} trail=${exitResult.trailingStop} timeout=${exitResult.timeout} noPrice=${exitResult.missingPrice}`,
+          `[run:exits] checked=${exitResult.positionsChecked} repriced=${exitResult.repriced} closed=${exitResult.closed} sl=${exitResult.stopLoss} tp=${exitResult.takeProfit} trail=${exitResult.trailingStop} timeout=${exitResult.timeout} noPrice=${exitResult.missingPrice} failed=${exitResult.failed}`,
         );
 
         // If the exit pass freed capacity, try to fill it with recently scored
@@ -271,6 +333,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
             strategies: options.strategies,
             cutoffIso,
             refreshCandidate: refreshRetryCandidate,
+            broker: options.broker,
           });
           result.openedPositions += retryResult.openedPositions;
           result.retriedPositions += retryResult.openedPositions;
@@ -299,15 +362,18 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
 
       // Emit a structured cycle summary after every full pass so the reporter
       // can surface cash / open count / trade activity without parsing log lines.
-      if (options.reporter?.onCycleSummary && isBrokerStateStore(options.store)) {
-        const broker = restoreBrokerFromStore(options.store, options.paper);
-        options.reporter.onCycleSummary({
-          cashUsd: broker.getCashUsd(),
-          openPositions: broker.getOpenPositions().length,
-          closedThisCycle: result.closedPositions,
-          openedThisCycle: processResult.openedPositions,
-          eventsProcessed: processResult.eventsRead,
-        });
+      if (options.reporter?.onCycleSummary) {
+        const summaryBroker = options.broker
+          ?? (isBrokerStateStore(options.store) ? restoreBrokerFromStore(options.store, options.paper) : undefined);
+        if (summaryBroker) {
+          options.reporter.onCycleSummary({
+            cashUsd: summaryBroker.getCashUsd(),
+            openPositions: summaryBroker.getOpenPositions().length,
+            closedThisCycle: result.closedPositions,
+            openedThisCycle: processResult.openedPositions,
+            eventsProcessed: processResult.eventsRead,
+          });
+        }
       }
 
       // Periodic analytics summary — emitted every N passes so long-running
@@ -322,8 +388,15 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
           }
         }
       }
+      syncTokenWatcher();
     } finally {
       processInFlight = false;
+      // If on-chain activity arrived while this pass was running, fire an
+      // exit check immediately rather than waiting for the next interval.
+      if (activityPendingExit && !stopped) {
+        activityPendingExit = false;
+        runExitOnlyPass().catch(logProcessError);
+      }
     }
   };
 
@@ -340,6 +413,35 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
     await activeProcess;
   };
 
+  // Exit-only pass: evaluates open positions against current prices and fires
+  // exit rules without running event ingestion or outcome tracking. Skipped when
+  // the main process pass is in flight to avoid concurrent broker state mutation.
+  const runExitOnlyPass = async () => {
+    if (processInFlight || stopped) return;
+    if (!options.exits || !canProcessExits(options.store)) return;
+    processInFlight = true;
+    try {
+      const exitResult = await processExits({
+        store: options.store,
+        paper: options.paper,
+        exits: options.exits,
+        resolveExits: options.resolveExits,
+        reporter: options.reporter,
+        broker: options.broker,
+        onLog: options.onLog,
+      });
+      result.closedPositions += exitResult.closed;
+      if (exitResult.closed > 0 || exitResult.repriced > 0 || exitResult.failed > 0) {
+        options.onLog?.(
+          `[run:exits:fast] checked=${exitResult.positionsChecked} repriced=${exitResult.repriced} closed=${exitResult.closed} sl=${exitResult.stopLoss} tp=${exitResult.takeProfit} trail=${exitResult.trailingStop} timeout=${exitResult.timeout} failed=${exitResult.failed}`,
+        );
+      }
+      syncTokenWatcher();
+    } finally {
+      processInFlight = false;
+    }
+  };
+
   const logProcessError = (error: unknown) => {
     options.onLog?.(`[run:error] ${error instanceof Error ? error.message : String(error)}`);
   };
@@ -352,6 +454,14 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
       interval = setInterval(() => {
         startProcessPass().catch(logProcessError);
       }, options.processIntervalMs);
+
+      // Separate, tighter exit interval for live mode. Fires independently of
+      // the main process interval so positions are protected on sub-30s timescales.
+      if (options.exitIntervalMs && options.exitIntervalMs < options.processIntervalMs) {
+        exitOnlyInterval = setInterval(() => {
+          runExitOnlyPass().catch(logProcessError);
+        }, options.exitIntervalMs);
+      }
 
       let timeout: NodeJS.Timeout | undefined;
       const stop = () => {
@@ -374,6 +484,8 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
   } finally {
     stopped = true;
     if (interval) clearInterval(interval);
+    if (exitOnlyInterval) clearInterval(exitOnlyInterval);
+    tokenWatcher?.close();
     if (activeProcess) {
       await activeProcess.catch(logProcessError);
     }

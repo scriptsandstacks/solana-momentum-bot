@@ -5,9 +5,17 @@ chains:
     enabled: true
     # walletFile is only read in live mode; safe to leave set while paper-trading.
     walletFile: ./wallet/chain-solana.txt
+    # Name of the env var that holds your Solana RPC URL (e.g. from Helius, QuickNode).
+    # Required for live trading and for on-chain risk signals (mint authority, holder concentration).
+    # Example: export SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<key>
+    rpcUrlEnv: SOLANA_RPC_URL
     minLiquidityUsd: 10000
     minVolume5mUsd: 5000
     maxSlippageBps: 500
+    # Priority fee added to every live trade transaction (lamports).
+    # 'auto' lets Jupiter set a dynamic fee based on current network congestion.
+    # Increase during high-traffic periods if transactions are not landing.
+    priorityFeeLamports: auto
 
   base:
     enabled: false

@@ -1,5 +1,6 @@
 import { restoreBrokerFromStore, isBrokerStateStore, type BrokerStateStore } from '../paper/restoreBroker.js';
 import type { PaperBrokerOptions } from '../paper/paperBroker.js';
+import type { ExecutionBroker } from '../execution/broker.js';
 import type { PaperPosition, TokenCandidate } from '../types/domain.js';
 import type { RetriableScoredCandidateRow } from '../storage/sqliteStore.js';
 import type { ChainName } from '../config/schema.js';
@@ -37,6 +38,7 @@ export async function retryBlockedOpens(options: {
   cutoffIso: string;
   limit?: number;
   refreshCandidate?: RetryCandidateRefresher;
+  broker?: ExecutionBroker;
 }): Promise<RetryBlockedOpensResult> {
   const minScoreByStrategy = new Map(options.strategies?.map((strategy) => [strategy.id, strategy.config.minScoreToEnter]) ?? []);
   const queryMinScore =
@@ -53,7 +55,7 @@ export async function retryBlockedOpens(options: {
   const result: RetryBlockedOpensResult = { candidates: rows.length, openedPositions: 0, skippedRefresh: 0 };
   if (rows.length === 0) return result;
 
-  const broker = restoreBrokerFromStore(options.store, options.paper);
+  const broker = options.broker ?? restoreBrokerFromStore(options.store, options.paper);
 
   for (const row of rows) {
     const capacity = broker.canOpenPosition();
@@ -67,7 +69,7 @@ export async function retryBlockedOpens(options: {
       result.skippedRefresh += 1;
       continue;
     }
-    const position = broker.openPosition(candidate, row.score);
+    const position = await broker.openPosition(candidate, row.score);
     options.store.saveOpenPosition(position);
     result.openedPositions += 1;
   }

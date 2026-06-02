@@ -22,11 +22,11 @@ const candidate: TokenCandidate = {
 };
 
 describe('runPaperCycle', () => {
-  it('scores candidates, persists them, and opens qualifying paper positions', () => {
+  it('scores candidates, persists them, and opens qualifying paper positions', async () => {
     const savedScores: string[] = [];
     const savedPositions: string[] = [];
 
-    const result = runPaperCycle({
+    const result = await runPaperCycle({
       candidates: [candidate],
       paper: { startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 3 },
       minimumScoreToEnter: 75,
@@ -42,7 +42,7 @@ describe('runPaperCycle', () => {
     expect(result.broker.getOpenPositions()).toHaveLength(1);
   });
 
-  it('keeps scoring every candidate even after the position cap is hit', () => {
+  it('keeps scoring every candidate even after the position cap is hit', async () => {
     const savedScores: string[] = [];
     const savedPositions: string[] = [];
 
@@ -52,7 +52,7 @@ describe('runPaperCycle', () => {
       { ...candidate, address: 'token-3', symbol: 'CCC', pairAddress: 'pair-3' },
     ];
 
-    runPaperCycle({
+    await runPaperCycle({
       candidates,
       paper: { startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 1 },
       minimumScoreToEnter: 75,
@@ -67,7 +67,7 @@ describe('runPaperCycle', () => {
     expect(savedPositions).toEqual(['AAA']);
   });
 
-  it('rehydrates from a broker-state store so the cap holds across runs', () => {
+  it('rehydrates from a broker-state store so the cap holds across runs', async () => {
     const existing: PaperPosition = {
       id: 'paper-1',
       token: { ...candidate, address: 'token-existing', symbol: 'OLD', pairAddress: 'pair-old' },
@@ -80,13 +80,13 @@ describe('runPaperCycle', () => {
     };
     const savedPositions: string[] = [];
 
-    const result = runPaperCycle({
+    const result = await runPaperCycle({
       candidates: [{ ...candidate, address: 'token-2', symbol: 'NEW', pairAddress: 'pair-2' }],
       paper: { startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 1 },
       minimumScoreToEnter: 75,
       store: {
         saveScoredCandidate: () => {},
-        saveOpenPosition: (position) => savedPositions.push(position.token.symbol),
+        saveOpenPosition: (position: PaperPosition) => savedPositions.push(position.token.symbol),
         // Broker-state reads: one position already open, so the cap of 1 is full.
         loadOpenPositions: () => [existing],
         getRealizedPnlUsd: () => 0,
@@ -97,6 +97,6 @@ describe('runPaperCycle', () => {
 
     // The new candidate must not open — the rehydrated broker is already at cap.
     expect(savedPositions).toEqual([]);
-    expect(result.broker.getOpenPositions().map((p) => p.id)).toEqual(['paper-1']);
+    expect(result.broker.getOpenPositions().map((p: PaperPosition) => p.id)).toEqual(['paper-1']);
   });
 });

@@ -60,6 +60,9 @@ export interface PaperPosition {
   // when a max-hold timeout fires on a pass where no fresh price is available.
   // Optional for backward compatibility; reads fall back to the entry price.
   lastMarkUsd?: number;
+  // Solana transaction signature for the entry swap. Populated only in live mode;
+  // undefined in paper mode. Useful for on-chain verification and audit logs.
+  entryTxSignature?: string;
 }
 
 export interface PaperTrade {
@@ -81,4 +84,6 @@ export interface PaperTrade {
   exitPriceSource?: 'fresh' | 'last_mark' | 'entry_fallback';
   pnlUsd: number;
   pnlPct: number;
+  // Solana transaction signature for the exit swap. Populated only in live mode.
+  exitTxSignature?: string;
 }

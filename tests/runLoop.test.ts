@@ -115,6 +115,7 @@ describe('runBotLoop', () => {
           takeProfit: 1,
           trailingStop: 0,
           timeout: 0,
+          failed: 0,
         };
       },
     });
@@ -162,6 +163,7 @@ describe('runBotLoop', () => {
           takeProfit: 0,
           trailingStop: 0,
           timeout: 0,
+          failed: 0,
         };
       },
     });
@@ -307,5 +309,47 @@ describe('runBotLoop', () => {
     expect(FakePumpClient.closes).toBe(1);
     expect(result.processRuns).toBeGreaterThanOrEqual(1);
     expect(logs.at(-1)).toBe('[run] stopped');
+  });
+
+  it('runs exit-only passes on the faster exitIntervalMs when configured', async () => {
+    FakePumpClient.closes = 0;
+    const exitOnlyCalls: number[] = [];
+    let callSeq = 0;
+
+    const result = await runBotLoop({
+      apiKey: 'abc123',
+      durationMs: 50,
+      processIntervalMs: 40,  // slow main interval
+      exitIntervalMs: 12,     // fast exit interval
+      processLimit: 5,
+      store: {
+        savePumpPortalEvent: () => {},
+        // Stateful store so canProcessExits passes
+        loadOpenPositions: () => [],
+        getRealizedPnlUsd: () => 0,
+        getRealizedPnlUsdSince: () => 0,
+        getNextPositionSeq: () => 1,
+        saveOpenPosition: () => {},
+        saveClosedTrade: () => {},
+      },
+      solanaConfig: { enabled: true, minLiquidityUsd: 10_000, minVolume5mUsd: 5_000, maxSlippageBps: 500 },
+      paper: { startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 3 },
+      minimumScoreToEnter: 75,
+      exits: { stopLossPct: 20, takeProfitPct: 300, trailingStopPct: 15, trailingArmPct: 30, maxHoldMinutes: 60 },
+      ClientCtor: FakePumpClient,
+      processPumpEvents: async () => ({ eventsRead: 0, candidatesEnriched: 0, scored: 0, openedPositions: 0, skipped: 0, failed: 0 }),
+      processExits: async () => {
+        exitOnlyCalls.push(callSeq++);
+        return { positionsChecked: 0, repriced: 0, missingPrice: 0, closed: 0, stopLoss: 0, takeProfit: 0, trailingStop: 0, timeout: 0, failed: 0 };
+      },
+      onLog: () => {},
+    });
+
+    // With a 50ms run, 40ms main interval, 12ms exit interval:
+    // - main pass fires ~twice (at start + ~40ms)
+    // - exit-only pass fires ~4 times (12ms, 24ms, 36ms, 48ms)
+    // Exit calls should exceed main process runs since interval is tighter.
+    expect(exitOnlyCalls.length).toBeGreaterThan(result.processRuns);
+    expect(result).toBeDefined();
   });
 });

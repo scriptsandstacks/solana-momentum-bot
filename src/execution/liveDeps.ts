@@ -1,0 +1,138 @@
+// Creates real production LiveBrokerDeps: loads a Solana keypair, builds
+// RPC helpers, and wires up the Jupiter swap API. All I/O is async and the
+// deps object is injected into LiveBroker so unit tests can supply fakes.
+
+import fs from 'node:fs';
+import { Keypair, VersionedTransaction } from '@solana/web3.js';
+import type { LiveBrokerDeps } from './liveBroker.js';
+import { getJupiterQuoteForSwap, getJupiterSwapTransaction } from './jupiterSwap.js';
+
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const SOL_DECIMALS = 9;
+const USDC_DECIMALS = 6;
+
+export interface LiveDepsConfig {
+  rpcUrl: string;
+  maxSlippageBps: number;
+  // lamports charged per transaction for prioritisation. 'auto' lets Jupiter
+  // set a dynamic fee; omit to use no prioritisation fee.
+  priorityFeeLamports?: number | 'auto';
+}
+
+// Load a Solana CLI-format keypair (64-element integer JSON array).
+export function loadSolanaKeypair(walletFile: string): Keypair {
+  const raw = JSON.parse(fs.readFileSync(walletFile, 'utf8')) as number[];
+  return Keypair.fromSecretKey(Uint8Array.from(raw));
+}
+
+// Query the on-chain SOL balance and return it in USD using the Jupiter price.
+export async function queryWalletCashUsd(
+  publicKey: string,
+  deps: Pick<LiveBrokerDeps, 'getSolPriceUsd'>,
+  rpcRequest: (method: string, params: unknown[]) => Promise<unknown>,
+): Promise<number> {
+  const lamports = (await rpcRequest('getBalance', [publicKey])) as { value: number };
+  const solBalance = lamports.value / 1e9;
+  const solPriceUsd = await deps.getSolPriceUsd();
+  return solBalance * solPriceUsd;
+}
+
+export function createLiveBrokerDeps(keypair: Keypair, config: LiveDepsConfig): LiveBrokerDeps {
+  const { rpcUrl, maxSlippageBps } = config;
+
+  const rpcRequest = async (method: string, params: unknown[]): Promise<unknown> => {
+    const res = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) throw new Error(`Solana RPC ${method} failed: ${res.status} ${res.statusText}`);
+    const json = (await res.json()) as { result?: unknown; error?: { message: string } };
+    if (json.error) throw new Error(`Solana RPC ${method}: ${json.error.message}`);
+    return json.result;
+  };
+
+  const decimalsCache = new Map<string, number>();
+
+  const getTokenDecimals = async (mint: string): Promise<number> => {
+    if (mint === SOL_MINT) return SOL_DECIMALS;
+    if (mint === USDC_MINT) return USDC_DECIMALS;
+    const hit = decimalsCache.get(mint);
+    if (hit !== undefined) return hit;
+    const result = await rpcRequest('getAccountInfo', [mint, { encoding: 'jsonParsed' }]);
+    const info = result as { value?: { data?: { parsed?: { info?: { decimals?: number } } } } | null };
+    const d = info?.value?.data?.parsed?.info?.decimals;
+    if (typeof d !== 'number') throw new Error(`Cannot determine decimals for mint ${mint}`);
+    decimalsCache.set(mint, d);
+    return d;
+  };
+
+  const getSolPriceUsd = async (): Promise<number> => {
+    const quote = await getJupiterQuoteForSwap({
+      inputMint: SOL_MINT,
+      outputMint: USDC_MINT,
+      amount: 1_000_000_000, // 1 SOL in lamports
+      slippageBps: 100,
+    });
+    if (!quote) throw new Error('Cannot fetch SOL/USD price from Jupiter');
+    return Number(quote.outAmount) / 1e6;
+  };
+
+  return {
+    getPublicKey: () => keypair.publicKey.toBase58(),
+
+    getSolPriceUsd,
+
+    getTokenDecimals,
+
+    async getJupiterQuote(params) {
+      return getJupiterQuoteForSwap({
+        ...params,
+        slippageBps: params.slippageBps ?? maxSlippageBps,
+      });
+    },
+
+    async getSwapTransaction(params) {
+      const tx = await getJupiterSwapTransaction({
+        quoteResponse: params.quoteResponse,
+        userPublicKey: params.userPublicKey,
+        wrapAndUnwrapSol: params.wrapAndUnwrapSol ?? true,
+        prioritizationFeeLamports: config.priorityFeeLamports,
+      });
+      if (!tx) throw new Error('Jupiter swap endpoint did not return a transaction');
+      return { swapTransaction: tx };
+    },
+
+    async signAndSendTransaction(transactionBase64) {
+      const txBytes = Buffer.from(transactionBase64, 'base64');
+      const tx = VersionedTransaction.deserialize(txBytes);
+      tx.sign([keypair]);
+      const serialized = Buffer.from(tx.serialize()).toString('base64');
+      const signature = await rpcRequest('sendTransaction', [
+        serialized,
+        { encoding: 'base64', skipPreflight: false, maxRetries: 3 },
+      ]);
+      return signature as string;
+    },
+
+    async confirmTransaction(signature) {
+      const deadline = Date.now() + 90_000;
+      while (Date.now() < deadline) {
+        const result = await rpcRequest('getSignatureStatuses', [
+          [signature],
+          { searchTransactionHistory: true },
+        ]);
+        const statuses = (result as { value: Array<{ confirmationStatus?: string; err?: unknown } | null> }).value;
+        const status = statuses?.[0];
+        if (status?.err) throw new Error(`Transaction ${signature} failed on-chain: ${JSON.stringify(status.err)}`);
+        if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
+          return;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 2_000));
+      }
+      throw new Error(`Transaction ${signature} was not confirmed within 90 seconds`);
+    },
+  };
+}

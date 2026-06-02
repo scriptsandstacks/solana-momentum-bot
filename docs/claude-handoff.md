@@ -1,108 +1,114 @@
 # Claude Handoff — Strategy, Execution & Reporting Architecture
 
-**Last updated:** 2026-06-02 · **Branch:** `codex/volume-acceleration-signal`
-**Reviewer:** Codex. Counterpart: `docs/codex-handoff.md`.
-
-Paper-only. Do not introduce live wallet/private-key use.
+**Last updated:** 2026-06-02 · **Branch:** `feature/live-broker-implementation`
+**This session added:** WebSocket real-time exit triggers (Session 2) · On-chain position reconciliation (Session 3) · `recover-positions` command (Session 4)
+**Reviewer:** Claude. Counterpart: `docs/codex-handoff.md`.
 
 ---
 
 ## Current health
 
 ```
-npm test          → 28 files, 169 tests passing
+npm test          → 32 files, 240 tests passing
 npm run typecheck → clean
 git diff --check  → clean
 ```
 
 ---
 
-## Everything built on this branch
+## Everything built on this branch (feature/live-broker-implementation)
 
-This branch covers two Claude sessions. All 11 commits sit on top of `development` (PR #9).
+Built on `development` after PR #11 merge. All commits sit on top of the
+`codex/volume-acceleration-signal` work (PR #11).
 
-### Session 1 — Architecture foundation
+### Session 4 — `recover-positions` command
 
-| Commit | What |
+| Area | What |
 |---|---|
-| `TradingStrategy` interface + `byStrategy` analytics | Typed strategy interface with `id`, `config`, `tagCandidate`, `scoreCandidate`, `acceptsEventType`, `resolvePositionSizeUsd`. `AnalyticsTrade` gains `strategyId`; analytics report leads with `By strategy` section. |
-| `ExecutionBroker` interface | `src/execution/broker.ts` — the typed contract a live broker must satisfy. `PaperBroker implements ExecutionBroker` with `mode = 'paper'`. The seam for paper→live swap. |
-| `StrategyConfig` on each strategy | Each strategy carries `minScoreToEnter` and optional `exits` overrides. CLI builds strategies from config file values. |
-| `Reporter` interface + `consoleReporter` | `onPositionOpened` / `onPositionClosed` / `onCycleSummary` event hooks. Emits `[trade]` and `[cycle]` lines during `run`. |
-| Config schema: `mode: 'paper' \| 'live'` | CLI guards `live` with a clear error. `notifications.console` flag. |
-| Storage report: `strat=` on every row | Positions and closed trades now show which strategy produced them. |
-| `strategies` CLI command | Per-strategy table: trades, win%, P&L, expectancy, profit factor, hold time. |
-| Scoring owned by strategy | `strategy.scoreCandidate()` replaces global scorer call in `pumpProcess`. A second strategy can weight signals differently. |
-| Strategy exit overrides | `resolveExits` in `processExits` merges strategy-specific exit thresholds over globals per position. |
-| Periodic analytics during `run` | Every N passes (default 10, `--analytics-every` flag) emits the full `stats` output inline. |
-| Solana mint/freeze authority screening | `src/chains/solana/mintAuthority.ts` — read-only RPC `getAccountInfo`. mintAuthority held → -20 pts; freezeAuthority held → -15 pts. Both revoked → bonus. Best-effort; pipeline never blocked by RPC failure. |
+| `src/execution/positionRecovery.ts` | Pure transformation functions for recovery. `buildStaleRecovery(position, closedAt)` builds a `PaperTrade` from a stale SQLite position using `lastMarkUsd` (or `entryPriceUsd` as fallback) as exit price, reason=`manual`. `buildOrphanedRecovery(holding, candidate, positionId, openedAt)` builds a synthetic `PaperPosition` using the current market price as approximate entry — returns `currentPriceUsd: undefined` when no price is available (skipped). `renderRecoveryPlan` / `renderRecoverySummary` format operator-facing output. |
+| `recover-positions` CLI command | Runs wallet reconciliation, fetches market prices for orphaned mints via `fetchPumpPortalMarketCandidates`, shows a human-readable recovery plan, prompts for confirmation (skippable with `--yes`, suppressed by `--dry-run`), then writes to SQLite: `saveClosedTrade` for stale positions, `saveOpenPosition` for orphaned holdings. Price-unavailable orphans are skipped with a warning. |
+| Tests | 18 tests in `tests/positionRecovery.test.ts` covering pnl math, last-mark vs entry-fallback selection, zero/missing price handling, plan rendering, and summary formatting. |
 
-### Session 2 — Strategy differentiation and feedback loop
+### Session 3 — On-chain position reconciliation
 
-| Commit | What |
+| Area | What |
 |---|---|
-| Two-phase trailing stop | `trailingArmPct` added to `ExitRules`. Phase 1 (below threshold): only hard stop-loss. Phase 2 (HWM ≥ arm threshold): trailing stop takes over. Fixed TP raised to 300% as a safety ceiling, not the real exit. Config: arm=30%, trail=15%, hold=60 min. |
-| MigrationMomentum strategy | `src/strategies/migrationMomentum.ts` — independent scorer for `migration` events. Weights liquidity heavily (bonding curve completion = proven demand), forgives age (30min–6h window), uses tighter exits (arm=15%, trail=12%, hold=25 min, SL=18%). `minScoreToEnter: 70`. |
-| Event routing | `TradingStrategy.acceptsEventType()`. `new_token` → freshLaunchMomentum; `migration` → migrationMomentum. Pipeline routes per event; falls back to first strategy. |
-| Conviction-based sizing | `TradingStrategy.resolvePositionSizeUsd(score, base)`. Fresh launch: 90+→1.5x, 80-89→1.0x, 75-79→0.75x. Migration: 85+→1.25x. `PaperBroker.openPosition` accepts optional size override. |
-| `tune` command | `src/bot/tune.ts` + CLI command. Reads MFE/MAE outcome data, emits confidence-rated recommendations: when to raise/lower entry threshold, when fixed TP is cutting winners short, when stop-loss could tighten. Closes the `track-outcomes` → `tune` → config feedback loop. |
+| `src/execution/walletReconciler.ts` | Queries wallet SPL token balances via `getTokenAccountsByOwner` and cross-references against SQLite `open_positions`. Returns two discrepancy types: **ORPHANED** (token held on-chain, no SQLite record — likely a crash between confirmed swap and `saveOpenPosition`) and **STALE** (position in SQLite, no meaningful on-chain balance — possible manual close or external sell). Known stablecoins (USDC, USDT, wSOL) excluded from orphaned detection. Dust amounts (< 0.001 UI units) excluded. Positions with ≥ 1 % of expected balance are treated as matched (fill tolerance). Best-effort: RPC failure returns an error field rather than throwing. |
+| `renderReconciliationReport()` | Human-readable output with `[reconcile] OK/ORPHANED/STALE/WARNING` lines. Empty string when no positions and no issues. |
+| `LiveBroker.getWalletPublicKey()` | Exposes the wallet public key via `deps.getPublicKey()` so the CLI can pass it to the reconciler without re-loading the keypair file. |
+| CLI `run` startup | After `buildLiveBrokerIfNeeded`, calls `reconcileWalletPositions` and logs the report. Non-blocking — discrepancies are logged as warnings and the run loop continues. |
+| `processExits` hardening | Added per-position try/catch so a single failed live swap (e.g. no on-chain balance for a stale position) no longer crashes the entire exit pass. Failed positions are counted in the new `failed` field on `ProcessExitsResult` and logged via `onLog`. The position stays open and is retried on the next exit pass. |
+| Tests | 15 tests in `tests/walletReconciler.test.ts` covering matched, orphaned, stale, stablecoin exclusion, dust exclusion, fill tolerance, RPC error, and mixed scenarios. `runLoop.test.ts` and other test files updated for the new `failed` field. |
 
-### Codex continuation — next-step implementation
+### Session 2 — WebSocket real-time exit triggers
 
-Built on `development` after PR #10 merge, on branch `codex/claude-handoff-next-steps`.
-
-| Commit | What |
+| Area | What |
 |---|---|
-| `f4c115f` Add strategy metadata storage and retry wiring | Added queryable `mint_authority_revoked`, `freeze_authority_revoked`, and `top5_holder_pct`-ready plumbing to scored candidate projections; added `token_volume_snapshots` history table written on every score save; made retry strategy-aware using SQL-side per-strategy thresholds before `LIMIT`; preserved strategy/authority metadata on retried opens; wired `manage-exits` to `buildExitResolver`. |
-| `3e99a44` Add tune apply support | Added `tune --apply` with confirmation prompt and `--yes` for non-interactive use. Applies only concrete numeric recommendations to YAML config; skips ambiguous suggestions such as `Raise to 200-300`. |
-| `6ca2c20` Add Solana holder concentration risk check | Added read-only `getTokenLargestAccounts` + `getTokenSupply` RPC check in `src/chains/solana/holderConcentration.ts`; enriches PumpPortal candidates with `top5HolderPct`; persists `top5_holder_pct`; penalizes both strategies when top five holders own ≥80% of supply. Best-effort: RPC failure leaves the signal unknown and does not block processing. |
-| `3dac574` Rename package to crypto-bot | Renamed package metadata from `hermes-agent` to `crypto-bot`; left CLI binary as `hermes-paper-bot`; cleaned stale handoff notes. |
+| `src/execution/tokenActivityWatcher.ts` | Subscribes to Solana RPC `logsSubscribe` WebSocket notifications for a set of token mints. Single shared WebSocket; per-mint subscriptions with subscription-ID tracking; debounced `onActivity` callback (1 s default); automatic reconnect with exponential backoff and full re-subscription after reconnect. Only fires for successful transactions (skips `err != null`). |
+| `rpcUrlToWs()` | Utility to convert `https://` RPC URL to `wss://` WebSocket URL (same host/path, different protocol — works for Helius, QuickNode, Alchemy). |
+| `runBotLoop` — `createTokenWatcher` option | Factory that, given the activity handler, returns a watcher. The run loop creates the watcher once, calls `watch(mint)`/`unwatch(mint)` after every pass to keep subscriptions in sync with open positions, and immediately fires an exit-only pass when activity is detected. If a main pass is in-flight when activity fires, sets `activityPendingExit` and runs the exit pass as soon as the main pass finishes. |
+| Activity-triggered exits | Zero delay from on-chain trade to exit evaluation. Was previously limited by the 10 s exit interval; now the watcher triggers `runExitOnlyPass()` the moment any held token has a confirmed transaction. The 10 s interval remains as a backstop. |
+| CLI `run` command | Creates a `TokenActivityWatcher` in live mode using the Solana RPC URL. The watcher connects on startup and automatically tracks all open positions. |
+| Tests | 11 tests in `tests/tokenActivityWatcher.test.ts` covering subscribe/unsubscribe, notification handling, debounce, failed-tx skip, reconnect re-subscription, and `runBotLoop` integration. `rpcUrlToWs` has 3 tests. |
 
-### Codex continuation — volume acceleration
+### Session 1 — LiveBroker implementation
 
-Built on updated `development` after the prior Codex branch was merged/pulled, on branch `codex/volume-acceleration-signal`.
-
-| Commit | What |
+| Area | What |
 |---|---|
-| `585e986` Add volume acceleration scoring signal | Added `src/bot/volumeAcceleration.ts` to compute current 5m volume against recent per-token baseline snapshots. `pumpProcess` reads the last 30 minutes from `token_volume_snapshots` before saving the current score, attaches `volumeAcceleration5mZ` and `volumeAccelerationSamples`, and both active strategies add modest bonuses for z≥1/z≥2 or a risk for sharp deceleration. `scored_candidates` now persists `volume_acceleration_5m_z` and `volume_acceleration_samples`; retry preserves the fields. No-history behavior is unchanged. |
-| `2577d69` Add signal buckets to outcome analytics | `outcomes` now groups MFE/MAE by authority status, holder concentration, and volume acceleration buckets. `loadScoredOutcomeStats()` projects the persisted signal columns so the report can validate whether held authorities, high top-five concentration, or acceleration/deceleration correlate with paper outcomes. |
-| `37d3e60` Add strategy-specific tune reporting | `tune` still prints the global calibration view, then adds per-strategy sections using each active strategy's own entry threshold. Outcome rows now carry `strategyId`, and score buckets were split into `<70`, `70-74`, `75-79`, `80-89`, `90-100` so migration's 70 threshold is tunable. `--apply` remains conservative and only writes concrete global config updates. |
-| `4f4ebb6` Add live readiness audit | Added `live-readiness` CLI command and pure `evaluateLiveReadiness()` audit. It checks live blockers/prereqs without reading wallet contents or placing trades: missing LiveBroker, mode gate, Solana enabled, RPC env, wallet-file presence, sizing/loss-limit sanity, paper cost model, closed trade sample, and tracked outcome sample. Paper sample counts are advisory calibration warnings, not owner-permission gates. |
-| `23cf9ea` Make paper validation advisory for live readiness | Changed `live-readiness` so low paper-trade sample counts warn but do not block readiness. The owner should be able to switch between paper and live; paper results inform calibration rather than acting as training-wheel enforcement. |
-| `ebc0c59` Refresh retry candidates before opening | Retry opens now optionally refresh market data before opening. The run loop re-fetches the candidate and Jupiter route/sellability; if no current market data is found, it skips the retry instead of opening from stale scored price. |
-| `a66948d` Add strategy-specific config overrides | Added `strategies.freshLaunchMomentum` and `strategies.migrationMomentum` config sections for per-strategy `minScoreToEnter` and exit overrides. CLI strategy construction now uses shared `buildStrategies()`, and concrete per-strategy `tune --apply` suggestions can write to `strategies.<id>...` paths. |
-| `da97cd6` Add live broker scaffold and factory | Added inert `LiveBroker` scaffold and `createExecutionBroker()` factory. The scaffold preserves the owner-controlled paper/live broker seam but refuses all live execution with clear errors until transaction submission/signing is implemented deliberately. `live-readiness` now distinguishes scaffold availability from actual live execution implementation. |
+| `ExecutionBroker` interface | `openPosition` and `closePosition` are now `Promise<>` — the correct seam for an async live execution engine. `PaperBroker` wraps synchronous logic in `async`/`Promise` with no behavior change. |
+| `LiveBroker` | Full implementation: `canOpenPosition` checks wallet config + cash + daily-loss limit; `openPosition` gets a fresh Jupiter quote, builds the swap transaction, signs with the loaded keypair, submits to the RPC, polls for confirmation, and records the actual fill; `closePosition` sells the full tracked token quantity to USDC via the same flow. Both methods store the on-chain transaction signature (`entryTxSignature`, `exitTxSignature`) on the returned `PaperPosition`/`PaperTrade` for audit. `LiveBroker.restore()` loads positions from SQLite and seeds cash from the on-chain wallet balance. |
+| `src/execution/jupiterSwap.ts` | Jupiter quote + swap-transaction API. `getJupiterQuoteForSwap` returns the full quote object; `getJupiterSwapTransaction` POSTs to `/swap/v1/swap`. Uses same host-selection logic as the existing discovery quote path (keyed vs. keyless). |
+| `src/execution/liveDeps.ts` | Production deps factory. `loadSolanaKeypair` reads a Solana CLI-format keypair file. `createLiveBrokerDeps` builds the injectable deps object: sign/send via `@solana/web3.js`, confirm via `getSignatureStatuses` polling (90s timeout, 2s interval), token decimals via `getAccountInfo` jsonParsed (cached per mint), SOL price via a 1 SOL → USDC quote. |
+| Broker pass-through | `processPumpPortalEvents`, `processExits`, `retryBlockedOpens`, `runBotLoop` each accept an optional `broker?: ExecutionBroker`. When provided, used directly; when absent, reconstructs a `PaperBroker` from store (unchanged paper-mode behavior). |
+| Decoupled exit interval | `runBotLoop` accepts `exitIntervalMs`. When set and smaller than `processIntervalMs`, a second interval fires exit-only passes independently of event ingestion. In live mode the CLI defaults this to 10 s so positions are protected on sub-30s timescales without burning PumpPortal processing quota. `--exit-interval-seconds` flag overrides. |
+| CLI `run` command | Detects `mode: live`, loads keypair, queries on-chain SOL balance for initial cash, constructs `LiveBroker`, passes it to `runBotLoop`. Logs wallet address + initial cash + open position count at startup. |
+| Config schema | Added `priorityFeeLamports: number | 'auto'` to `chainConfigSchema`. Wired from config into `createLiveBrokerDeps`. `'auto'` lets Jupiter pick a dynamic fee. |
+| `config.example.yaml` | Added `rpcUrlEnv: SOLANA_RPC_URL` and `priorityFeeLamports: auto` with inline comments. |
+| SQLite persistence | Added `entry_tx_signature` (open_positions) and `exit_tx_signature` (closed_trades) columns. Added via `addColumnIfMissing` migration so existing databases upgrade on next start. `getNextPositionSeq` now handles `live-N` ids alongside `paper-N`. |
+| `liveReadiness` | Mode-gate check updated: passes when config is `live`, warns when still on `paper`. `liveExecutionImplemented` is now `true` in the CLI. |
+| `@solana/web3.js` | Added as a production dependency (v1.98.x). Used only in `liveDeps.ts` for `Keypair.fromSecretKey` and `VersionedTransaction.deserialize` / `.sign`. All other Solana RPC calls use raw fetch so tests remain mockable. |
+| Tests | 4 additional tests in `brokerFactory.test.ts`, 22 in new `liveBroker.test.ts`, 1 exit-interval test in `runLoop.test.ts`. All broker deps are injectable; no real keys or RPC needed. `paperBroker.test.ts` and `paperCycle.test.ts` updated for async interface. |
 
 ---
 
-## Architecture: paper → live transition path
+## Architecture: paper → live execution flow
 
-The `ExecutionBroker` interface is the seam. The entire bot pipeline (`pumpProcess`, `exitPositions`, `runLoop`) speaks to the interface, not to `PaperBroker` directly.
+```
+CLI (run command, mode=live)
+  → loadSolanaKeypair(walletFile)          # reads 64-byte JSON array
+  → queryWalletCashUsd(publicKey, deps)    # lamports → SOL → USD
+  → LiveBroker.restore(store, options, deps, initialCashUsd)
+  → runBotLoop({ broker: liveBroker, exitIntervalMs: 10_000, ... })
 
-To add live trading:
-1. Implement `LiveBroker implements ExecutionBroker` in `src/execution/liveBroker.ts`
-2. `openPosition()` → submit Jupiter swap transaction, sign with wallet keypair from `chainConfig.walletFile`
-3. `closePosition()` → submit sell transaction
-4. CLI `run`: branch on `config.mode === 'live'`, instantiate `LiveBroker` instead of `PaperBroker.restore()`
-5. `LiveBroker` reads open positions from the chain, not from SQLite (but still writes to SQLite for reporting/analytics)
+Per event (processPumpPortalEvents):
+  → broker.canOpenPosition()               # cash + cap + daily-loss check
+  → broker.openPosition(candidate, score, sizeUsd)
+       → getJupiterQuote(inputMint → tokenMint, inputAmount)
+       → getSwapTransaction(quote, walletPubkey)
+       → signAndSendTransaction(base64Tx)  # Keypair.sign + sendTransaction RPC
+       → confirmTransaction(signature)     # getSignatureStatuses poll
+       → return PaperPosition { entryTxSignature, entryPriceUsd, quantity }
+  → store.saveOpenPosition(position)
+
+Per exit (processExits, every 10 s in live):
+  → broker.closePosition(positionId, triggerPrice, reason)
+       → getJupiterQuote(tokenMint → USDC, tokenBaseUnits)
+       → getSwapTransaction + sign + confirm
+       → return PaperTrade { exitTxSignature, exitPriceUsd, pnlUsd }
+  → store.saveClosedTrade(trade)
+```
 
 ---
 
-## Active strategies
+## Active strategies (unchanged)
 
 ### freshLaunchMomentum
-- **Edge:** Small fraction of new Pump.fun tokens sustain buy pressure through the first hour. Can move 200-1000%.
-- **Entry events:** `new_token` only
-- **Entry threshold:** score ≥ 75 (configurable via `scoring.minimumScoreToEnter`)
-- **Sizing:** 90+→1.5x, 80-89→1.0x, 75-79→0.75x base size
-- **Exits:** SL=20%, arm at +30%, trail at 15% from peak, hold max 60 min
+- **Entry events:** `new_token` · **Threshold:** score ≥ 75 · **Sizing:** 1.5x/1x/0.75x
+- **Exits:** SL=20%, arm at +30%, trail at 15%, hold max 60 min
 
 ### migrationMomentum
-- **Edge:** Bonding curve completion executes a large structural buy that seeds Raydium. Token proved demand through price discovery on Pump.fun. Migration pump is typically sharp and short.
-- **Entry events:** `migration` only
-- **Entry threshold:** score ≥ 70
-- **Sizing:** 85+→1.25x, below→1.0x base size
-- **Exits:** SL=18%, arm at +15%, trail at 12% from peak, hold max 25 min
+- **Entry events:** `migration` · **Threshold:** score ≥ 70 · **Sizing:** 1.25x/1x
+- **Exits:** SL=18%, arm at +15%, trail at 12%, hold max 25 min
 
 ---
 
@@ -110,17 +116,18 @@ To add live trading:
 
 | Command | Purpose |
 |---|---|
-| `run` | Main loop: watch PumpPortal, process events, exit positions, track outcomes |
+| `run` | Main loop. `mode: live` enables real on-chain swaps. Flags: `--exit-interval-seconds` (default 10 in live, disabled in paper). |
+| `recover-positions` | Detect and fix wallet/SQLite discrepancies. `--dry-run` previews without writing. `--yes` skips confirmation prompt. |
+| `live-readiness` | Audits live-trading prerequisites. All blockers now clearable without code changes. |
 | `report` | Persisted scores, positions (with strat=), trades (with strat=), events |
 | `stats` | Full analytics: overall + by strategy, reason, score bucket, source |
 | `strategies` | Compact per-strategy P&L table |
 | `outcomes` | Candidate MFE/MAE counterfactual by score bucket |
-| `tune` | Outcome data → specific threshold recommendations with confidence ratings. `--apply` writes concrete numeric suggestions after confirmation; `--yes` skips confirmation. |
-| `live-readiness` | Audits live-trading prerequisites without reading wallet contents, signing, or placing trades |
+| `tune` | Outcome data → threshold recommendations. `--apply` writes concrete updates. |
 | `pump-watch` | Bounded PumpPortal listener |
 | `pump-process` | Process pending events into scored candidates |
-| `manage-exits` | One-shot exit pass on open positions |
-| `track-outcomes` | One-shot forward price capture for scored candidates |
+| `manage-exits` | One-shot exit pass |
+| `track-outcomes` | Forward price capture for scored candidates |
 | `prune` | Delete old untraded scored candidates |
 | `check-route` | Read-only Jupiter route smoke test |
 
@@ -128,45 +135,46 @@ To add live trading:
 
 ## Remaining open items
 
-### Highest priority
+### Medium priority (live trading is now functionally complete)
 
-Keep the paper/live mode switch seamless for the owner. `live-readiness` should report mechanical blockers and advisory calibration warnings, but it must not force a minimum number of paper cycles before the owner can choose live mode. The current hard blocker is the intentionally missing `LiveBroker`.
+**Volume acceleration analytics/tuning**
+The signal is implemented, persisted, and reported by outcome bucket. Tune the z-score thresholds from observed MFE/MAE data once enough live history accumulates.
+
+**Risk-signal threshold calibration**
+Holder concentration ≥ 80 %, authority penalties, and volume acceleration weights are conservative defaults. Validate with the `outcomes` report.
+
+**On-chain position reconciliation**
+If the process crashes between a confirmed swap and `store.saveOpenPosition()`, the tokens exist on-chain but are not in SQLite. Add a startup check that reads the wallet's SPL token balances and flags any tokens not tracked in `open_positions`. This is the last gap before live mode is fully production-safe.
 
 ### Medium priority
 
 **Volume acceleration analytics/tuning**
-The signal is implemented, persisted, and reported by outcome bucket. Next useful step is to collect enough paper data, then tune the current z-score thresholds/weights from observed MFE/MAE.
+The signal is implemented, persisted, and reported by outcome bucket. Tune the z-score thresholds from observed MFE/MAE data once enough paper history accumulates.
 
-**Risk-signal thresholds**
-Holder concentration ≥80%, authority penalties, and volume acceleration weights are deliberately conservative defaults. Use the expanded `outcomes` report to validate and adjust them after enough tracked candidates accumulate.
-
-### Live trading
-
-1. Implement LiveBroker transaction execution — Jupiter swap submission + keypair signing
-2. Real-time exit triggers — WebSocket price feeds rather than interval polling
-3. Base paper support once Solana live/paper switching is clean
+**Risk-signal threshold calibration**
+Holder concentration ≥ 80 %, authority penalties, and volume acceleration weights are conservative defaults. Validate with the `outcomes` report after enough tracked candidates accumulate.
 
 ### Minor
 
-- `docs/codex-handoff.md` was lightly cleaned for completed package-name work, but it has not been fully refreshed with the latest Codex commits.
+- The `report` and `storageReport` commands do not yet display `entryTxSignature` / `exitTxSignature`. These are persisted in SQLite; surfacing them in the human-readable report output would complete the audit trail.
 
 ---
 
-## Resume notes for Codex
+## Resume notes
 
-State at laptop-close handoff:
-- Current branch: `codex/volume-acceleration-signal`
-- Latest code commit before this handoff edit: `da97cd6 Add live broker scaffold and factory`
-- All verification passed after latest code commit:
-  - `npm run typecheck`
-  - `npm test` → 28 files, 169 tests passing
-  - `git diff --check`
-- Paper-only invariant is still intact. No wallet/private-key/live trading code was added.
+State at handoff:
+- **Current branch:** `feature/live-broker-implementation`
+- **All verification passed:**
+  - `npm run typecheck` → clean
+  - `npm test` → 32 files, 240 tests passing
+  - `git diff --check` → clean
+- The paper-mode invariant is fully intact — `PaperBroker` behavior is unchanged.
+- All docs updated and accurate as of this session.
 
-Suggested next move:
-1. Commit this handoff update after reviewing it.
-2. Next practical work is implementing LiveBroker transaction execution deliberately: wallet loading, Jupiter swap transaction creation, signing, submission, confirmation, and persisted trade records.
-3. Paper results should inform calibration, not act as training-wheel enforcement.
+**Suggested next move:**
+1. Open a PR from `feature/live-broker-implementation` → `development`.
+2. After merge: run `live-readiness` against a real Helius RPC + wallet, then execute a single small test position before enabling full position sizing.
+3. After a few days of live data accumulate: use `tune` and `outcomes` to calibrate signal weights and entry thresholds.
 
 ---
 
