@@ -65,6 +65,7 @@ Built on updated `development` after the prior Codex branch was merged/pulled, o
 | Commit | What |
 |---|---|
 | `585e986` Add volume acceleration scoring signal | Added `src/bot/volumeAcceleration.ts` to compute current 5m volume against recent per-token baseline snapshots. `pumpProcess` reads the last 30 minutes from `token_volume_snapshots` before saving the current score, attaches `volumeAcceleration5mZ` and `volumeAccelerationSamples`, and both active strategies add modest bonuses for z≥1/z≥2 or a risk for sharp deceleration. `scored_candidates` now persists `volume_acceleration_5m_z` and `volume_acceleration_samples`; retry preserves the fields. No-history behavior is unchanged. |
+| `2577d69` Add signal buckets to outcome analytics | `outcomes` now groups MFE/MAE by authority status, holder concentration, and volume acceleration buckets. `loadScoredOutcomeStats()` projects the persisted signal columns so the report can validate whether held authorities, high top-five concentration, or acceleration/deceleration correlate with paper outcomes. |
 
 ---
 
@@ -126,17 +127,14 @@ No paper-trading architecture blockers currently called out. Keep paper-only val
 
 ### Medium priority
 
-**Holder concentration analytics**
-The check is implemented and persisted. Next useful step is analytics/reporting: add outcome/stat breakdowns for `top5_holder_pct` buckets so paper results can validate whether the ≥80% block threshold is too strict or too loose.
-
-**Authority flag analytics**
-`mint_authority_revoked` and `freeze_authority_revoked` are queryable now. Add stats/outcome groupings so we can answer, "did held authorities underperform?" without ad hoc SQL.
-
 **Volume acceleration analytics/tuning**
-The signal is implemented and persisted. Next useful step is analytics: bucket outcomes by `volume_acceleration_5m_z` and use paper results to tune the current z-score thresholds/weights.
+The signal is implemented, persisted, and reported by outcome bucket. Next useful step is to collect enough paper data, then tune the current z-score thresholds/weights from observed MFE/MAE.
 
 **Tune apply UX**
 `tune --apply` currently applies concrete global config recommendations only. It intentionally skips ambiguous ranges and does not write strategy-specific overrides. Future work: support strategy-specific suggestions once `tune` is strategy-aware.
+
+**Risk-signal thresholds**
+Holder concentration ≥80%, authority penalties, and volume acceleration weights are deliberately conservative defaults. Use the expanded `outcomes` report to validate and adjust them after enough tracked candidates accumulate.
 
 ### Live trading (after paper is validated)
 
@@ -155,16 +153,16 @@ The signal is implemented and persisted. Next useful step is analytics: bucket o
 
 State at laptop-close handoff:
 - Current branch: `codex/volume-acceleration-signal`
-- Latest code commit before this handoff edit: `585e986 Add volume acceleration scoring signal`
+- Latest code commit before this handoff edit: `2577d69 Add signal buckets to outcome analytics`
 - All verification passed after latest code commit:
   - `npm run typecheck`
-  - `npm test` → 25 files, 155 tests passing
+  - `npm test` → 25 files, 157 tests passing
   - `git diff --check`
 - Paper-only invariant is still intact. No wallet/private-key/live trading code was added.
 
 Suggested next move:
 1. Commit this handoff update after reviewing it.
-2. Continue with analytics/reporting for queryable risk/signal fields: authority flags, holder concentration buckets, and volume acceleration buckets.
+2. Next practical work is strategy-aware `tune` / `tune --apply`, or collecting paper data and using the expanded `outcomes` report to tune signal thresholds.
 3. Do not start live trading implementation until paper results justify it.
 
 ---
