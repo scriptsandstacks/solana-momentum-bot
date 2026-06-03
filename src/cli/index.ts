@@ -41,6 +41,14 @@ import {
   renderRecoverySummary,
   RECOVERY_STRATEGY_ID,
 } from '../execution/positionRecovery.js';
+import {
+  findMostRecentWalletBuy,
+  recoveredBuyEntryPriceUsd,
+} from '../execution/solanaTransactionHistory.js';
+import {
+  inspectSubmittedLiveExecution,
+  renderIncompleteLiveExecutions,
+} from '../execution/liveExecutionJournal.js';
 import { fetchPumpPortalMarketCandidates } from '../bot/pumpCandidates.js';
 import type { ExitRules } from '../bot/exitPositions.js';
 import type { TradingStrategy } from '../strategies/types.js';
@@ -123,10 +131,10 @@ const program = new Command();
 
 program
   .name('hermes-paper-bot')
-  .description('Solana-first, multi-chain-ready paper trading bot')
+  .description('Solana memecoin trading bot with paper and live execution')
   .option('-c, --config <path>', 'config file path', 'config.yaml');
 
-program.command('scan').description('Scan enabled chains and print scored candidates').action(async () => {
+program.command('scan').description('Scan Solana and print scored candidates').action(async () => {
   const config = loadConfigFromFile(program.opts().config);
   const store = new SqliteStore();
   const candidates = config.chains.solana.enabled ? await scanSolanaCandidates(config.chains.solana) : [];
@@ -193,6 +201,64 @@ program
     }
   });
 
+program
+  .command('journal')
+  .description('List submitted or confirmed live executions that still require reconciliation')
+  .action(() => {
+    const store = new SqliteStore();
+    try {
+      const report = renderIncompleteLiveExecutions(store.listIncompleteLiveExecutions());
+      process.stdout.write(report ? `${report}\n` : 'No incomplete live executions.\n');
+    } finally {
+      store.close();
+    }
+  });
+
+program
+  .command('journal-resolve')
+  .description('Resolve an RPC-proven failed or expired submitted live execution')
+  .argument('<id>', 'live execution journal id')
+  .option('--yes', 'resolve without interactive confirmation', false)
+  .action(async (id: string, options: { yes: boolean }) => {
+    const config = loadConfigFromFile(program.opts().config);
+    const solana = config.chains.solana;
+    const rpcUrl = solana.rpcUrlEnv ? process.env[solana.rpcUrlEnv] : undefined;
+    if (!rpcUrl) {
+      throw new Error(`Solana RPC URL env var "${solana.rpcUrlEnv ?? 'rpcUrlEnv'}" is not set.`);
+    }
+
+    const store = new SqliteStore();
+    try {
+      const entry = store.getLiveExecutionJournalEntry(id);
+      if (!entry) throw new Error(`No live execution journal entry found for "${id}".`);
+
+      const resolution = await inspectSubmittedLiveExecution({ entry, rpcUrl });
+      process.stdout.write(`${resolution.reason}\n`);
+      if (!resolution.resolvable) return;
+
+      if (!options.yes) {
+        if (!process.stdin.isTTY) {
+          throw new Error('Non-interactive shell — re-run with --yes to resolve this journal entry.');
+        }
+        const rl = createInterface({ input, output });
+        try {
+          const answer = await rl.question(`Mark journal entry "${id}" failed? Type "yes" to continue: `);
+          if (answer.trim().toLowerCase() !== 'yes') {
+            process.stdout.write('No changes applied.\n');
+            return;
+          }
+        } finally {
+          rl.close();
+        }
+      }
+
+      store.recordLiveExecutionFailed(id, resolution.reason);
+      process.stdout.write(`Resolved journal entry "${id}" as failed.\n`);
+    } finally {
+      store.close();
+    }
+  });
+
 program.command('paper').description('Run one paper-trading scan cycle').action(async () => {
   const config = loadConfigFromFile(program.opts().config);
   const store = new SqliteStore();
@@ -230,7 +296,7 @@ program.command('report').description('Print persisted scan, position, and trade
 
 program
   .command('stats')
-  .description('Aggregate paper-trade performance: expectancy, win rate, and PnL by reason / score / source / strategy')
+  .description('Aggregate trade performance: expectancy, win rate, and PnL by reason / score / source / strategy')
   .action(() => {
     const store = new SqliteStore();
     const analytics = computeTradeAnalytics(store.loadClosedTradeStats());
@@ -392,7 +458,10 @@ program
     const store = new SqliteStore();
     try {
       const openPositions = store.loadOpenPositions();
+      const incompleteExecutions = store.listIncompleteLiveExecutions();
       process.stdout.write(`Querying on-chain balances for wallet ${walletPublicKey}...\n`);
+      const journalReport = renderIncompleteLiveExecutions(incompleteExecutions);
+      if (journalReport) process.stdout.write(`${journalReport}\n`);
 
       const reconciliation = await reconcileWalletPositions({ walletPublicKey, openPositions, rpcUrl });
 
@@ -412,7 +481,12 @@ program
       // ── build recovery plan ─────────────────────────────────────────────
       const staleRecoveries = reconciliation.stale.map((s) => {
         const pos = openPositions.find((p) => p.id === s.positionId)!;
-        return buildStaleRecovery(pos);
+        const recovery = buildStaleRecovery(pos);
+        const journalClose = incompleteExecutions.find(
+          (entry) => entry.side === 'close' && entry.positionId === s.positionId && entry.signature,
+        );
+        if (journalClose?.signature) recovery.trade.exitTxSignature = journalClose.signature;
+        return recovery;
       });
 
       // Fetch market prices for orphaned holdings.
@@ -421,13 +495,44 @@ program
         ? await fetchPumpPortalMarketCandidates(orphanedMints)
         : [];
       const candidateByMint = new Map(marketCandidates.map((c) => [c.address, c]));
+      const recoveryDeps = createLiveBrokerDeps(keypair, {
+        rpcUrl,
+        maxSlippageBps: solana.maxSlippageBps,
+        priorityFeeLamports: solana.priorityFeeLamports ?? 'auto',
+      });
 
       let nextSeq = store.getNextPositionSeq();
-      const orphanedRecoveries = reconciliation.orphaned.map((h) => {
+      const orphanedRecoveries = await Promise.all(reconciliation.orphaned.map(async (h) => {
         const candidate = candidateByMint.get(h.mint);
         const positionId = `live-${nextSeq++}`;
+        try {
+          const buy = await findMostRecentWalletBuy({
+            walletPublicKey,
+            outputMint: h.mint,
+            rpcUrl,
+          });
+          if (buy) {
+            const decimals = await recoveryDeps.getTokenDecimals(h.mint);
+            const entryPriceUsd = recoveredBuyEntryPriceUsd(buy, decimals);
+            if (entryPriceUsd !== undefined) {
+              let entryNetworkFeeUsd: number | undefined;
+              try {
+                entryNetworkFeeUsd = (buy.networkFeeLamports / 1e9) * await recoveryDeps.getSolPriceUsd();
+              } catch {
+                // Raw lamports are still preserved when SOL/USD is unavailable.
+              }
+              return buildOrphanedRecovery(h, candidate, positionId, new Date(), {
+                buy,
+                entryPriceUsd,
+                entryNetworkFeeUsd,
+              });
+            }
+          }
+        } catch {
+          // Recovery remains useful when history is unavailable or pruned.
+        }
         return buildOrphanedRecovery(h, candidate, positionId);
-      });
+      }));
 
       // ── show plan ───────────────────────────────────────────────────────
       const plan = renderRecoveryPlan(staleRecoveries, orphanedRecoveries);
@@ -596,7 +701,7 @@ program
 
 program
   .command('run')
-  .description('Continuously watch PumpPortal and process pending events into paper candidates')
+  .description('Continuously watch PumpPortal, process candidates, and manage paper or live positions')
   .option('--api-key <key>', 'PumpPortal API key; defaults to PUMPPORTAL_API_KEY')
   .option('--process-interval-seconds <seconds>', 'seconds between PumpPortal processing passes', '30')
   .option('--exit-interval-seconds <seconds>', 'seconds between exit-only passes in live mode (default: 10 in live, disabled in paper)')
@@ -637,6 +742,12 @@ program
       const liveBroker = await buildLiveBrokerIfNeeded(config, store);
       if (liveBroker) {
         log(`[run] mode=live wallet=${config.chains.solana.walletFile} cash=$${liveBroker.getCashUsd().toFixed(2)} positions=${liveBroker.getOpenPositions().length}`);
+        const incompleteExecutions = store.listIncompleteLiveExecutions();
+        const journalReport = renderIncompleteLiveExecutions(incompleteExecutions);
+        if (journalReport) {
+          for (const line of journalReport.split('\n')) log(line);
+          throw new Error('Incomplete live executions must be reconciled before starting the run loop. Use recover-positions and verify the journal entries.');
+        }
 
         // Cross-check on-chain SPL balances against SQLite open_positions so any
         // crash-recovery gaps are surfaced before the run loop starts.
@@ -652,6 +763,15 @@ program
           });
           const report = renderReconciliationReport(reconciliation);
           if (report) log(report);
+          if (reconciliation.stale.length > 0) {
+            const quarantined = liveBroker.quarantinePositions(
+              reconciliation.stale.map((position) => position.positionId),
+            );
+            log(
+              `[reconcile] QUARANTINED ${quarantined} stale live position(s); ` +
+              'automated exits and new entries are blocked until recover-positions resolves them',
+            );
+          }
         }
       }
 

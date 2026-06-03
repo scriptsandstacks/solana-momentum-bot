@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { PumpPortalRawEvent } from '../discovery/pumpPortal.js';
 import { FRESH_LAUNCH_MOMENTUM_STRATEGY_ID } from '../strategies/freshLaunchMomentum.js';
 import type { OpportunityScore, PaperPosition, PaperTrade, TokenCandidate } from '../types/domain.js';
+import type { LiveExecutionJournalEntry } from '../execution/liveExecutionJournal.js';
 
 interface RecentScoreRow {
   chain: string;
@@ -38,6 +39,9 @@ interface OpenPositionRow {
   quantity: number;
   score: number;
   openedAt: string;
+  entryTxSignature?: string;
+  entryNetworkFeeUsd?: number;
+  entryNetworkFeeLamports?: number;
 }
 
 interface ClosedTradeRow {
@@ -55,6 +59,11 @@ interface ClosedTradeRow {
   pnlPct: number;
   openedAt: string;
   closedAt: string;
+  exitTxSignature?: string;
+  entryNetworkFeeUsd?: number;
+  exitNetworkFeeUsd?: number;
+  entryNetworkFeeLamports?: number;
+  exitNetworkFeeLamports?: number;
 }
 
 interface PumpPortalEventRow {
@@ -343,15 +352,20 @@ export class SqliteStore {
   }
 
   saveOpenPosition(position: PaperPosition): void {
-    this.db
-      .prepare(
+    const insert = this.db.prepare(
         `INSERT OR REPLACE INTO open_positions (
           id, chain, address, symbol, strategy_id, token_json, score, entry_price_usd, quantity, opened_at,
-          high_water_mark_usd, last_mark_usd, entry_tx_signature
+          high_water_mark_usd, last_mark_usd, entry_tx_signature, entry_network_fee_usd, entry_network_fee_lamports
         ) VALUES (@id, @chain, @address, @symbol, @strategyId, @tokenJson, @score, @entryPriceUsd, @quantity, @openedAt,
-          @highWaterMarkUsd, @lastMarkUsd, @entryTxSignature)`,
-      )
-      .run({
+          @highWaterMarkUsd, @lastMarkUsd, @entryTxSignature, @entryNetworkFeeUsd, @entryNetworkFeeLamports)`,
+      );
+    const markPersisted = this.db.prepare(
+      `UPDATE live_execution_journal
+       SET status = 'persisted', updated_at = @updatedAt
+       WHERE signature = @signature AND side = 'open'`,
+    );
+    const transaction = this.db.transaction(() => {
+      insert.run({
         id: position.id,
         chain: position.token.chain,
         address: position.token.address,
@@ -368,7 +382,14 @@ export class SqliteStore {
         highWaterMarkUsd: position.highWaterMarkUsd,
         lastMarkUsd: position.lastMarkUsd ?? position.entryPriceUsd,
         entryTxSignature: position.entryTxSignature ?? null,
+        entryNetworkFeeUsd: position.entryNetworkFeeUsd ?? null,
+        entryNetworkFeeLamports: position.entryNetworkFeeLamports ?? null,
       });
+      if (position.entryTxSignature) {
+        markPersisted.run({ signature: position.entryTxSignature, updatedAt: new Date().toISOString() });
+      }
+    });
+    transaction();
   }
 
   // Full reconstruction of open positions (including the embedded token and
@@ -378,7 +399,8 @@ export class SqliteStore {
       .prepare(
         `SELECT id, token_json as tokenJson, strategy_id as strategyId, score, entry_price_usd as entryPriceUsd,
                 quantity, opened_at as openedAt, high_water_mark_usd as highWaterMarkUsd,
-                last_mark_usd as lastMarkUsd, entry_tx_signature as entryTxSignature
+                last_mark_usd as lastMarkUsd, entry_tx_signature as entryTxSignature,
+                entry_network_fee_usd as entryNetworkFeeUsd, entry_network_fee_lamports as entryNetworkFeeLamports
          FROM open_positions
          ORDER BY opened_at ASC`,
       )
@@ -393,6 +415,8 @@ export class SqliteStore {
       highWaterMarkUsd: number | null;
       lastMarkUsd: number | null;
       entryTxSignature: string | null;
+      entryNetworkFeeUsd: number | null;
+      entryNetworkFeeLamports: number | null;
     }>;
 
     return rows.map((row) => {
@@ -409,6 +433,8 @@ export class SqliteStore {
         highWaterMarkUsd: row.highWaterMarkUsd ?? row.entryPriceUsd,
         lastMarkUsd: row.lastMarkUsd ?? row.entryPriceUsd,
         entryTxSignature: row.entryTxSignature ?? undefined,
+        entryNetworkFeeUsd: row.entryNetworkFeeUsd ?? undefined,
+        entryNetworkFeeLamports: row.entryNetworkFeeLamports ?? undefined,
       };
     });
   }
@@ -453,7 +479,8 @@ export class SqliteStore {
     return this.db
       .prepare(
         `SELECT id, chain, address, symbol, strategy_id as strategyId, entry_price_usd as entryPriceUsd,
-                quantity, score, opened_at as openedAt
+                quantity, score, opened_at as openedAt, entry_tx_signature as entryTxSignature,
+                entry_network_fee_usd as entryNetworkFeeUsd, entry_network_fee_lamports as entryNetworkFeeLamports
          FROM open_positions
          ORDER BY opened_at ASC`,
       )
@@ -465,12 +492,19 @@ export class SqliteStore {
       `INSERT OR IGNORE INTO closed_trades (
         position_id, chain, address, symbol, strategy_id, token_json, score, source, entry_price_usd, exit_price_usd,
         quantity, reason, exit_price_source, pnl_usd, pnl_pct, opened_at, closed_at, exit_tx_signature
+        , entry_network_fee_usd, exit_network_fee_usd, entry_network_fee_lamports, exit_network_fee_lamports
       ) VALUES (
         @positionId, @chain, @address, @symbol, @strategyId, @tokenJson, @score, @source, @entryPriceUsd, @exitPriceUsd,
-        @quantity, @reason, @exitPriceSource, @pnlUsd, @pnlPct, @openedAt, @closedAt, @exitTxSignature
+        @quantity, @reason, @exitPriceSource, @pnlUsd, @pnlPct, @openedAt, @closedAt, @exitTxSignature,
+        @entryNetworkFeeUsd, @exitNetworkFeeUsd, @entryNetworkFeeLamports, @exitNetworkFeeLamports
       )`,
     );
     const removeOpen = this.db.prepare('DELETE FROM open_positions WHERE id = ?');
+    const markPersisted = this.db.prepare(
+      `UPDATE live_execution_journal
+       SET status = 'persisted', updated_at = @updatedAt
+       WHERE signature = @signature AND side = 'close'`,
+    );
 
     const transaction = this.db.transaction(() => {
       insert.run({
@@ -492,10 +526,75 @@ export class SqliteStore {
         openedAt: trade.openedAt.toISOString(),
         closedAt: trade.closedAt.toISOString(),
         exitTxSignature: trade.exitTxSignature ?? null,
+        entryNetworkFeeUsd: trade.entryNetworkFeeUsd ?? null,
+        exitNetworkFeeUsd: trade.exitNetworkFeeUsd ?? null,
+        entryNetworkFeeLamports: trade.entryNetworkFeeLamports ?? null,
+        exitNetworkFeeLamports: trade.exitNetworkFeeLamports ?? null,
       });
       removeOpen.run(trade.positionId);
+      if (trade.exitTxSignature) {
+        markPersisted.run({ signature: trade.exitTxSignature, updatedAt: new Date().toISOString() });
+      }
     });
     transaction();
+  }
+
+  recordLiveExecutionPrepared(
+    entry: Omit<LiveExecutionJournalEntry, 'signature' | 'status' | 'error' | 'createdAt' | 'updatedAt'>,
+  ): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO live_execution_journal (
+          id, side, position_id, mint, symbol, input_mint, output_mint,
+          input_amount_base_units, status, created_at, updated_at
+        ) VALUES (
+          @id, @side, @positionId, @mint, @symbol, @inputMint, @outputMint,
+          @inputAmountBaseUnits, 'prepared', @createdAt, @updatedAt
+        )`,
+      )
+      .run({ ...entry, createdAt: now, updatedAt: now });
+  }
+
+  recordLiveExecutionSubmitted(id: string, signature: string, lastValidBlockHeight?: number): void {
+    this.updateLiveExecutionJournal(id, 'submitted', { signature, lastValidBlockHeight });
+  }
+
+  recordLiveExecutionConfirmed(id: string): void {
+    this.updateLiveExecutionJournal(id, 'confirmed');
+  }
+
+  recordLiveExecutionFailed(id: string, error: string): void {
+    this.updateLiveExecutionJournal(id, 'failed', { error });
+  }
+
+  listIncompleteLiveExecutions(): LiveExecutionJournalEntry[] {
+    return this.db
+      .prepare(
+        `SELECT id, side, position_id as positionId, mint, symbol,
+                input_mint as inputMint, output_mint as outputMint,
+                input_amount_base_units as inputAmountBaseUnits,
+                signature, last_valid_block_height as lastValidBlockHeight,
+                status, error, created_at as createdAt, updated_at as updatedAt
+         FROM live_execution_journal
+         WHERE status IN ('submitted', 'confirmed')
+         ORDER BY created_at ASC`,
+      )
+      .all() as LiveExecutionJournalEntry[];
+  }
+
+  getLiveExecutionJournalEntry(id: string): LiveExecutionJournalEntry | undefined {
+    return this.db
+      .prepare(
+        `SELECT id, side, position_id as positionId, mint, symbol,
+                input_mint as inputMint, output_mint as outputMint,
+                input_amount_base_units as inputAmountBaseUnits,
+                signature, last_valid_block_height as lastValidBlockHeight,
+                status, error, created_at as createdAt, updated_at as updatedAt
+         FROM live_execution_journal
+         WHERE id = ?`,
+      )
+      .get(id) as LiveExecutionJournalEntry | undefined;
   }
 
   // All closed trades projected to the fields performance analytics needs. Not
@@ -517,7 +616,9 @@ export class SqliteStore {
         `SELECT position_id as positionId, chain, address, symbol, strategy_id as strategyId,
                 entry_price_usd as entryPriceUsd, exit_price_usd as exitPriceUsd,
                 quantity, reason, exit_price_source as exitPriceSource, pnl_usd as pnlUsd, pnl_pct as pnlPct,
-                opened_at as openedAt, closed_at as closedAt
+                opened_at as openedAt, closed_at as closedAt, exit_tx_signature as exitTxSignature,
+                entry_network_fee_usd as entryNetworkFeeUsd, exit_network_fee_usd as exitNetworkFeeUsd,
+                entry_network_fee_lamports as entryNetworkFeeLamports, exit_network_fee_lamports as exitNetworkFeeLamports
          FROM closed_trades
          ORDER BY closed_at DESC
          LIMIT ?`,
@@ -799,6 +900,26 @@ export class SqliteStore {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_closed_trades_position_id ON closed_trades(position_id);
 
+      CREATE TABLE IF NOT EXISTS live_execution_journal (
+        id TEXT PRIMARY KEY,
+        side TEXT NOT NULL,
+        position_id TEXT NOT NULL,
+        mint TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        input_mint TEXT NOT NULL,
+        output_mint TEXT NOT NULL,
+        input_amount_base_units TEXT NOT NULL,
+        signature TEXT,
+        last_valid_block_height INTEGER,
+        status TEXT NOT NULL,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_live_execution_journal_status ON live_execution_journal(status, created_at);
+      CREATE INDEX IF NOT EXISTS idx_live_execution_journal_signature ON live_execution_journal(signature);
+
       CREATE TABLE IF NOT EXISTS pumpportal_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         event_type TEXT NOT NULL,
@@ -821,11 +942,18 @@ export class SqliteStore {
     this.addColumnIfMissing('open_positions', 'high_water_mark_usd', 'REAL');
     this.addColumnIfMissing('open_positions', 'last_mark_usd', 'REAL');
     this.addColumnIfMissing('open_positions', 'entry_tx_signature', 'TEXT');
+    this.addColumnIfMissing('open_positions', 'entry_network_fee_usd', 'REAL');
+    this.addColumnIfMissing('open_positions', 'entry_network_fee_lamports', 'INTEGER');
     this.addColumnIfMissing('closed_trades', 'strategy_id', "TEXT NOT NULL DEFAULT 'freshLaunchMomentum'");
     this.addColumnIfMissing('closed_trades', 'exit_price_source', "TEXT NOT NULL DEFAULT 'fresh'");
     this.addColumnIfMissing('closed_trades', 'score', 'INTEGER NOT NULL DEFAULT 0');
     this.addColumnIfMissing('closed_trades', 'source', "TEXT NOT NULL DEFAULT ''");
     this.addColumnIfMissing('closed_trades', 'exit_tx_signature', 'TEXT');
+    this.addColumnIfMissing('closed_trades', 'entry_network_fee_usd', 'REAL');
+    this.addColumnIfMissing('closed_trades', 'exit_network_fee_usd', 'REAL');
+    this.addColumnIfMissing('closed_trades', 'entry_network_fee_lamports', 'INTEGER');
+    this.addColumnIfMissing('closed_trades', 'exit_network_fee_lamports', 'INTEGER');
+    this.addColumnIfMissing('live_execution_journal', 'last_valid_block_height', 'INTEGER');
     this.addColumnIfMissing('scored_candidates', 'route_input_mint', 'TEXT');
     this.addColumnIfMissing('scored_candidates', 'route_input_symbol', 'TEXT');
     this.addColumnIfMissing('scored_candidates', 'strategy_id', "TEXT NOT NULL DEFAULT 'freshLaunchMomentum'");
@@ -856,5 +984,30 @@ export class SqliteStore {
     if (!columns.some((existing) => existing.name === column)) {
       this.db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`).run();
     }
+  }
+
+  private updateLiveExecutionJournal(
+    id: string,
+    status: LiveExecutionJournalEntry['status'],
+    values: { signature?: string; error?: string; lastValidBlockHeight?: number } = {},
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE live_execution_journal
+         SET status = @status,
+             signature = COALESCE(@signature, signature),
+             last_valid_block_height = COALESCE(@lastValidBlockHeight, last_valid_block_height),
+             error = COALESCE(@error, error),
+             updated_at = @updatedAt
+         WHERE id = @id`,
+      )
+      .run({
+        id,
+        status,
+        signature: values.signature ?? null,
+        error: values.error ?? null,
+        lastValidBlockHeight: values.lastValidBlockHeight ?? null,
+        updatedAt: new Date().toISOString(),
+      });
   }
 }

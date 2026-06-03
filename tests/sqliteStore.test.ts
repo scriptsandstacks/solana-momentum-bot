@@ -180,6 +180,8 @@ describe('SqliteStore', () => {
       quantity: 2500,
       openedAt: new Date('2026-01-01T00:00:00Z'),
       highWaterMarkUsd: 0.012,
+      entryNetworkFeeUsd: 0.002,
+      entryNetworkFeeLamports: 10_000,
     };
     const trade: PaperTrade = {
       positionId: position.id,
@@ -194,6 +196,10 @@ describe('SqliteStore', () => {
       exitPriceSource: 'fresh',
       pnlUsd: 12.5,
       pnlPct: 50,
+      entryNetworkFeeUsd: 0.002,
+      exitNetworkFeeUsd: 0.004,
+      entryNetworkFeeLamports: 10_000,
+      exitNetworkFeeLamports: 20_000,
     };
 
     store.saveOpenPosition(position);
@@ -207,6 +213,10 @@ describe('SqliteStore', () => {
       pnlUsd: 12.5,
       exitPriceSource: 'fresh',
       strategyId: 'freshLaunchMomentum',
+      entryNetworkFeeUsd: 0.002,
+      exitNetworkFeeUsd: 0.004,
+      entryNetworkFeeLamports: 10_000,
+      exitNetworkFeeLamports: 20_000,
     });
     // Analytics projection carries the entry score, discovery source, and strategy id.
     const stats = store.loadClosedTradeStats();
@@ -219,6 +229,78 @@ describe('SqliteStore', () => {
       exitPriceSource: 'fresh',
       pnlUsd: 12.5,
     });
+    store.close();
+  });
+
+  it('tracks incomplete live executions and marks them persisted with position writes', () => {
+    const store = createStore();
+    store.recordLiveExecutionPrepared({
+      id: 'open:live-1:test',
+      side: 'open',
+      positionId: 'live-1',
+      mint: candidate.address,
+      symbol: candidate.symbol,
+      inputMint: 'usdc',
+      outputMint: candidate.address,
+      inputAmountBaseUnits: '25000000',
+    });
+    store.recordLiveExecutionSubmitted('open:live-1:test', 'sig-open', 12345);
+    store.recordLiveExecutionConfirmed('open:live-1:test');
+
+    expect(store.listIncompleteLiveExecutions()).toMatchObject([{
+      side: 'open',
+      positionId: 'live-1',
+      signature: 'sig-open',
+      lastValidBlockHeight: 12345,
+      status: 'confirmed',
+    }]);
+
+    store.saveOpenPosition({
+      id: 'live-1',
+      token: candidate,
+      score: 82,
+      entryPriceUsd: 0.01,
+      quantity: 2500,
+      openedAt: new Date('2026-01-01T00:00:00Z'),
+      highWaterMarkUsd: 0.01,
+      entryTxSignature: 'sig-open',
+    });
+
+    expect(store.listIncompleteLiveExecutions()).toHaveLength(0);
+    store.close();
+  });
+
+  it('marks close journal rows persisted with the closed trade transaction', () => {
+    const store = createStore();
+    store.recordLiveExecutionPrepared({
+      id: 'close:live-1:test',
+      side: 'close',
+      positionId: 'live-1',
+      mint: candidate.address,
+      symbol: candidate.symbol,
+      inputMint: candidate.address,
+      outputMint: 'usdc',
+      inputAmountBaseUnits: '2500000000',
+    });
+    store.recordLiveExecutionSubmitted('close:live-1:test', 'sig-close', 23456);
+    store.recordLiveExecutionConfirmed('close:live-1:test');
+
+    store.saveClosedTrade({
+      positionId: 'live-1',
+      token: candidate,
+      score: 82,
+      entryPriceUsd: 0.01,
+      exitPriceUsd: 0.015,
+      quantity: 2500,
+      openedAt: new Date('2026-01-01T00:00:00Z'),
+      closedAt: new Date('2026-01-01T00:05:00Z'),
+      reason: 'manual',
+      pnlUsd: 12.5,
+      pnlPct: 50,
+      exitTxSignature: 'sig-close',
+    });
+
+    expect(store.listIncompleteLiveExecutions()).toHaveLength(0);
     store.close();
   });
 
@@ -303,6 +385,8 @@ describe('SqliteStore', () => {
       openedAt: new Date('2026-01-01T00:00:00Z'),
       highWaterMarkUsd: 0.018,
       lastMarkUsd: 0.016,
+      entryNetworkFeeUsd: 0.002,
+      entryNetworkFeeLamports: 10_000,
     };
     const closed: PaperTrade = {
       positionId: 'paper-1',
@@ -324,7 +408,13 @@ describe('SqliteStore', () => {
 
     const loaded = store.loadOpenPositions();
     expect(loaded).toHaveLength(1);
-    expect(loaded[0]).toMatchObject({ id: 'paper-3', highWaterMarkUsd: 0.018, lastMarkUsd: 0.016 });
+    expect(loaded[0]).toMatchObject({
+      id: 'paper-3',
+      highWaterMarkUsd: 0.018,
+      lastMarkUsd: 0.016,
+      entryNetworkFeeUsd: 0.002,
+      entryNetworkFeeLamports: 10_000,
+    });
     expect(loaded[0].token).toMatchObject({ address: 'token-1', symbol: 'MOCK' });
     expect(loaded[0].openedAt).toBeInstanceOf(Date);
 

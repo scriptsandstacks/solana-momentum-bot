@@ -25,6 +25,9 @@ interface OpenPositionRow {
   quantity: number;
   score: number;
   openedAt: string;
+  entryTxSignature?: string;
+  entryNetworkFeeUsd?: number;
+  entryNetworkFeeLamports?: number;
 }
 
 interface ClosedTradeRow {
@@ -42,6 +45,11 @@ interface ClosedTradeRow {
   pnlUsd: number;
   pnlPct: number;
   closedAt: string;
+  exitTxSignature?: string;
+  entryNetworkFeeUsd?: number;
+  exitNetworkFeeUsd?: number;
+  entryNetworkFeeLamports?: number;
+  exitNetworkFeeLamports?: number;
 }
 
 interface PumpPortalEventRow {
@@ -90,8 +98,12 @@ export function renderStorageReport(input: StorageReportInput): string {
   lines.push('', 'Open positions:');
   for (const row of input.openPositions.slice(0, 10)) {
     const strat = row.strategyId ? ` strat=${row.strategyId}` : '';
+    const entryTx = row.entryTxSignature ? ` entryTx=${row.entryTxSignature}` : '';
+    const entryFee = row.entryNetworkFeeUsd !== undefined
+      ? ` entryFee=$${row.entryNetworkFeeUsd.toFixed(4)}`
+      : row.entryNetworkFeeLamports !== undefined ? ` entryFee=${row.entryNetworkFeeLamports}lamports` : '';
     lines.push(
-      `${row.id} ${row.chain.toUpperCase()} ${row.symbol}${strat} entry=$${row.entryPriceUsd} qty=${row.quantity.toFixed(4)} score=${row.score} opened=${row.openedAt}`,
+      `${row.id} ${row.chain.toUpperCase()} ${row.symbol}${strat} entry=$${row.entryPriceUsd} qty=${row.quantity.toFixed(4)} score=${row.score}${entryFee}${entryTx} opened=${row.openedAt}`,
     );
   }
 
@@ -99,8 +111,14 @@ export function renderStorageReport(input: StorageReportInput): string {
   for (const row of input.closedTrades.slice(0, 10)) {
     const source = row.exitPriceSource ? ` source=${row.exitPriceSource}` : '';
     const strat = row.strategyId ? ` strat=${row.strategyId}` : '';
+    const exitTx = row.exitTxSignature ? ` exitTx=${row.exitTxSignature}` : '';
+    const networkFeeUsd = (row.entryNetworkFeeUsd ?? 0) + (row.exitNetworkFeeUsd ?? 0);
+    const networkFeeLamports = (row.entryNetworkFeeLamports ?? 0) + (row.exitNetworkFeeLamports ?? 0);
+    const fees = networkFeeUsd > 0
+      ? ` networkFees=$${networkFeeUsd.toFixed(4)}`
+      : networkFeeLamports > 0 ? ` networkFees=${networkFeeLamports}lamports` : '';
     lines.push(
-      `${row.positionId} ${row.chain.toUpperCase()} ${row.symbol}${strat} reason=${row.reason}${source} pnl=$${row.pnlUsd.toFixed(2)} pct=${row.pnlPct.toFixed(2)} closed=${row.closedAt}`,
+      `${row.positionId} ${row.chain.toUpperCase()} ${row.symbol}${strat} reason=${row.reason}${source} pnl=$${row.pnlUsd.toFixed(2)} pct=${row.pnlPct.toFixed(2)}${fees}${exitTx} closed=${row.closedAt}`,
     );
   }
 

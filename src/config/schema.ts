@@ -50,8 +50,6 @@ export const botConfigSchema = z.object({
   mode: z.enum(['paper', 'live']),
   chains: z.object({
     solana: chainConfigSchema,
-    base: chainConfigSchema,
-    ethereum: chainConfigSchema,
   }),
   paper: z.object({
     startingBalanceUsd: z.number().positive(),

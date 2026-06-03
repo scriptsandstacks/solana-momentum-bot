@@ -6,9 +6,12 @@ import fs from 'node:fs';
 import { Keypair, VersionedTransaction } from '@solana/web3.js';
 import type { LiveBrokerDeps } from './liveBroker.js';
 import { getJupiterQuoteForSwap, getJupiterSwapTransaction } from './jupiterSwap.js';
+import { parseConfirmedSwapFill, type ParsedSolanaTransaction } from './solanaTransactionFill.js';
+import { confirmSolanaTransaction } from './solanaConfirmation.js';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const USDT_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY2Sr6MGt9RktwD';
 const SOL_DECIMALS = 9;
 const USDC_DECIMALS = 6;
 
@@ -26,7 +29,7 @@ export function loadSolanaKeypair(walletFile: string): Keypair {
   return Keypair.fromSecretKey(Uint8Array.from(raw));
 }
 
-// Query the on-chain SOL balance and return it in USD using the Jupiter price.
+// Query the wallet's supported route-input inventory and value it in USD.
 export async function queryWalletCashUsd(
   publicKey: string,
   deps: Pick<LiveBrokerDeps, 'getSolPriceUsd'>,
@@ -35,7 +38,9 @@ export async function queryWalletCashUsd(
   const lamports = (await rpcRequest('getBalance', [publicKey])) as { value: number };
   const solBalance = lamports.value / 1e9;
   const solPriceUsd = await deps.getSolPriceUsd();
-  return solBalance * solPriceUsd;
+  const usdcBalance = Number(await querySplTokenBalance(publicKey, USDC_MINT, rpcRequest)) / 1e6;
+  const usdtBalance = Number(await querySplTokenBalance(publicKey, USDT_MINT, rpcRequest)) / 1e6;
+  return solBalance * solPriceUsd + usdcBalance + usdtBalance;
 }
 
 export function createLiveBrokerDeps(keypair: Keypair, config: LiveDepsConfig): LiveBrokerDeps {
@@ -55,6 +60,7 @@ export function createLiveBrokerDeps(keypair: Keypair, config: LiveDepsConfig): 
   };
 
   const decimalsCache = new Map<string, number>();
+  const publicKey = keypair.publicKey.toBase58();
 
   const getTokenDecimals = async (mint: string): Promise<number> => {
     if (mint === SOL_MINT) return SOL_DECIMALS;
@@ -81,11 +87,19 @@ export function createLiveBrokerDeps(keypair: Keypair, config: LiveDepsConfig): 
   };
 
   return {
-    getPublicKey: () => keypair.publicKey.toBase58(),
+    getPublicKey: () => publicKey,
 
     getSolPriceUsd,
 
     getTokenDecimals,
+
+    async getWalletBalance(mint) {
+      if (mint === SOL_MINT) {
+        const result = await rpcRequest('getBalance', [publicKey]) as { value?: number };
+        return BigInt(result.value ?? 0);
+      }
+      return querySplTokenBalance(publicKey, mint, rpcRequest);
+    },
 
     async getJupiterQuote(params) {
       return getJupiterQuoteForSwap({
@@ -102,7 +116,7 @@ export function createLiveBrokerDeps(keypair: Keypair, config: LiveDepsConfig): 
         prioritizationFeeLamports: config.priorityFeeLamports,
       });
       if (!tx) throw new Error('Jupiter swap endpoint did not return a transaction');
-      return { swapTransaction: tx };
+      return tx;
     },
 
     async signAndSendTransaction(transactionBase64) {
@@ -117,22 +131,62 @@ export function createLiveBrokerDeps(keypair: Keypair, config: LiveDepsConfig): 
       return signature as string;
     },
 
-    async confirmTransaction(signature) {
-      const deadline = Date.now() + 90_000;
+    async confirmTransaction(signature, lastValidBlockHeight) {
+      await confirmSolanaTransaction({
+        signature,
+        lastValidBlockHeight,
+        rpcRequest,
+      });
+    },
+
+    async getConfirmedSwapFill(params) {
+      const deadline = Date.now() + 15_000;
       while (Date.now() < deadline) {
-        const result = await rpcRequest('getSignatureStatuses', [
-          [signature],
-          { searchTransactionHistory: true },
+        const result = await rpcRequest('getTransaction', [
+          params.signature,
+          {
+            commitment: 'confirmed',
+            encoding: 'jsonParsed',
+            maxSupportedTransactionVersion: 0,
+          },
         ]);
-        const statuses = (result as { value: Array<{ confirmationStatus?: string; err?: unknown } | null> }).value;
-        const status = statuses?.[0];
-        if (status?.err) throw new Error(`Transaction ${signature} failed on-chain: ${JSON.stringify(status.err)}`);
-        if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
-          return;
+        if (result) {
+          return parseConfirmedSwapFill(result as ParsedSolanaTransaction, params);
         }
-        await new Promise<void>((resolve) => setTimeout(resolve, 2_000));
+        await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
       }
-      throw new Error(`Transaction ${signature} was not confirmed within 90 seconds`);
+      throw new Error(`Confirmed transaction ${params.signature} was not available for fill accounting within 15 seconds`);
     },
   };
+}
+
+async function querySplTokenBalance(
+  publicKey: string,
+  mint: string,
+  rpcRequest: (method: string, params: unknown[]) => Promise<unknown>,
+): Promise<bigint> {
+  const result = await rpcRequest('getTokenAccountsByOwner', [
+    publicKey,
+    { mint },
+    { encoding: 'jsonParsed' },
+  ]) as {
+    value?: Array<{
+      account?: {
+        data?: {
+          parsed?: {
+            info?: {
+              tokenAmount?: { amount?: string };
+            };
+          };
+        };
+      };
+    }>;
+  };
+
+  let total = 0n;
+  for (const row of result.value ?? []) {
+    const amount = row.account?.data?.parsed?.info?.tokenAmount?.amount;
+    if (amount !== undefined) total += BigInt(amount);
+  }
+  return total;
 }

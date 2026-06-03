@@ -11,22 +11,6 @@ const validConfig = {
       minVolume5mUsd: 5000,
       maxSlippageBps: 500,
     },
-    base: {
-      enabled: false,
-      walletFile: './wallet/chain-ethereum.txt',
-      rpcUrlEnv: 'BASE_RPC_URL',
-      minLiquidityUsd: 15000,
-      minVolume5mUsd: 7500,
-      maxSlippageBps: 500,
-    },
-    ethereum: {
-      enabled: false,
-      walletFile: './wallet/chain-ethereum.txt',
-      rpcUrlEnv: 'ETHEREUM_RPC_URL',
-      minLiquidityUsd: 50000,
-      minVolume5mUsd: 20000,
-      maxSlippageBps: 300,
-    },
   },
   paper: {
     startingBalanceUsd: 1000,
@@ -46,13 +30,11 @@ const validConfig = {
 };
 
 describe('config loading', () => {
-  it('parses the multi-chain paper trading config', () => {
+  it('parses the Solana paper trading config', () => {
     const config = parseConfig(validConfig);
 
     expect(config.mode).toBe('paper');
     expect(config.chains.solana.enabled).toBe(true);
-    expect(config.chains.base.enabled).toBe(false);
-    expect(config.chains.ethereum.enabled).toBe(false);
     expect(config.paper.positionSizeUsd).toBe(25);
     expect(config.strategies.freshLaunchMomentum.minScoreToEnter).toBeUndefined();
   });
@@ -70,13 +52,11 @@ describe('config loading', () => {
   });
 
   it('accepts a paper-mode config without walletFile', () => {
-    const { solana, base, ethereum } = validConfig.chains;
+    const { solana } = validConfig.chains;
     const config = parseConfig({
       ...validConfig,
       chains: {
         solana: { ...solana, walletFile: undefined },
-        base: { ...base, walletFile: undefined },
-        ethereum: { ...ethereum, walletFile: undefined },
       },
     });
 

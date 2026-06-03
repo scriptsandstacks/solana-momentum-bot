@@ -1,7 +1,5 @@
 import type { TokenCandidate } from '../types/domain.js';
 
-type DexChainId = 'solana' | 'base' | 'ethereum';
-
 interface DexScreenerPair {
   chainId: string;
   pairAddress?: string;
@@ -18,10 +16,8 @@ interface DexScreenerPair {
   pairCreatedAt?: number;
 }
 
-function toSupportedChain(chainId: string): DexChainId {
-  if (chainId === 'solana' || chainId === 'base' || chainId === 'ethereum') {
-    return chainId;
-  }
+function toSupportedChain(chainId: string): 'solana' {
+  if (chainId === 'solana') return chainId;
   throw new Error(`Unsupported DexScreener chain: ${chainId}`);
 }
 

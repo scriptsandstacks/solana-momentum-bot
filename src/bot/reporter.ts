@@ -49,9 +49,14 @@ export function consoleReporter(onLog: (message: string) => void): Reporter {
     },
     onPositionClosed({ trade }) {
       const pct = trade.pnlPct >= 0 ? `+${trade.pnlPct.toFixed(1)}%` : `${trade.pnlPct.toFixed(1)}%`;
+      const networkFeeUsd = (trade.entryNetworkFeeUsd ?? 0) + (trade.exitNetworkFeeUsd ?? 0);
+      const networkFeeLamports = (trade.entryNetworkFeeLamports ?? 0) + (trade.exitNetworkFeeLamports ?? 0);
+      const fees = networkFeeUsd > 0
+        ? ` networkFees=$${networkFeeUsd.toFixed(4)}`
+        : networkFeeLamports > 0 ? ` networkFees=${networkFeeLamports}lamports` : '';
       onLog(
         `[trade] CLOSED ${trade.positionId} ${trade.token.chain.toUpperCase()} ${trade.token.symbol}` +
-          ` reason=${trade.reason} pnl=${sign(trade.pnlUsd)} (${pct}) hold=${holdMins(trade)}`,
+          ` reason=${trade.reason} pnl=${sign(trade.pnlUsd)} (${pct})${fees} hold=${holdMins(trade)}`,
       );
     },
     onCycleSummary({ cashUsd, openPositions, closedThisCycle, openedThisCycle, eventsProcessed }) {

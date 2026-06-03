@@ -12,18 +12,6 @@ function configWithStrategies(strategies: unknown) {
         minVolume5mUsd: 5_000,
         maxSlippageBps: 500,
       },
-      base: {
-        enabled: false,
-        minLiquidityUsd: 15_000,
-        minVolume5mUsd: 7_500,
-        maxSlippageBps: 500,
-      },
-      ethereum: {
-        enabled: false,
-        minLiquidityUsd: 50_000,
-        minVolume5mUsd: 20_000,
-        maxSlippageBps: 300,
-      },
     },
     paper: {
       startingBalanceUsd: 1000,
