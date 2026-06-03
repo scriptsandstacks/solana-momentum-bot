@@ -70,7 +70,7 @@ function makeDeps(overrides: Partial<LiveBrokerDeps> = {}): LiveBrokerDeps {
   return {
     getPublicKey: () => 'wallet-pubkey-1111',
     getSolPriceUsd: async () => 150,
-    getWalletBalance: async () => 1_000_000_000_000n,
+    getWalletBalance: async (mint) => mint === USDC_MINT ? 1_000_000_000_000n : 0n,
     getTokenDecimals: async (mint) => (mint === USDC_MINT ? 6 : 6),
     getJupiterQuote: async ({ outputMint }) =>
       outputMint === 'token-mint-abc123' ? (buyQuote as any) : (sellQuote as any),
@@ -240,7 +240,11 @@ describe('LiveBroker.openPosition', () => {
       return makeQuote('25000000000', '24875000', 'token-mint-abc123', USDC_MINT) as any;
     });
 
-    const broker = makeBroker({}, { getSolPriceUsd, getJupiterQuote });
+    const broker = makeBroker({}, {
+      getSolPriceUsd,
+      getJupiterQuote,
+      getWalletBalance: async (mint) => mint === SOL_MINT ? 1_000_000_000_000n : 0n,
+    });
     const candidate = makeCandidate({ routeInputMint: SOL_MINT, routeInputSymbol: 'SOL' });
     const position = await broker.openPosition(candidate, 80);
 
@@ -251,15 +255,29 @@ describe('LiveBroker.openPosition', () => {
     expect(quoteCall[0].amount).toBeCloseTo(125_000_000, -3);
   });
 
-  it('refuses to submit when the selected route input mint balance is insufficient', async () => {
+  it('refuses to submit when no supported route input can fund the position', async () => {
     const signAndSendTransaction = vi.fn(async () => 'should-not-submit');
     const broker = makeBroker({}, {
-      getWalletBalance: async (mint) => mint === USDC_MINT ? 10_000_000n : 1_000_000_000_000n,
+      getWalletBalance: async () => 10_000_000n,
       signAndSendTransaction,
     });
 
-    await expect(broker.openPosition(makeCandidate(), 80)).rejects.toThrow('insufficient USDC balance');
+    await expect(broker.openPosition(makeCandidate(), 80)).rejects.toThrow('no funded Jupiter buy route');
     expect(signAndSendTransaction).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a funded route input when the discovery-time route is unfunded', async () => {
+    const getJupiterQuote = vi.fn(makeDeps().getJupiterQuote);
+    const broker = makeBroker({}, {
+      getWalletBalance: async (mint) => mint === USDC_MINT ? 1_000_000_000_000n : 0n,
+      getJupiterQuote,
+    });
+    const candidate = makeCandidate({ routeInputMint: SOL_MINT, routeInputSymbol: 'SOL' });
+
+    await broker.openPosition(candidate, 80);
+
+    expect(getJupiterQuote).toHaveBeenCalledOnce();
+    expect(getJupiterQuote.mock.calls[0][0].inputMint).toBe(USDC_MINT);
   });
 
   it('attaches entry tx signature to the returned position', async () => {

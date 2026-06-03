@@ -99,8 +99,10 @@ When `mode: live` is set in the config, the bot executes real on-chain swaps:
 Exit trades follow the same path in reverse (token → USDC). Every trade's transaction signature is stored in SQLite so it can be verified on-chain.
 
 The live cash figure values the wallet's supported funding assets: SOL, USDC,
-and USDT. Before a buy is submitted, the bot also verifies that the wallet has
-enough of the exact input mint selected by the lowest-slippage Jupiter route.
+and USDT. Before a buy is submitted, the bot re-quotes the actual position size
+across the inputs the wallet can fund and selects the route that returns the
+most tokens. An unfunded discovery-time route therefore does not prevent a
+funded alternative from trading.
 
 At startup in live mode, the bot cross-checks the wallet's on-chain token
 balances against its SQLite records. Any discrepancy is logged immediately, and

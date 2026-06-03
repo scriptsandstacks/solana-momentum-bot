@@ -12,7 +12,7 @@ Technical reference for the Hermes trading bot. Covers architecture, data flow, 
 | Live trading (Solana) | Implemented — Jupiter swap execution, keypair signing, on-chain confirmation |
 | Supported chain | Solana only |
 | Persistence | SQLite (auto-migrating schema) |
-| Test coverage | 38 files, 279 tests |
+| Test coverage | 38 files, 280 tests |
 
 ---
 
@@ -208,8 +208,8 @@ Executes real on-chain trades via Jupiter and the Solana RPC.
 
 **`openPosition` flow:**
 1. `canOpenPosition()` — checks wallet config, cash, cap, daily-loss limit
-2. `getWalletBalance` — verifies the selected route input mint can fund the buy
-3. `getJupiterQuoteForSwap` — sized to `positionSizeUsd` (USDC direct, SOL via price query)
+2. `getWalletBalance` — finds which SOL, USDC, and USDT route inputs can fund the buy
+3. `getJupiterQuoteForSwap` — quotes the actual `positionSizeUsd` across funded inputs and selects the highest token output
 4. `getJupiterSwapTransaction` — POST to `/swap/v1/swap`
 5. `VersionedTransaction.deserialize` → `tx.sign([keypair])` → `sendTransaction` RPC
 6. `confirmTransaction` — polls `getSignatureStatuses` and aborts immediately if Jupiter's `lastValidBlockHeight` is exceeded; 90 s remains the fallback timeout
@@ -508,7 +508,7 @@ src/
 
 ```bash
 npm install
-npm test              # 38 test files, 279 tests
+npm test              # 38 test files, 280 tests
 npm run typecheck     # must be clean before committing
 npm run bot -- --help # show all commands
 ```

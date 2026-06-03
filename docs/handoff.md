@@ -7,7 +7,7 @@
 ## Current Health
 
 ```text
-npm test          -> 38 files, 279 tests passing
+npm test          -> 38 files, 280 tests passing
 npm run typecheck -> clean
 git diff --check  -> clean
 ```
@@ -36,7 +36,7 @@ Live mode is functionally implemented:
 - Interactive `recover-positions` support for stale and orphaned positions
 - Startup quarantine for stale positions: no repeated exits or new entries until recovery
 - Stablecoin-funded orphan buys recovered from recent wallet transaction history
-- Live cash inventory values SOL, USDC, and USDT; opens verify the selected input mint balance before submission
+- Live cash inventory values SOL, USDC, and USDT; opens select the best actual-size quote among funded inputs
 
 ## Important Files
 

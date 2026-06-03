@@ -82,6 +82,12 @@ export interface LiveBrokerState {
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const USDT_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY2Sr6MGt9RktwD';
+const ROUTE_INPUTS = [
+  { mint: SOL_MINT },
+  { mint: USDC_MINT },
+  { mint: USDT_MINT },
+] as const;
 
 function utcDayKey(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -194,15 +200,17 @@ export class LiveBroker implements ExecutionBroker {
     }
 
     const id = `live-${this.nextId++}`;
-    // Determine input mint and amount from the pre-computed best route.
-    const inputMint = candidate.routeInputMint ?? SOL_MINT;
-    const inputAmountBaseUnits = await this.resolveInputAmount(inputMint, sizeUsd, getSolPriceUsd);
-    const walletInputBalance = await getWalletBalance(inputMint);
-    if (walletInputBalance < BigInt(inputAmountBaseUnits)) {
-      throw new Error(
-        `Cannot open position: insufficient ${candidate.routeInputSymbol ?? inputMint} balance for selected route`,
-      );
-    }
+    // Discovery-time route probes are small and wallet-agnostic. Re-quote the
+    // actual position size across funded inputs so live execution uses the best
+    // route the wallet can really pay for.
+    const { inputMint, inputAmountBaseUnits, quote } = await this.selectFundedBuyRoute(
+      candidate,
+      sizeUsd,
+      maxSlippage,
+      getWalletBalance,
+      getSolPriceUsd,
+      getJupiterQuote,
+    );
     const journalId = `open:${id}:${randomUUID()}`;
     this.journal?.recordLiveExecutionPrepared({
       id: journalId,
@@ -218,15 +226,6 @@ export class LiveBroker implements ExecutionBroker {
     let submitted = false;
     let confirmed = false;
     try {
-      // Fresh quote sized exactly to the position.
-      const quote = await getJupiterQuote({
-        inputMint,
-        outputMint: candidate.address,
-        amount: inputAmountBaseUnits,
-        slippageBps: maxSlippage,
-      });
-      if (!quote) throw new Error(`No Jupiter buy route for ${candidate.symbol} (${candidate.address})`);
-
       // Build → sign → submit → confirm.
       const { swapTransaction, lastValidBlockHeight } = await getSwapTransaction({
         quoteResponse: quote,
@@ -441,6 +440,70 @@ export class LiveBroker implements ExecutionBroker {
   }
 
   // ─── private helpers ───────────────────────────────────────────────────────
+
+  private async selectFundedBuyRoute(
+    candidate: TokenCandidate,
+    sizeUsd: number,
+    maxSlippageBps: number,
+    getWalletBalance: LiveBrokerDeps['getWalletBalance'],
+    getSolPriceUsd: LiveBrokerDeps['getSolPriceUsd'],
+    getJupiterQuote: LiveBrokerDeps['getJupiterQuote'],
+  ): Promise<{
+    inputMint: string;
+    inputAmountBaseUnits: number;
+    quote: JupiterQuoteResponse;
+  }> {
+    const preferredMint = candidate.routeInputMint;
+    const routes = [...ROUTE_INPUTS].sort((a, b) => {
+      if (a.mint === preferredMint) return -1;
+      if (b.mint === preferredMint) return 1;
+      return 0;
+    });
+    const fundedQuotes: Array<{
+      inputMint: string;
+      inputAmountBaseUnits: number;
+      quote: JupiterQuoteResponse;
+      outputAmount: bigint;
+    }> = [];
+    let hasFundedInput = false;
+
+    for (const route of routes) {
+      const walletBalance = await getWalletBalance(route.mint);
+      if (walletBalance <= 0n) continue;
+      const inputAmountBaseUnits = await this.resolveInputAmount(route.mint, sizeUsd, getSolPriceUsd);
+      if (walletBalance < BigInt(inputAmountBaseUnits)) continue;
+      hasFundedInput = true;
+
+      const quote = await getJupiterQuote({
+        inputMint: route.mint,
+        outputMint: candidate.address,
+        amount: inputAmountBaseUnits,
+        slippageBps: maxSlippageBps,
+      });
+      if (!quote) continue;
+
+      try {
+        fundedQuotes.push({
+          inputMint: route.mint,
+          inputAmountBaseUnits,
+          quote,
+          outputAmount: BigInt(quote.outAmount),
+        });
+      } catch {
+        // Ignore malformed quote amounts and keep checking funded alternatives.
+      }
+    }
+
+    fundedQuotes.sort((a, b) => a.outputAmount > b.outputAmount ? -1 : a.outputAmount < b.outputAmount ? 1 : 0);
+    const best = fundedQuotes[0];
+    if (!best) {
+      if (hasFundedInput) {
+        throw new Error(`No Jupiter buy route for ${candidate.symbol} (${candidate.address})`);
+      }
+      throw new Error(`Cannot open position: no funded Jupiter buy route for ${candidate.symbol} (${candidate.address})`);
+    }
+    return best;
+  }
 
   // Convert a USD position size to the base-unit amount of the input mint.
   private async resolveInputAmount(
