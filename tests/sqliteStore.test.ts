@@ -232,6 +232,77 @@ describe('SqliteStore', () => {
     store.close();
   });
 
+  it('tracks incomplete live executions and marks them persisted with position writes', () => {
+    const store = createStore();
+    store.recordLiveExecutionPrepared({
+      id: 'open:live-1:test',
+      side: 'open',
+      positionId: 'live-1',
+      mint: candidate.address,
+      symbol: candidate.symbol,
+      inputMint: 'usdc',
+      outputMint: candidate.address,
+      inputAmountBaseUnits: '25000000',
+    });
+    store.recordLiveExecutionSubmitted('open:live-1:test', 'sig-open');
+    store.recordLiveExecutionConfirmed('open:live-1:test');
+
+    expect(store.listIncompleteLiveExecutions()).toMatchObject([{
+      side: 'open',
+      positionId: 'live-1',
+      signature: 'sig-open',
+      status: 'confirmed',
+    }]);
+
+    store.saveOpenPosition({
+      id: 'live-1',
+      token: candidate,
+      score: 82,
+      entryPriceUsd: 0.01,
+      quantity: 2500,
+      openedAt: new Date('2026-01-01T00:00:00Z'),
+      highWaterMarkUsd: 0.01,
+      entryTxSignature: 'sig-open',
+    });
+
+    expect(store.listIncompleteLiveExecutions()).toHaveLength(0);
+    store.close();
+  });
+
+  it('marks close journal rows persisted with the closed trade transaction', () => {
+    const store = createStore();
+    store.recordLiveExecutionPrepared({
+      id: 'close:live-1:test',
+      side: 'close',
+      positionId: 'live-1',
+      mint: candidate.address,
+      symbol: candidate.symbol,
+      inputMint: candidate.address,
+      outputMint: 'usdc',
+      inputAmountBaseUnits: '2500000000',
+    });
+    store.recordLiveExecutionSubmitted('close:live-1:test', 'sig-close');
+    store.recordLiveExecutionConfirmed('close:live-1:test');
+
+    store.saveClosedTrade({
+      positionId: 'live-1',
+      token: candidate,
+      score: 82,
+      entryPriceUsd: 0.01,
+      exitPriceUsd: 0.015,
+      quantity: 2500,
+      openedAt: new Date('2026-01-01T00:00:00Z'),
+      closedAt: new Date('2026-01-01T00:05:00Z'),
+      reason: 'manual',
+      pnlUsd: 12.5,
+      pnlPct: 50,
+      exitTxSignature: 'sig-close',
+    });
+
+    expect(store.listIncompleteLiveExecutions()).toHaveLength(0);
+    store.close();
+  });
+
   it('prunes old scored candidates but keeps mints that led to a trade', () => {
     const store = createStore();
 

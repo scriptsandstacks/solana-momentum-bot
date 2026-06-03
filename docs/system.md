@@ -12,7 +12,7 @@ Technical reference for the Hermes trading bot. Covers architecture, data flow, 
 | Live trading (Solana) | Implemented — Jupiter swap execution, keypair signing, on-chain confirmation |
 | Supported chain | Solana only |
 | Persistence | SQLite (auto-migrating schema) |
-| Test coverage | 36 files, 262 tests |
+| Test coverage | 37 files, 270 tests |
 
 ---
 
@@ -258,6 +258,26 @@ the original transaction signature, block time, token fill, network fee, and
 exact USD entry basis. If history is unavailable, pruned, or SOL-funded, recovery
 falls back to the current market price and labels the basis as approximate.
 
+## Live execution journal
+
+**File:** `src/execution/liveExecutionJournal.ts`
+
+Every live open and close is written to `live_execution_journal` before the swap
+is submitted. The journal advances through:
+
+```text
+prepared -> submitted -> confirmed -> persisted
+```
+
+Pre-submission errors become `failed`. Errors after submission remain
+`submitted`, and errors after confirmation remain `confirmed`, because RPC
+uncertainty must not be mistaken for on-chain failure.
+
+`saveOpenPosition` and `saveClosedTrade` mark matching journal rows `persisted`
+inside the same SQLite transaction as the position/trade write. Live startup
+blocks when submitted or confirmed rows remain incomplete, and directs the
+operator to `recover-positions` before new risk is opened.
+
 ---
 
 ## Analytics and reporting
@@ -344,6 +364,8 @@ entry_network_fee_usd, exit_network_fee_usd  ← live mode only
 
 **`pumpportal_events`** — raw WebSocket events with processing status
 
+**`live_execution_journal`** — live swap intent, signature, state, and audit history
+
 ---
 
 ## Configuration reference
@@ -421,6 +443,7 @@ src/
   execution/broker.ts                 ExecutionBroker interface (paper/live seam)
   execution/brokerFactory.ts          createExecutionBroker factory
   execution/liveBroker.ts             LiveBroker — on-chain Jupiter swap execution
+  execution/liveExecutionJournal.ts   Persistent execution journal types/reporting
   execution/liveDeps.ts               Production deps: keypair, sign/send, confirm, decimals
   execution/jupiterSwap.ts            Jupiter quote + swap transaction API
   execution/solanaConfirmation.ts     Block-height-aware confirmation policy
@@ -470,7 +493,7 @@ src/
 
 ```bash
 npm install
-npm test              # 36 test files, 262 tests
+npm test              # 37 test files, 270 tests
 npm run typecheck     # must be clean before committing
 npm run bot -- --help # show all commands
 ```

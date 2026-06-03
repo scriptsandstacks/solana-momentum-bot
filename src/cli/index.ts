@@ -45,6 +45,7 @@ import {
   findMostRecentWalletBuy,
   recoveredBuyEntryPriceUsd,
 } from '../execution/solanaTransactionHistory.js';
+import { renderIncompleteLiveExecutions } from '../execution/liveExecutionJournal.js';
 import { fetchPumpPortalMarketCandidates } from '../bot/pumpCandidates.js';
 import type { ExitRules } from '../bot/exitPositions.js';
 import type { TradingStrategy } from '../strategies/types.js';
@@ -396,7 +397,10 @@ program
     const store = new SqliteStore();
     try {
       const openPositions = store.loadOpenPositions();
+      const incompleteExecutions = store.listIncompleteLiveExecutions();
       process.stdout.write(`Querying on-chain balances for wallet ${walletPublicKey}...\n`);
+      const journalReport = renderIncompleteLiveExecutions(incompleteExecutions);
+      if (journalReport) process.stdout.write(`${journalReport}\n`);
 
       const reconciliation = await reconcileWalletPositions({ walletPublicKey, openPositions, rpcUrl });
 
@@ -416,7 +420,12 @@ program
       // ── build recovery plan ─────────────────────────────────────────────
       const staleRecoveries = reconciliation.stale.map((s) => {
         const pos = openPositions.find((p) => p.id === s.positionId)!;
-        return buildStaleRecovery(pos);
+        const recovery = buildStaleRecovery(pos);
+        const journalClose = incompleteExecutions.find(
+          (entry) => entry.side === 'close' && entry.positionId === s.positionId && entry.signature,
+        );
+        if (journalClose?.signature) recovery.trade.exitTxSignature = journalClose.signature;
+        return recovery;
       });
 
       // Fetch market prices for orphaned holdings.
@@ -672,6 +681,12 @@ program
       const liveBroker = await buildLiveBrokerIfNeeded(config, store);
       if (liveBroker) {
         log(`[run] mode=live wallet=${config.chains.solana.walletFile} cash=$${liveBroker.getCashUsd().toFixed(2)} positions=${liveBroker.getOpenPositions().length}`);
+        const incompleteExecutions = store.listIncompleteLiveExecutions();
+        const journalReport = renderIncompleteLiveExecutions(incompleteExecutions);
+        if (journalReport) {
+          for (const line of journalReport.split('\n')) log(line);
+          throw new Error('Incomplete live executions must be reconciled before starting the run loop. Use recover-positions and verify the journal entries.');
+        }
 
         // Cross-check on-chain SPL balances against SQLite open_positions so any
         // crash-recovery gaps are surfaced before the run loop starts.

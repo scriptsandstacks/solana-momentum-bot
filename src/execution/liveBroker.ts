@@ -5,6 +5,8 @@ import type { BrokerStateStore } from '../paper/restoreBroker.js';
 import { startOfUtcDayIso } from '../paper/restoreBroker.js';
 import type { JupiterQuoteResponse } from './jupiterSwap.js';
 import type { ConfirmedSwapFill } from './solanaTransactionFill.js';
+import type { LiveExecutionJournalStore } from './liveExecutionJournal.js';
+import { randomUUID } from 'node:crypto';
 
 // ─── injectable dependencies ────────────────────────────────────────────────
 // Every network call the LiveBroker makes is injected so unit tests can run
@@ -101,6 +103,7 @@ export class LiveBroker implements ExecutionBroker {
     // required deps are absent — the production path uses LiveBroker.restore().
     private readonly deps: Partial<LiveBrokerDeps> = {},
     state?: Partial<LiveBrokerState>,
+    private readonly journal?: LiveExecutionJournalStore,
   ) {
     this.cashUsd = state?.initialCashUsd ?? 0;
     this.realizedPnlUsd = state?.realizedPnlUsd ?? 0;
@@ -126,6 +129,7 @@ export class LiveBroker implements ExecutionBroker {
     now = new Date(),
   ): LiveBroker {
     const sinceIso = startOfUtcDayIso(now);
+    const journal = isLiveExecutionJournalStore(store) ? store : undefined;
     return new LiveBroker(options, deps, {
       openPositions: store.loadOpenPositions(),
       realizedPnlUsd: store.getRealizedPnlUsd(),
@@ -133,7 +137,7 @@ export class LiveBroker implements ExecutionBroker {
       dailyRealizedPnlAt: now,
       nextPositionSeq: store.getNextPositionSeq(),
       initialCashUsd,
-    });
+    }, journal);
   }
 
   canOpenPosition(now = new Date(), requiredSizeUsd?: number): { ok: boolean; reason?: string } {
@@ -178,61 +182,85 @@ export class LiveBroker implements ExecutionBroker {
       throw new Error('LiveBroker: execution deps are not configured — use LiveBroker.restore() with createLiveBrokerDeps()');
     }
 
+    const id = `live-${this.nextId++}`;
     // Determine input mint and amount from the pre-computed best route.
     const inputMint = candidate.routeInputMint ?? SOL_MINT;
     const inputAmountBaseUnits = await this.resolveInputAmount(inputMint, sizeUsd, getSolPriceUsd);
-
-    // Fresh quote sized exactly to the position.
-    const quote = await getJupiterQuote({
+    const journalId = `open:${id}:${randomUUID()}`;
+    this.journal?.recordLiveExecutionPrepared({
+      id: journalId,
+      side: 'open',
+      positionId: id,
+      mint: candidate.address,
+      symbol: candidate.symbol,
       inputMint,
       outputMint: candidate.address,
-      amount: inputAmountBaseUnits,
-      slippageBps: maxSlippage,
-    });
-    if (!quote) throw new Error(`No Jupiter buy route for ${candidate.symbol} (${candidate.address})`);
-
-    // Build → sign → submit → confirm.
-    const { swapTransaction, lastValidBlockHeight } = await getSwapTransaction({
-      quoteResponse: quote,
-      userPublicKey: getPublicKey(),
-      wrapAndUnwrapSol: true,
-    });
-    const signature = await signAndSendTransaction(swapTransaction);
-    await confirmTransaction(signature, lastValidBlockHeight);
-
-    const owner = getPublicKey();
-    const fill = await getConfirmedSwapFill({
-      signature,
-      owner,
-      inputMint,
-      outputMint: candidate.address,
+      inputAmountBaseUnits: String(inputAmountBaseUnits),
     });
 
-    // Compute the entry basis from confirmed wallet balance deltas.
-    const decimals = await getTokenDecimals(candidate.address);
-    const tokensReceived = Number(fill.outputAmount) / Math.pow(10, decimals);
-    const actualSpentUsd = await this.resolveSpentUsd(inputMint, Number(fill.inputAmount), getSolPriceUsd);
-    const entryNetworkFeeUsd = await this.resolveNetworkFeeUsd(fill.networkFeeLamports, getSolPriceUsd);
-    const effectiveEntryPriceUsd = actualSpentUsd / tokensReceived;
+    let submitted = false;
+    let confirmed = false;
+    try {
+      // Fresh quote sized exactly to the position.
+      const quote = await getJupiterQuote({
+        inputMint,
+        outputMint: candidate.address,
+        amount: inputAmountBaseUnits,
+        slippageBps: maxSlippage,
+      });
+      if (!quote) throw new Error(`No Jupiter buy route for ${candidate.symbol} (${candidate.address})`);
 
-    const id = `live-${this.nextId++}`;
-    const position: PaperPosition = {
-      id,
-      token: candidate,
-      score,
-      entryPriceUsd: effectiveEntryPriceUsd,
-      quantity: tokensReceived,
-      openedAt,
-      highWaterMarkUsd: candidate.priceUsd,
-      lastMarkUsd: candidate.priceUsd,
-      entryTxSignature: signature,
-      entryNetworkFeeUsd,
-      entryNetworkFeeLamports: fill.networkFeeLamports,
-    };
+      // Build → sign → submit → confirm.
+      const { swapTransaction, lastValidBlockHeight } = await getSwapTransaction({
+        quoteResponse: quote,
+        userPublicKey: getPublicKey(),
+        wrapAndUnwrapSol: true,
+      });
+      const signature = await signAndSendTransaction(swapTransaction);
+      this.journal?.recordLiveExecutionSubmitted(journalId, signature);
+      submitted = true;
+      await confirmTransaction(signature, lastValidBlockHeight);
+      this.journal?.recordLiveExecutionConfirmed(journalId);
+      confirmed = true;
 
-    this.cashUsd -= actualSpentUsd + (entryNetworkFeeUsd ?? 0);
-    this.openPositions.set(id, position);
-    return position;
+      const owner = getPublicKey();
+      const fill = await getConfirmedSwapFill({
+        signature,
+        owner,
+        inputMint,
+        outputMint: candidate.address,
+      });
+
+      // Compute the entry basis from confirmed wallet balance deltas.
+      const decimals = await getTokenDecimals(candidate.address);
+      const tokensReceived = Number(fill.outputAmount) / Math.pow(10, decimals);
+      const actualSpentUsd = await this.resolveSpentUsd(inputMint, Number(fill.inputAmount), getSolPriceUsd);
+      const entryNetworkFeeUsd = await this.resolveNetworkFeeUsd(fill.networkFeeLamports, getSolPriceUsd);
+      const effectiveEntryPriceUsd = actualSpentUsd / tokensReceived;
+
+      const position: PaperPosition = {
+        id,
+        token: candidate,
+        score,
+        entryPriceUsd: effectiveEntryPriceUsd,
+        quantity: tokensReceived,
+        openedAt,
+        highWaterMarkUsd: candidate.priceUsd,
+        lastMarkUsd: candidate.priceUsd,
+        entryTxSignature: signature,
+        entryNetworkFeeUsd,
+        entryNetworkFeeLamports: fill.networkFeeLamports,
+      };
+
+      this.cashUsd -= actualSpentUsd + (entryNetworkFeeUsd ?? 0);
+      this.openPositions.set(id, position);
+      return position;
+    } catch (error) {
+      if (!submitted && !confirmed) {
+        this.journal?.recordLiveExecutionFailed(journalId, error instanceof Error ? error.message : String(error));
+      }
+      throw error;
+    }
   }
 
   recordMark(positionId: string, priceUsd: number): PaperPosition {
@@ -266,69 +294,93 @@ export class LiveBroker implements ExecutionBroker {
     // Sell the entire tracked token quantity to USDC.
     const decimals = await getTokenDecimals(position.token.address);
     const tokenAmountBaseUnits = Math.round(position.quantity * Math.pow(10, decimals));
-
-    const quote = await getJupiterQuote({
-      inputMint: position.token.address,
-      outputMint: USDC_MINT,
-      amount: tokenAmountBaseUnits,
-      slippageBps: maxSlippage,
-    });
-    if (!quote) throw new Error(`No Jupiter sell route for ${position.token.symbol} (${position.token.address})`);
-
-    const { swapTransaction, lastValidBlockHeight } = await getSwapTransaction({
-      quoteResponse: quote,
-      userPublicKey: getPublicKey(),
-      wrapAndUnwrapSol: true,
-    });
-    const signature = await signAndSendTransaction(swapTransaction);
-    await confirmTransaction(signature, lastValidBlockHeight);
-
-    const fill = await getConfirmedSwapFill({
-      signature,
-      owner: getPublicKey(),
-      inputMint: position.token.address,
-      outputMint: USDC_MINT,
-    });
-
-    // Compute P&L from confirmed USDC wallet balance deltas.
-    const usdcReceived = Number(fill.outputAmount) / 1e6;
-    const exitNetworkFeeUsd = await this.resolveNetworkFeeUsd(fill.networkFeeLamports, getSolPriceUsd);
-    const entryNetworkFeeUsd = position.entryNetworkFeeUsd ?? 0;
-    const valuedExitNetworkFeeUsd = exitNetworkFeeUsd ?? 0;
-    const netExitPriceUsd = usdcReceived / position.quantity;
-    const entryValueUsd = position.entryPriceUsd * position.quantity;
-    const totalEntryCostUsd = entryValueUsd + entryNetworkFeeUsd;
-    const pnlUsd = usdcReceived - valuedExitNetworkFeeUsd - totalEntryCostUsd;
-    const pnlPct = (pnlUsd / totalEntryCostUsd) * 100;
-
-    const trade: PaperTrade = {
+    const journalId = `close:${positionId}:${randomUUID()}`;
+    this.journal?.recordLiveExecutionPrepared({
+      id: journalId,
+      side: 'close',
       positionId,
-      token: position.token,
-      score: position.score,
-      entryPriceUsd: position.entryPriceUsd,
-      exitPriceUsd: netExitPriceUsd,
-      quantity: position.quantity,
-      openedAt: position.openedAt,
-      closedAt,
-      reason,
-      exitPriceSource: 'fresh',
-      pnlUsd,
-      pnlPct,
-      exitTxSignature: signature,
-      entryNetworkFeeUsd,
-      exitNetworkFeeUsd,
-      entryNetworkFeeLamports: position.entryNetworkFeeLamports,
-      exitNetworkFeeLamports: fill.networkFeeLamports,
-    };
+      mint: position.token.address,
+      symbol: position.token.symbol,
+      inputMint: position.token.address,
+      outputMint: USDC_MINT,
+      inputAmountBaseUnits: String(tokenAmountBaseUnits),
+    });
 
-    this.openPositions.delete(positionId);
-    this.closedTrades.push(trade);
-    this.cashUsd += usdcReceived - valuedExitNetworkFeeUsd;
-    this.realizedPnlUsd += pnlUsd;
-    const dayKey = utcDayKey(closedAt);
-    this.dailyPnlByDay.set(dayKey, (this.dailyPnlByDay.get(dayKey) ?? 0) + pnlUsd);
+    let submitted = false;
+    let confirmed = false;
+    try {
+      const quote = await getJupiterQuote({
+        inputMint: position.token.address,
+        outputMint: USDC_MINT,
+        amount: tokenAmountBaseUnits,
+        slippageBps: maxSlippage,
+      });
+      if (!quote) throw new Error(`No Jupiter sell route for ${position.token.symbol} (${position.token.address})`);
 
-    return trade;
+      const { swapTransaction, lastValidBlockHeight } = await getSwapTransaction({
+        quoteResponse: quote,
+        userPublicKey: getPublicKey(),
+        wrapAndUnwrapSol: true,
+      });
+      const signature = await signAndSendTransaction(swapTransaction);
+      this.journal?.recordLiveExecutionSubmitted(journalId, signature);
+      submitted = true;
+      await confirmTransaction(signature, lastValidBlockHeight);
+      this.journal?.recordLiveExecutionConfirmed(journalId);
+      confirmed = true;
+
+      const fill = await getConfirmedSwapFill({
+        signature,
+        owner: getPublicKey(),
+        inputMint: position.token.address,
+        outputMint: USDC_MINT,
+      });
+
+      // Compute P&L from confirmed USDC wallet balance deltas.
+      const usdcReceived = Number(fill.outputAmount) / 1e6;
+      const exitNetworkFeeUsd = await this.resolveNetworkFeeUsd(fill.networkFeeLamports, getSolPriceUsd);
+      const entryNetworkFeeUsd = position.entryNetworkFeeUsd ?? 0;
+      const valuedExitNetworkFeeUsd = exitNetworkFeeUsd ?? 0;
+      const netExitPriceUsd = usdcReceived / position.quantity;
+      const entryValueUsd = position.entryPriceUsd * position.quantity;
+      const totalEntryCostUsd = entryValueUsd + entryNetworkFeeUsd;
+      const pnlUsd = usdcReceived - valuedExitNetworkFeeUsd - totalEntryCostUsd;
+      const pnlPct = (pnlUsd / totalEntryCostUsd) * 100;
+
+      const trade: PaperTrade = {
+        positionId,
+        token: position.token,
+        score: position.score,
+        entryPriceUsd: position.entryPriceUsd,
+        exitPriceUsd: netExitPriceUsd,
+        quantity: position.quantity,
+        openedAt: position.openedAt,
+        closedAt,
+        reason,
+        exitPriceSource: 'fresh',
+        pnlUsd,
+        pnlPct,
+        exitTxSignature: signature,
+        entryNetworkFeeUsd,
+        exitNetworkFeeUsd,
+        entryNetworkFeeLamports: position.entryNetworkFeeLamports,
+        exitNetworkFeeLamports: fill.networkFeeLamports,
+      };
+
+      this.openPositions.delete(positionId);
+      this.closedTrades.push(trade);
+      this.cashUsd += usdcReceived - valuedExitNetworkFeeUsd;
+      this.realizedPnlUsd += pnlUsd;
+      const dayKey = utcDayKey(closedAt);
+      this.dailyPnlByDay.set(dayKey, (this.dailyPnlByDay.get(dayKey) ?? 0) + pnlUsd);
+
+      return trade;
+    } catch (error) {
+      if (!submitted && !confirmed) {
+        this.journal?.recordLiveExecutionFailed(journalId, error instanceof Error ? error.message : String(error));
+      }
+      throw error;
+    }
   }
 
   // Return the Base58 public key of the trading wallet, or undefined when deps
@@ -401,4 +453,15 @@ export class LiveBroker implements ExecutionBroker {
       return undefined;
     }
   }
+}
+
+function isLiveExecutionJournalStore(store: unknown): store is LiveExecutionJournalStore {
+  return (
+    typeof store === 'object' &&
+    store !== null &&
+    typeof (store as LiveExecutionJournalStore).recordLiveExecutionPrepared === 'function' &&
+    typeof (store as LiveExecutionJournalStore).recordLiveExecutionSubmitted === 'function' &&
+    typeof (store as LiveExecutionJournalStore).recordLiveExecutionConfirmed === 'function' &&
+    typeof (store as LiveExecutionJournalStore).recordLiveExecutionFailed === 'function'
+  );
 }

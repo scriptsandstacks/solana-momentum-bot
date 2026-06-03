@@ -106,6 +106,11 @@ USD entry basis and transaction signature. If the transaction history is
 unavailable or the buy was funded with SOL, the recovery plan clearly labels the
 current-price entry basis as approximate.
 
+Every live swap is also written to a persistent execution journal before it is
+submitted. If the process stops after submission or confirmation but before the
+position or trade is saved, the next live startup refuses to open new risk until
+the incomplete execution is reconciled.
+
 ---
 
 ## What does the system track?

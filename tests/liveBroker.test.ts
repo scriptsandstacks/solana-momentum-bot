@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { LiveBroker, type LiveBrokerDeps, type LiveBrokerOptions } from '../src/execution/liveBroker.js';
 import type { TokenCandidate } from '../src/types/domain.js';
+import type { LiveExecutionJournalStore } from '../src/execution/liveExecutionJournal.js';
 
 // ─── fixtures ───────────────────────────────────────────────────────────────
 
@@ -87,6 +88,7 @@ function makeBroker(
   opts: Partial<LiveBrokerOptions> = {},
   deps: Partial<LiveBrokerDeps> = {},
   initialCashUsd = 500,
+  journal?: LiveExecutionJournalStore,
 ): LiveBroker {
   return new LiveBroker({ ...defaultOptions, ...opts }, makeDeps(deps), {
     openPositions: [],
@@ -94,7 +96,26 @@ function makeBroker(
     dailyRealizedPnlUsd: 0,
     nextPositionSeq: 1,
     initialCashUsd,
-  });
+  }, journal);
+}
+
+function makeJournal(): LiveExecutionJournalStore & {
+  prepared: any[];
+  submitted: any[];
+  confirmed: string[];
+  failed: any[];
+} {
+  const journal = {
+    prepared: [] as any[],
+    submitted: [] as any[],
+    confirmed: [] as string[],
+    failed: [] as any[],
+    recordLiveExecutionPrepared(entry: any) { journal.prepared.push(entry); },
+    recordLiveExecutionSubmitted(id: string, signature: string) { journal.submitted.push({ id, signature }); },
+    recordLiveExecutionConfirmed(id: string) { journal.confirmed.push(id); },
+    recordLiveExecutionFailed(id: string, error: string) { journal.failed.push({ id, error }); },
+  };
+  return journal;
 }
 
 // ─── tests ───────────────────────────────────────────────────────────────────
@@ -158,6 +179,44 @@ describe('LiveBroker.openPosition', () => {
     expect(getJupiterQuote).toHaveBeenCalledOnce();
     expect(signAndSendTransaction).toHaveBeenCalledWith(expect.any(String));
     expect(confirmTransaction).toHaveBeenCalledWith('sig-open-1', undefined);
+  });
+
+  it('journals open execution through confirmation', async () => {
+    const journal = makeJournal();
+    const broker = makeBroker({}, {}, 500, journal);
+
+    const position = await broker.openPosition(makeCandidate(), 80);
+
+    expect(journal.prepared).toHaveLength(1);
+    expect(journal.prepared[0]).toMatchObject({ side: 'open', positionId: position.id, mint: 'token-mint-abc123' });
+    expect(journal.submitted[0]).toMatchObject({ signature: 'sig-abc123' });
+    expect(journal.confirmed).toEqual([journal.prepared[0].id]);
+    expect(journal.failed).toHaveLength(0);
+  });
+
+  it('leaves a confirmed journal entry incomplete when fill parsing fails', async () => {
+    const journal = makeJournal();
+    const broker = makeBroker({}, {
+      getConfirmedSwapFill: async () => { throw new Error('receipt unavailable'); },
+    }, 500, journal);
+
+    await expect(broker.openPosition(makeCandidate(), 80)).rejects.toThrow('receipt unavailable');
+
+    expect(journal.confirmed).toEqual([journal.prepared[0].id]);
+    expect(journal.failed).toHaveLength(0);
+  });
+
+  it('leaves a submitted journal entry incomplete when confirmation is uncertain', async () => {
+    const journal = makeJournal();
+    const broker = makeBroker({}, {
+      confirmTransaction: async () => { throw new Error('RPC timeout'); },
+    }, 500, journal);
+
+    await expect(broker.openPosition(makeCandidate(), 80)).rejects.toThrow('RPC timeout');
+
+    expect(journal.submitted).toHaveLength(1);
+    expect(journal.confirmed).toHaveLength(0);
+    expect(journal.failed).toHaveLength(0);
   });
 
   it('uses SOL pricing when routeInputMint is SOL', async () => {
@@ -289,6 +348,21 @@ describe('LiveBroker.closePosition', () => {
 
     expect(signAndSendTransaction).toHaveBeenCalledTimes(2); // buy + sell
     expect(confirmTransaction).toHaveBeenCalledWith('sig-close-1', undefined);
+  });
+
+  it('journals close execution through confirmation', async () => {
+    const journal = makeJournal();
+    const broker = makeBroker({}, {}, 500, journal);
+    const position = await broker.openPosition(makeCandidate(), 80);
+    journal.prepared.length = 0;
+    journal.submitted.length = 0;
+    journal.confirmed.length = 0;
+
+    await broker.closePosition(position.id, 0.001, 'manual');
+
+    expect(journal.prepared[0]).toMatchObject({ side: 'close', positionId: position.id, mint: 'token-mint-abc123' });
+    expect(journal.submitted[0]).toMatchObject({ signature: 'sig-abc123' });
+    expect(journal.confirmed).toEqual([journal.prepared[0].id]);
   });
 
   it('attaches exit tx signature to the returned trade', async () => {

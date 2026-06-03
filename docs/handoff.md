@@ -7,7 +7,7 @@
 ## Current Health
 
 ```text
-npm test          -> 36 files, 262 tests passing
+npm test          -> 37 files, 270 tests passing
 npm run typecheck -> clean
 git diff --check  -> clean
 ```
@@ -30,6 +30,8 @@ Live mode is functionally implemented:
 - Entry and exit transaction signatures persisted and shown in reports
 - Real-time token activity exit triggers plus a 10-second exit backstop
 - Startup wallet/SQLite reconciliation
+- Persistent live execution journal for prepared, submitted, confirmed, persisted, and failed swaps
+- Live startup blocks when submitted or confirmed executions remain unpersisted
 - Interactive `recover-positions` support for stale and orphaned positions
 - Stablecoin-funded orphan buys recovered from recent wallet transaction history
 
@@ -42,6 +44,7 @@ Live mode is functionally implemented:
 | `src/execution/solanaTransactionFill.ts` | Confirmed wallet balance-delta parser |
 | `src/execution/solanaTransactionHistory.ts` | Recent wallet buy lookup for orphan recovery |
 | `src/execution/solanaConfirmation.ts` | Block-height-aware transaction confirmation |
+| `src/execution/liveExecutionJournal.ts` | Journal types and incomplete-execution rendering |
 | `src/execution/walletReconciler.ts` | Wallet holdings versus SQLite position reconciliation |
 | `src/execution/positionRecovery.ts` | Pure stale/orphan recovery transformations |
 | `src/storage/sqliteStore.ts` | Auto-migrating persistence layer |
@@ -61,16 +64,6 @@ This branch adds:
 
 ## Remaining Risks
 
-### Highest Priority
-
-**Persistent live execution journal**
-
-There is still a crash window after a swap is submitted or confirmed but before
-the resulting position or trade is persisted. Add a SQLite-backed execution
-journal that records intended swaps, transaction signatures, confirmation state,
-and final persistence state. Startup recovery should inspect incomplete journal
-rows before normal trading begins.
-
 ### Medium Priority
 
 **Confirmation commitment**
@@ -84,6 +77,14 @@ decision rather than missing plumbing.
 Failed live exits are isolated per position, but stale SQLite positions remain
 open until `recover-positions` is run. The exit path could detect and quarantine
 stale positions automatically.
+
+**Journal resolution for uncertain submissions**
+
+Submitted transactions that time out remain intentionally incomplete because an
+RPC timeout does not prove failure. `recover-positions` resolves confirmed open
+and close outcomes when wallet state exposes them, but a dedicated operator
+command for explicitly resolving verified failed signatures would improve the
+workflow.
 
 **SOL-funded orphan recovery valuation**
 

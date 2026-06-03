@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { PumpPortalRawEvent } from '../discovery/pumpPortal.js';
 import { FRESH_LAUNCH_MOMENTUM_STRATEGY_ID } from '../strategies/freshLaunchMomentum.js';
 import type { OpportunityScore, PaperPosition, PaperTrade, TokenCandidate } from '../types/domain.js';
+import type { LiveExecutionJournalEntry } from '../execution/liveExecutionJournal.js';
 
 interface RecentScoreRow {
   chain: string;
@@ -351,15 +352,20 @@ export class SqliteStore {
   }
 
   saveOpenPosition(position: PaperPosition): void {
-    this.db
-      .prepare(
+    const insert = this.db.prepare(
         `INSERT OR REPLACE INTO open_positions (
           id, chain, address, symbol, strategy_id, token_json, score, entry_price_usd, quantity, opened_at,
           high_water_mark_usd, last_mark_usd, entry_tx_signature, entry_network_fee_usd, entry_network_fee_lamports
         ) VALUES (@id, @chain, @address, @symbol, @strategyId, @tokenJson, @score, @entryPriceUsd, @quantity, @openedAt,
           @highWaterMarkUsd, @lastMarkUsd, @entryTxSignature, @entryNetworkFeeUsd, @entryNetworkFeeLamports)`,
-      )
-      .run({
+      );
+    const markPersisted = this.db.prepare(
+      `UPDATE live_execution_journal
+       SET status = 'persisted', updated_at = @updatedAt
+       WHERE signature = @signature AND side = 'open'`,
+    );
+    const transaction = this.db.transaction(() => {
+      insert.run({
         id: position.id,
         chain: position.token.chain,
         address: position.token.address,
@@ -379,6 +385,11 @@ export class SqliteStore {
         entryNetworkFeeUsd: position.entryNetworkFeeUsd ?? null,
         entryNetworkFeeLamports: position.entryNetworkFeeLamports ?? null,
       });
+      if (position.entryTxSignature) {
+        markPersisted.run({ signature: position.entryTxSignature, updatedAt: new Date().toISOString() });
+      }
+    });
+    transaction();
   }
 
   // Full reconstruction of open positions (including the embedded token and
@@ -489,6 +500,11 @@ export class SqliteStore {
       )`,
     );
     const removeOpen = this.db.prepare('DELETE FROM open_positions WHERE id = ?');
+    const markPersisted = this.db.prepare(
+      `UPDATE live_execution_journal
+       SET status = 'persisted', updated_at = @updatedAt
+       WHERE signature = @signature AND side = 'close'`,
+    );
 
     const transaction = this.db.transaction(() => {
       insert.run({
@@ -516,8 +532,54 @@ export class SqliteStore {
         exitNetworkFeeLamports: trade.exitNetworkFeeLamports ?? null,
       });
       removeOpen.run(trade.positionId);
+      if (trade.exitTxSignature) {
+        markPersisted.run({ signature: trade.exitTxSignature, updatedAt: new Date().toISOString() });
+      }
     });
     transaction();
+  }
+
+  recordLiveExecutionPrepared(
+    entry: Omit<LiveExecutionJournalEntry, 'signature' | 'status' | 'error' | 'createdAt' | 'updatedAt'>,
+  ): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO live_execution_journal (
+          id, side, position_id, mint, symbol, input_mint, output_mint,
+          input_amount_base_units, status, created_at, updated_at
+        ) VALUES (
+          @id, @side, @positionId, @mint, @symbol, @inputMint, @outputMint,
+          @inputAmountBaseUnits, 'prepared', @createdAt, @updatedAt
+        )`,
+      )
+      .run({ ...entry, createdAt: now, updatedAt: now });
+  }
+
+  recordLiveExecutionSubmitted(id: string, signature: string): void {
+    this.updateLiveExecutionJournal(id, 'submitted', { signature });
+  }
+
+  recordLiveExecutionConfirmed(id: string): void {
+    this.updateLiveExecutionJournal(id, 'confirmed');
+  }
+
+  recordLiveExecutionFailed(id: string, error: string): void {
+    this.updateLiveExecutionJournal(id, 'failed', { error });
+  }
+
+  listIncompleteLiveExecutions(): LiveExecutionJournalEntry[] {
+    return this.db
+      .prepare(
+        `SELECT id, side, position_id as positionId, mint, symbol,
+                input_mint as inputMint, output_mint as outputMint,
+                input_amount_base_units as inputAmountBaseUnits,
+                signature, status, error, created_at as createdAt, updated_at as updatedAt
+         FROM live_execution_journal
+         WHERE status IN ('submitted', 'confirmed')
+         ORDER BY created_at ASC`,
+      )
+      .all() as LiveExecutionJournalEntry[];
   }
 
   // All closed trades projected to the fields performance analytics needs. Not
@@ -823,6 +885,25 @@ export class SqliteStore {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_closed_trades_position_id ON closed_trades(position_id);
 
+      CREATE TABLE IF NOT EXISTS live_execution_journal (
+        id TEXT PRIMARY KEY,
+        side TEXT NOT NULL,
+        position_id TEXT NOT NULL,
+        mint TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        input_mint TEXT NOT NULL,
+        output_mint TEXT NOT NULL,
+        input_amount_base_units TEXT NOT NULL,
+        signature TEXT,
+        status TEXT NOT NULL,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_live_execution_journal_status ON live_execution_journal(status, created_at);
+      CREATE INDEX IF NOT EXISTS idx_live_execution_journal_signature ON live_execution_journal(signature);
+
       CREATE TABLE IF NOT EXISTS pumpportal_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         event_type TEXT NOT NULL,
@@ -886,5 +967,28 @@ export class SqliteStore {
     if (!columns.some((existing) => existing.name === column)) {
       this.db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`).run();
     }
+  }
+
+  private updateLiveExecutionJournal(
+    id: string,
+    status: LiveExecutionJournalEntry['status'],
+    values: { signature?: string; error?: string } = {},
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE live_execution_journal
+         SET status = @status,
+             signature = COALESCE(@signature, signature),
+             error = COALESCE(@error, error),
+             updated_at = @updatedAt
+         WHERE id = @id`,
+      )
+      .run({
+        id,
+        status,
+        signature: values.signature ?? null,
+        error: values.error ?? null,
+        updatedAt: new Date().toISOString(),
+      });
   }
 }
