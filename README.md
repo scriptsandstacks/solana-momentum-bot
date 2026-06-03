@@ -1,6 +1,6 @@
 # Hermes — Solana Memecoin Trading Bot
 
-Automated trading bot for Pump.fun tokens on Solana. Watches for newly created and migrating tokens in real time, filters them through scoring and multi-signal risk screens, and executes real on-chain swaps via Jupiter. Supports paper trading for strategy validation before committing real capital.
+Automated trading bot for Pump.fun tokens on Solana. Watches for newly created and migrating tokens in real time, filters them through scoring and multi-signal risk screens, and executes real on-chain swaps via Jupiter. Supports seamless switching between paper and live trading.
 
 ---
 
@@ -10,7 +10,7 @@ Automated trading bot for Pump.fun tokens on Solana. Watches for newly created a
 |---|---|
 | [docs/how-it-works.md](docs/how-it-works.md) | Non-technical — strategies, edge, risk management, reading reports |
 | [docs/system.md](docs/system.md) | Technical — architecture, data flow, strategy logic, exit rules, CLI reference |
-| [docs/claude-handoff.md](docs/claude-handoff.md) | Engineering — current implementation state, open items, next steps |
+| [docs/handoff.md](docs/handoff.md) | Engineering — current implementation state, open items, next steps |
 
 ---
 

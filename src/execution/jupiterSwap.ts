@@ -39,6 +39,11 @@ export interface JupiterSwapTransactionParams {
   fetchFn?: typeof fetch;
 }
 
+export interface JupiterSwapTransactionResponse {
+  swapTransaction: string;
+  lastValidBlockHeight?: number;
+}
+
 function resolveBase(apiKey?: string, baseUrl?: string): { base: string; apiKey: string | undefined } {
   const key = apiKey ?? process.env.JUPITER_API_KEY;
   // JUPITER_QUOTE_URL may point at the old quote-only host; strip the path
@@ -81,7 +86,7 @@ export async function getJupiterQuoteForSwap(params: JupiterQuoteParams): Promis
 // Build a swap transaction from a quote. Returns the base64-encoded serialized
 // transaction that the caller signs and sends via the RPC.
 // Returns undefined if the swap endpoint is unreachable or rejects the request.
-export async function getJupiterSwapTransaction(params: JupiterSwapTransactionParams): Promise<string | undefined> {
+export async function getJupiterSwapTransaction(params: JupiterSwapTransactionParams): Promise<JupiterSwapTransactionResponse | undefined> {
   const { base, apiKey } = resolveBase(params.apiKey, params.baseUrl);
   const headers = { ...swapHeaders(apiKey), 'content-type': 'application/json' };
 
@@ -103,8 +108,12 @@ export async function getJupiterSwapTransaction(params: JupiterSwapTransactionPa
       body: JSON.stringify(body),
     });
     if (!res.ok) return undefined;
-    const json = (await res.json()) as { swapTransaction?: string };
-    return json?.swapTransaction;
+    const json = (await res.json()) as { swapTransaction?: string; lastValidBlockHeight?: number };
+    if (!json?.swapTransaction) return undefined;
+    return {
+      swapTransaction: json.swapTransaction,
+      lastValidBlockHeight: json.lastValidBlockHeight,
+    };
   } catch {
     return undefined;
   }

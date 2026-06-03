@@ -10,9 +10,9 @@ Technical reference for the Hermes trading bot. Covers architecture, data flow, 
 |---|---|
 | Paper trading (Solana) | Active |
 | Live trading (Solana) | Implemented — Jupiter swap execution, keypair signing, on-chain confirmation |
-| Base / Ethereum | Config present, disabled |
+| Supported chain | Solana only |
 | Persistence | SQLite (auto-migrating schema) |
-| Test coverage | 32 files, 240 tests |
+| Test coverage | 36 files, 262 tests |
 
 ---
 
@@ -211,13 +211,21 @@ Executes real on-chain trades via Jupiter and the Solana RPC.
 2. `getJupiterQuoteForSwap` — sized to `positionSizeUsd` (USDC direct, SOL via price query)
 3. `getJupiterSwapTransaction` — POST to `/swap/v1/swap`
 4. `VersionedTransaction.deserialize` → `tx.sign([keypair])` → `sendTransaction` RPC
-5. `confirmTransaction` — polls `getSignatureStatuses` every 2 s up to 90 s
-6. Returns `PaperPosition` with actual fill price and `entryTxSignature`
+5. `confirmTransaction` — polls `getSignatureStatuses` and aborts immediately if Jupiter's `lastValidBlockHeight` is exceeded; 90 s remains the fallback timeout
+6. `getTransaction` — reads confirmed wallet balance deltas for the actual input and output amounts
+7. Returns `PaperPosition` with actual fill quantity, price, and `entryTxSignature`
 
 **`closePosition` flow:**
 1. Quote token → USDC (`getJupiterQuoteForSwap`)
 2. Build, sign, send, confirm
-3. Returns `PaperTrade` with USDC proceeds and `exitTxSignature`
+3. Read confirmed token and USDC balance deltas
+4. Returns `PaperTrade` with actual USDC proceeds and `exitTxSignature`
+
+Live accounting never uses Jupiter quote amounts as the recorded fill. Quote amounts
+are estimates used only to construct the swap transaction. Confirmed transaction
+balance deltas are the source of truth for position quantity, entry basis, exit
+proceeds, and realized P&L. Raw Solana network fees are persisted in lamports and,
+when SOL/USD pricing is available, valued in USD and included in realized P&L.
 
 **Deps are injectable** (`LiveBrokerDeps`) — all network calls are mocked in tests; no real keys needed.
 
@@ -243,6 +251,12 @@ When `mode: live`, the `run` command queries wallet SPL token balances (`getToke
 
 - **ORPHANED** — token held on-chain but absent from SQLite. Likely from a crash after swap confirmation but before `saveOpenPosition`. Use `recover-positions` to register a synthetic position.
 - **STALE** — position in SQLite but no on-chain balance. Likely manually sold or a partial fill. Use `recover-positions` to close it out.
+
+For orphaned holdings, `recover-positions` scans recent successful wallet
+transactions and parses confirmed balance deltas. USDC/USDT-funded buys recover
+the original transaction signature, block time, token fill, network fee, and
+exact USD entry basis. If history is unavailable, pruned, or SOL-funded, recovery
+falls back to the current market price and labels the basis as approximate.
 
 ---
 
@@ -314,7 +328,7 @@ outcome_done, created_at
 ```
 id, chain, address, symbol, strategy_id, token_json, score,
 entry_price_usd, quantity, opened_at, high_water_mark_usd, last_mark_usd,
-entry_tx_signature  ← live mode only
+entry_tx_signature, entry_network_fee_lamports, entry_network_fee_usd  ← live mode only
 ```
 
 **`closed_trades`**
@@ -322,7 +336,8 @@ entry_tx_signature  ← live mode only
 id, position_id, chain, address, symbol, strategy_id, token_json, score, source,
 entry_price_usd, exit_price_usd, quantity, reason, exit_price_source,
 pnl_usd, pnl_pct, opened_at, closed_at,
-exit_tx_signature  ← live mode only
+exit_tx_signature, entry_network_fee_lamports, exit_network_fee_lamports,
+entry_network_fee_usd, exit_network_fee_usd  ← live mode only
 ```
 
 **`token_volume_snapshots`** — per-token 5m volume history for acceleration signal
@@ -408,10 +423,13 @@ src/
   execution/liveBroker.ts             LiveBroker — on-chain Jupiter swap execution
   execution/liveDeps.ts               Production deps: keypair, sign/send, confirm, decimals
   execution/jupiterSwap.ts            Jupiter quote + swap transaction API
+  execution/solanaConfirmation.ts     Block-height-aware confirmation policy
+  execution/solanaTransactionFill.ts  Confirmed transaction balance-delta fill parser
   execution/liveReadiness.ts          live-readiness audit logic
   execution/tokenActivityWatcher.ts   Solana RPC logsSubscribe WebSocket watcher
   execution/walletReconciler.ts       On-chain vs SQLite position reconciliation
   execution/positionRecovery.ts       Pure recovery transforms for recover-positions
+  execution/solanaTransactionHistory.ts Recent wallet buy lookup for orphan recovery
 
   paper/paperBroker.ts                PaperBroker (implements ExecutionBroker)
   paper/restoreBroker.ts              SQLite → PaperBroker state restoration
@@ -452,7 +470,7 @@ src/
 
 ```bash
 npm install
-npm test              # 32 test files, 240 tests
+npm test              # 36 test files, 262 tests
 npm run typecheck     # must be clean before committing
 npm run bot -- --help # show all commands
 ```

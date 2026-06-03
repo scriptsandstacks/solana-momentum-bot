@@ -278,7 +278,6 @@ describe('runBotLoop token watcher integration', () => {
   it('passes open position mints to the token watcher after each pass', async () => {
     const { runBotLoop } = await import('../src/bot/runLoop.js');
     const { PaperBroker } = await import('../src/paper/paperBroker.js');
-    const { PumpPortalClient } = await import('../src/discovery/pumpPortal.js');
 
     // Broker with one open position
     const broker = new PaperBroker({ startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 3 });
@@ -304,8 +303,9 @@ describe('runBotLoop token watcher integration', () => {
       solanaConfig: { enabled: true, minLiquidityUsd: 10_000, minVolume5mUsd: 5_000, maxSlippageBps: 500 },
       paper: { startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 3 },
       minimumScoreToEnter: 75,
-      ClientCtor: class extends PumpPortalClient {
-        constructor(opts: any) { super({ ...opts, reconnect: false }); }
+      ClientCtor: class {
+        async connectFreeStreams() {}
+        close() {}
       } as any,
       processPumpEvents: async () => ({ eventsRead: 0, candidatesEnriched: 0, scored: 0, openedPositions: 0, skipped: 0, failed: 0 }),
       broker,

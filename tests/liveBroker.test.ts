@@ -75,6 +75,10 @@ function makeDeps(overrides: Partial<LiveBrokerDeps> = {}): LiveBrokerDeps {
     getSwapTransaction: async () => ({ swapTransaction: Buffer.from('fake-tx').toString('base64') }),
     signAndSendTransaction: async () => 'sig-abc123',
     confirmTransaction: async () => {},
+    getConfirmedSwapFill: async ({ outputMint }) =>
+      outputMint === 'token-mint-abc123'
+        ? { inputAmount: 25_000_000n, outputAmount: 25_000_000_000n, networkFeeLamports: 5_000 }
+        : { inputAmount: 25_000_000_000n, outputAmount: 24_875_000n, networkFeeLamports: 5_000 },
     ...overrides,
   };
 }
@@ -153,7 +157,7 @@ describe('LiveBroker.openPosition', () => {
 
     expect(getJupiterQuote).toHaveBeenCalledOnce();
     expect(signAndSendTransaction).toHaveBeenCalledWith(expect.any(String));
-    expect(confirmTransaction).toHaveBeenCalledWith('sig-open-1');
+    expect(confirmTransaction).toHaveBeenCalledWith('sig-open-1', undefined);
   });
 
   it('uses SOL pricing when routeInputMint is SOL', async () => {
@@ -181,6 +185,65 @@ describe('LiveBroker.openPosition', () => {
     const broker = makeBroker({}, { signAndSendTransaction: async () => 'sig-entry-xyz' });
     const position = await broker.openPosition(makeCandidate(), 80);
     expect(position.entryTxSignature).toBe('sig-entry-xyz');
+  });
+
+  it('passes Jupiter lastValidBlockHeight into confirmation', async () => {
+    const confirmTransaction = vi.fn(async () => {});
+    const broker = makeBroker({}, {
+      getSwapTransaction: async () => ({
+        swapTransaction: Buffer.from('fake-tx').toString('base64'),
+        lastValidBlockHeight: 12345,
+      }),
+      confirmTransaction,
+    });
+
+    await broker.openPosition(makeCandidate(), 80);
+
+    expect(confirmTransaction).toHaveBeenCalledWith('sig-abc123', 12345);
+  });
+
+  it('uses the confirmed balance deltas instead of the quoted output', async () => {
+    const broker = makeBroker({}, {
+      getConfirmedSwapFill: async () => ({
+        inputAmount: 25_000_000n,
+        outputAmount: 20_000_000_000n,
+        networkFeeLamports: 5_000,
+      }),
+    });
+
+    const position = await broker.openPosition(makeCandidate(), 80);
+
+    expect(position.quantity).toBe(20_000);
+    expect(position.entryPriceUsd).toBeCloseTo(0.00125);
+  });
+
+  it('persists the entry network fee and deducts it from cash', async () => {
+    const broker = makeBroker({}, {
+      getSolPriceUsd: async () => 200,
+      getConfirmedSwapFill: async () => ({
+        inputAmount: 25_000_000n,
+        outputAmount: 25_000_000_000n,
+        networkFeeLamports: 10_000,
+      }),
+    });
+
+    const position = await broker.openPosition(makeCandidate(), 80);
+
+    expect(position.entryNetworkFeeUsd).toBeCloseTo(0.002);
+    expect(position.entryNetworkFeeLamports).toBe(10_000);
+    expect(broker.getCashUsd()).toBeCloseTo(474.998);
+  });
+
+  it('still records a confirmed position when the network fee cannot be valued', async () => {
+    const getSolPriceUsd = vi.fn()
+      .mockRejectedValueOnce(new Error('price unavailable'));
+    const broker = makeBroker({}, { getSolPriceUsd });
+
+    const position = await broker.openPosition(makeCandidate(), 80);
+
+    expect(position.entryNetworkFeeUsd).toBeUndefined();
+    expect(position.entryNetworkFeeLamports).toBe(5_000);
+    expect(broker.getOpenPositions()).toHaveLength(1);
   });
 
   it('deducts position cost from cash', async () => {
@@ -225,7 +288,7 @@ describe('LiveBroker.closePosition', () => {
     expect(trade.closedAt).toBeInstanceOf(Date);
 
     expect(signAndSendTransaction).toHaveBeenCalledTimes(2); // buy + sell
-    expect(confirmTransaction).toHaveBeenCalledWith('sig-close-1');
+    expect(confirmTransaction).toHaveBeenCalledWith('sig-close-1', undefined);
   });
 
   it('attaches exit tx signature to the returned trade', async () => {
@@ -233,6 +296,52 @@ describe('LiveBroker.closePosition', () => {
     const position = await broker.openPosition(makeCandidate(), 80);
     const trade = await broker.closePosition(position.id, 0.001, 'stop_loss');
     expect(trade.exitTxSignature).toBe('sig-sell-abc');
+  });
+
+  it('uses confirmed USDC proceeds instead of the quoted output', async () => {
+    const getConfirmedSwapFill = vi.fn()
+      .mockResolvedValueOnce({
+        inputAmount: 25_000_000n,
+        outputAmount: 25_000_000_000n,
+        networkFeeLamports: 5_000,
+      })
+      .mockResolvedValueOnce({
+        inputAmount: 25_000_000_000n,
+        outputAmount: 20_000_000n,
+        networkFeeLamports: 5_000,
+      });
+    const broker = makeBroker({}, { getConfirmedSwapFill });
+
+    const position = await broker.openPosition(makeCandidate(), 80);
+    const trade = await broker.closePosition(position.id, 0.001, 'stop_loss');
+
+    expect(trade.exitPriceUsd).toBeCloseTo(0.0008);
+    expect(trade.pnlUsd).toBeCloseTo(-5);
+  });
+
+  it('includes entry and exit Solana network fees in realized PnL', async () => {
+    const getConfirmedSwapFill = vi.fn()
+      .mockResolvedValueOnce({
+        inputAmount: 25_000_000n,
+        outputAmount: 25_000_000_000n,
+        networkFeeLamports: 10_000,
+      })
+      .mockResolvedValueOnce({
+        inputAmount: 25_000_000_000n,
+        outputAmount: 25_000_000n,
+        networkFeeLamports: 20_000,
+      });
+    const broker = makeBroker({}, { getSolPriceUsd: async () => 200, getConfirmedSwapFill });
+
+    const position = await broker.openPosition(makeCandidate(), 80);
+    const trade = await broker.closePosition(position.id, 0.001, 'manual');
+
+    expect(trade.entryNetworkFeeUsd).toBeCloseTo(0.002);
+    expect(trade.exitNetworkFeeUsd).toBeCloseTo(0.004);
+    expect(trade.entryNetworkFeeLamports).toBe(10_000);
+    expect(trade.exitNetworkFeeLamports).toBe(20_000);
+    expect(trade.pnlUsd).toBeCloseTo(-0.006);
+    expect(trade.pnlPct).toBeCloseTo((-0.006 / 25.002) * 100);
   });
 
   it('records trade in getClosedTrades()', async () => {
@@ -308,6 +417,7 @@ describe('LiveBroker state restoration', () => {
       openedAt: new Date('2026-01-01'),
       highWaterMarkUsd: 0.0012,
       lastMarkUsd: 0.0011,
+      entryNetworkFeeUsd: 0.002,
     };
 
     const broker = new LiveBroker(
@@ -327,5 +437,6 @@ describe('LiveBroker state restoration', () => {
     expect(broker.getOpenPositions()[0].id).toBe('live-99');
     expect(broker.getCashUsd()).toBe(475);
     expect(broker.getRealizedPnlUsd()).toBe(-5);
+    expect(broker.getOpenPositions()[0].entryNetworkFeeUsd).toBe(0.002);
   });
 });

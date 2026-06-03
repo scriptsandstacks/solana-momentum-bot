@@ -180,6 +180,8 @@ describe('SqliteStore', () => {
       quantity: 2500,
       openedAt: new Date('2026-01-01T00:00:00Z'),
       highWaterMarkUsd: 0.012,
+      entryNetworkFeeUsd: 0.002,
+      entryNetworkFeeLamports: 10_000,
     };
     const trade: PaperTrade = {
       positionId: position.id,
@@ -194,6 +196,10 @@ describe('SqliteStore', () => {
       exitPriceSource: 'fresh',
       pnlUsd: 12.5,
       pnlPct: 50,
+      entryNetworkFeeUsd: 0.002,
+      exitNetworkFeeUsd: 0.004,
+      entryNetworkFeeLamports: 10_000,
+      exitNetworkFeeLamports: 20_000,
     };
 
     store.saveOpenPosition(position);
@@ -207,6 +213,10 @@ describe('SqliteStore', () => {
       pnlUsd: 12.5,
       exitPriceSource: 'fresh',
       strategyId: 'freshLaunchMomentum',
+      entryNetworkFeeUsd: 0.002,
+      exitNetworkFeeUsd: 0.004,
+      entryNetworkFeeLamports: 10_000,
+      exitNetworkFeeLamports: 20_000,
     });
     // Analytics projection carries the entry score, discovery source, and strategy id.
     const stats = store.loadClosedTradeStats();
@@ -303,6 +313,8 @@ describe('SqliteStore', () => {
       openedAt: new Date('2026-01-01T00:00:00Z'),
       highWaterMarkUsd: 0.018,
       lastMarkUsd: 0.016,
+      entryNetworkFeeUsd: 0.002,
+      entryNetworkFeeLamports: 10_000,
     };
     const closed: PaperTrade = {
       positionId: 'paper-1',
@@ -324,7 +336,13 @@ describe('SqliteStore', () => {
 
     const loaded = store.loadOpenPositions();
     expect(loaded).toHaveLength(1);
-    expect(loaded[0]).toMatchObject({ id: 'paper-3', highWaterMarkUsd: 0.018, lastMarkUsd: 0.016 });
+    expect(loaded[0]).toMatchObject({
+      id: 'paper-3',
+      highWaterMarkUsd: 0.018,
+      lastMarkUsd: 0.016,
+      entryNetworkFeeUsd: 0.002,
+      entryNetworkFeeLamports: 10_000,
+    });
     expect(loaded[0].token).toMatchObject({ address: 'token-1', symbol: 'MOCK' });
     expect(loaded[0].openedAt).toBeInstanceOf(Date);
 

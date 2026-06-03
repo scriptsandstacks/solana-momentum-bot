@@ -4,6 +4,7 @@ import type { ExecutionBroker } from './broker.js';
 import type { BrokerStateStore } from '../paper/restoreBroker.js';
 import { startOfUtcDayIso } from '../paper/restoreBroker.js';
 import type { JupiterQuoteResponse } from './jupiterSwap.js';
+import type { ConfirmedSwapFill } from './solanaTransactionFill.js';
 
 // ─── injectable dependencies ────────────────────────────────────────────────
 // Every network call the LiveBroker makes is injected so unit tests can run
@@ -23,14 +24,23 @@ export interface LiveBrokerDeps {
     quoteResponse: JupiterQuoteResponse;
     userPublicKey: string;
     wrapAndUnwrapSol: boolean;
-  }) => Promise<{ swapTransaction: string }>;
+  }) => Promise<{ swapTransaction: string; lastValidBlockHeight?: number }>;
 
   // Sign the base64 transaction with the loaded keypair and submit it.
   // Returns the transaction signature string.
   signAndSendTransaction: (transactionBase64: string) => Promise<string>;
 
   // Poll until the given signature is confirmed on-chain, or throw on failure.
-  confirmTransaction: (signature: string) => Promise<void>;
+  confirmTransaction: (signature: string, lastValidBlockHeight?: number) => Promise<void>;
+
+  // Read the confirmed transaction and return the wallet's actual swap balance
+  // deltas. Quote amounts are estimates and must not drive live accounting.
+  getConfirmedSwapFill: (params: {
+    signature: string;
+    owner: string;
+    inputMint: string;
+    outputMint: string;
+  }) => Promise<ConfirmedSwapFill>;
 
   // Return the SPL token decimal precision for a given mint address.
   // Implementations should cache; this may be called multiple times per trade.
@@ -163,8 +173,8 @@ export class LiveBroker implements ExecutionBroker {
     const sizeUsd = positionSizeUsd ?? this.options.positionSizeUsd;
     const maxSlippage = this.options.solana.maxSlippageBps;
 
-    const { getJupiterQuote, getSwapTransaction, signAndSendTransaction, confirmTransaction, getTokenDecimals, getSolPriceUsd, getPublicKey } = this.deps;
-    if (!getJupiterQuote || !getSwapTransaction || !signAndSendTransaction || !confirmTransaction || !getTokenDecimals || !getSolPriceUsd || !getPublicKey) {
+    const { getJupiterQuote, getSwapTransaction, signAndSendTransaction, confirmTransaction, getConfirmedSwapFill, getTokenDecimals, getSolPriceUsd, getPublicKey } = this.deps;
+    if (!getJupiterQuote || !getSwapTransaction || !signAndSendTransaction || !confirmTransaction || !getConfirmedSwapFill || !getTokenDecimals || !getSolPriceUsd || !getPublicKey) {
       throw new Error('LiveBroker: execution deps are not configured — use LiveBroker.restore() with createLiveBrokerDeps()');
     }
 
@@ -182,19 +192,27 @@ export class LiveBroker implements ExecutionBroker {
     if (!quote) throw new Error(`No Jupiter buy route for ${candidate.symbol} (${candidate.address})`);
 
     // Build → sign → submit → confirm.
-    const { swapTransaction } = await getSwapTransaction({
+    const { swapTransaction, lastValidBlockHeight } = await getSwapTransaction({
       quoteResponse: quote,
       userPublicKey: getPublicKey(),
       wrapAndUnwrapSol: true,
     });
     const signature = await signAndSendTransaction(swapTransaction);
-    await confirmTransaction(signature);
+    await confirmTransaction(signature, lastValidBlockHeight);
 
-    // Compute fill from confirmed quote amounts.
+    const owner = getPublicKey();
+    const fill = await getConfirmedSwapFill({
+      signature,
+      owner,
+      inputMint,
+      outputMint: candidate.address,
+    });
+
+    // Compute the entry basis from confirmed wallet balance deltas.
     const decimals = await getTokenDecimals(candidate.address);
-    const tokensReceived = Number(BigInt(quote.outAmount)) / Math.pow(10, decimals);
-    // Use actual USD spent (inAmount) for the entry price basis.
-    const actualSpentUsd = await this.resolveSpentUsd(inputMint, Number(BigInt(quote.inAmount)), getSolPriceUsd);
+    const tokensReceived = Number(fill.outputAmount) / Math.pow(10, decimals);
+    const actualSpentUsd = await this.resolveSpentUsd(inputMint, Number(fill.inputAmount), getSolPriceUsd);
+    const entryNetworkFeeUsd = await this.resolveNetworkFeeUsd(fill.networkFeeLamports, getSolPriceUsd);
     const effectiveEntryPriceUsd = actualSpentUsd / tokensReceived;
 
     const id = `live-${this.nextId++}`;
@@ -208,9 +226,11 @@ export class LiveBroker implements ExecutionBroker {
       highWaterMarkUsd: candidate.priceUsd,
       lastMarkUsd: candidate.priceUsd,
       entryTxSignature: signature,
+      entryNetworkFeeUsd,
+      entryNetworkFeeLamports: fill.networkFeeLamports,
     };
 
-    this.cashUsd -= actualSpentUsd;
+    this.cashUsd -= actualSpentUsd + (entryNetworkFeeUsd ?? 0);
     this.openPositions.set(id, position);
     return position;
   }
@@ -238,8 +258,8 @@ export class LiveBroker implements ExecutionBroker {
 
     const maxSlippage = this.options.solana.maxSlippageBps;
 
-    const { getJupiterQuote, getSwapTransaction, signAndSendTransaction, confirmTransaction, getTokenDecimals, getPublicKey } = this.deps;
-    if (!getJupiterQuote || !getSwapTransaction || !signAndSendTransaction || !confirmTransaction || !getTokenDecimals || !getPublicKey) {
+    const { getJupiterQuote, getSwapTransaction, signAndSendTransaction, confirmTransaction, getConfirmedSwapFill, getTokenDecimals, getSolPriceUsd, getPublicKey } = this.deps;
+    if (!getJupiterQuote || !getSwapTransaction || !signAndSendTransaction || !confirmTransaction || !getConfirmedSwapFill || !getTokenDecimals || !getSolPriceUsd || !getPublicKey) {
       throw new Error('LiveBroker: execution deps are not configured — use LiveBroker.restore() with createLiveBrokerDeps()');
     }
 
@@ -255,20 +275,31 @@ export class LiveBroker implements ExecutionBroker {
     });
     if (!quote) throw new Error(`No Jupiter sell route for ${position.token.symbol} (${position.token.address})`);
 
-    const { swapTransaction } = await getSwapTransaction({
+    const { swapTransaction, lastValidBlockHeight } = await getSwapTransaction({
       quoteResponse: quote,
       userPublicKey: getPublicKey(),
       wrapAndUnwrapSol: true,
     });
     const signature = await signAndSendTransaction(swapTransaction);
-    await confirmTransaction(signature);
+    await confirmTransaction(signature, lastValidBlockHeight);
 
-    // Compute P&L from the actual on-chain fill (USDC received).
-    const usdcReceived = Number(BigInt(quote.outAmount)) / 1e6;
+    const fill = await getConfirmedSwapFill({
+      signature,
+      owner: getPublicKey(),
+      inputMint: position.token.address,
+      outputMint: USDC_MINT,
+    });
+
+    // Compute P&L from confirmed USDC wallet balance deltas.
+    const usdcReceived = Number(fill.outputAmount) / 1e6;
+    const exitNetworkFeeUsd = await this.resolveNetworkFeeUsd(fill.networkFeeLamports, getSolPriceUsd);
+    const entryNetworkFeeUsd = position.entryNetworkFeeUsd ?? 0;
+    const valuedExitNetworkFeeUsd = exitNetworkFeeUsd ?? 0;
     const netExitPriceUsd = usdcReceived / position.quantity;
     const entryValueUsd = position.entryPriceUsd * position.quantity;
-    const pnlUsd = usdcReceived - entryValueUsd;
-    const pnlPct = (pnlUsd / entryValueUsd) * 100;
+    const totalEntryCostUsd = entryValueUsd + entryNetworkFeeUsd;
+    const pnlUsd = usdcReceived - valuedExitNetworkFeeUsd - totalEntryCostUsd;
+    const pnlPct = (pnlUsd / totalEntryCostUsd) * 100;
 
     const trade: PaperTrade = {
       positionId,
@@ -284,11 +315,15 @@ export class LiveBroker implements ExecutionBroker {
       pnlUsd,
       pnlPct,
       exitTxSignature: signature,
+      entryNetworkFeeUsd,
+      exitNetworkFeeUsd,
+      entryNetworkFeeLamports: position.entryNetworkFeeLamports,
+      exitNetworkFeeLamports: fill.networkFeeLamports,
     };
 
     this.openPositions.delete(positionId);
     this.closedTrades.push(trade);
-    this.cashUsd += usdcReceived;
+    this.cashUsd += usdcReceived - valuedExitNetworkFeeUsd;
     this.realizedPnlUsd += pnlUsd;
     const dayKey = utcDayKey(closedAt);
     this.dailyPnlByDay.set(dayKey, (this.dailyPnlByDay.get(dayKey) ?? 0) + pnlUsd);
@@ -351,5 +386,19 @@ export class LiveBroker implements ExecutionBroker {
       return (baseUnits / 1e9) * solPriceUsd;
     }
     return baseUnits / 1e6;
+  }
+
+  private async resolveNetworkFeeUsd(
+    feeLamports: number,
+    getSolPriceUsd: () => Promise<number>,
+  ): Promise<number | undefined> {
+    if (feeLamports <= 0) return 0;
+    try {
+      return (feeLamports / 1e9) * await getSolPriceUsd();
+    } catch {
+      // The swap is already confirmed at this point. Do not create an orphaned
+      // live position merely because the small SOL fee could not be valued.
+      return undefined;
+    }
   }
 }

@@ -4,6 +4,7 @@
 
 import type { PaperPosition, PaperTrade, TokenCandidate } from '../types/domain.js';
 import type { OrphanedHolding, StalePosition } from './walletReconciler.js';
+import type { RecoveredWalletBuy } from './solanaTransactionHistory.js';
 
 export const RECOVERY_STRATEGY_ID = 'freshLaunchMomentum';
 
@@ -28,9 +29,11 @@ export function buildStaleRecovery(position: PaperPosition, closedAt = new Date(
       ? 'last_mark'
       : 'entry_fallback';
 
+  const entryNetworkFeeUsd = position.entryNetworkFeeUsd ?? 0;
   const entryValueUsd = position.entryPriceUsd * position.quantity;
+  const totalEntryCostUsd = entryValueUsd + entryNetworkFeeUsd;
   const exitValueUsd = exitPriceUsd * position.quantity;
-  const pnlUsd = exitValueUsd - entryValueUsd;
+  const pnlUsd = exitValueUsd - totalEntryCostUsd;
 
   const trade: PaperTrade = {
     positionId: position.id,
@@ -44,7 +47,9 @@ export function buildStaleRecovery(position: PaperPosition, closedAt = new Date(
     reason: 'manual',
     exitPriceSource,
     pnlUsd,
-    pnlPct: (pnlUsd / entryValueUsd) * 100,
+    pnlPct: (pnlUsd / totalEntryCostUsd) * 100,
+    entryNetworkFeeUsd,
+    entryNetworkFeeLamports: position.entryNetworkFeeLamports,
   };
 
   return { type: 'stale', position, trade, exitPriceUsd, pnlUsd };
@@ -63,6 +68,7 @@ export interface OrphanedRecovery {
   position: PaperPosition;
   // undefined when market data was not available; this recovery cannot proceed.
   currentPriceUsd: number | undefined;
+  entryPriceSource: 'transaction_history' | 'current_price';
 }
 
 export function buildOrphanedRecovery(
@@ -70,24 +76,47 @@ export function buildOrphanedRecovery(
   candidate: TokenCandidate | undefined,
   positionId: string,
   openedAt = new Date(),
+  history?: {
+    buy: RecoveredWalletBuy;
+    entryPriceUsd: number;
+    entryNetworkFeeUsd?: number;
+  },
 ): OrphanedRecovery {
   if (!candidate || candidate.priceUsd <= 0) {
-    return { type: 'orphaned', holding, position: undefined as any, currentPriceUsd: undefined };
+    return {
+      type: 'orphaned',
+      holding,
+      position: undefined as any,
+      currentPriceUsd: undefined,
+      entryPriceSource: history ? 'transaction_history' : 'current_price',
+    };
   }
 
   const token: TokenCandidate = { ...candidate, strategyId: RECOVERY_STRATEGY_ID };
+  const recoveredOpenedAt = history?.buy.blockTime
+    ? new Date(history.buy.blockTime * 1000)
+    : openedAt;
   const position: PaperPosition = {
     id: positionId,
     token,
     score: 0,
-    entryPriceUsd: candidate.priceUsd,
+    entryPriceUsd: history?.entryPriceUsd ?? candidate.priceUsd,
     quantity: holding.uiAmount,
-    openedAt,
+    openedAt: recoveredOpenedAt,
     highWaterMarkUsd: candidate.priceUsd,
     lastMarkUsd: candidate.priceUsd,
+    entryTxSignature: history?.buy.signature,
+    entryNetworkFeeLamports: history?.buy.networkFeeLamports,
+    entryNetworkFeeUsd: history?.entryNetworkFeeUsd,
   };
 
-  return { type: 'orphaned', holding, position, currentPriceUsd: candidate.priceUsd };
+  return {
+    type: 'orphaned',
+    holding,
+    position,
+    currentPriceUsd: candidate.priceUsd,
+    entryPriceSource: history ? 'transaction_history' : 'current_price',
+  };
 }
 
 // ─── rendering ───────────────────────────────────────────────────────────────
@@ -127,7 +156,11 @@ export function renderRecoveryPlan(
     lines.push(`  ORPHANED  ${r.position.id}  ${r.position.token.symbol}`);
     lines.push(`            mint=${r.holding.mint}`);
     lines.push(`            amount=${r.holding.uiAmount.toFixed(4)}  current=$${r.currentPriceUsd.toFixed(6)}`);
-    lines.push(`            NOTE: entry price is approximate (current price, not original buy price)`);
+    if (r.entryPriceSource === 'transaction_history') {
+      lines.push(`            entry=$${r.position.entryPriceUsd.toFixed(6)} from tx=${r.position.entryTxSignature}`);
+    } else {
+      lines.push(`            NOTE: entry price is approximate (current price, transaction history unavailable)`);
+    }
     lines.push(`            action: insert synthetic open_positions row`);
     lines.push('');
   }

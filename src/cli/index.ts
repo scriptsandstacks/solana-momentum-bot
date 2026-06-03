@@ -41,6 +41,10 @@ import {
   renderRecoverySummary,
   RECOVERY_STRATEGY_ID,
 } from '../execution/positionRecovery.js';
+import {
+  findMostRecentWalletBuy,
+  recoveredBuyEntryPriceUsd,
+} from '../execution/solanaTransactionHistory.js';
 import { fetchPumpPortalMarketCandidates } from '../bot/pumpCandidates.js';
 import type { ExitRules } from '../bot/exitPositions.js';
 import type { TradingStrategy } from '../strategies/types.js';
@@ -123,10 +127,10 @@ const program = new Command();
 
 program
   .name('hermes-paper-bot')
-  .description('Solana-first, multi-chain-ready paper trading bot')
+  .description('Solana memecoin trading bot with paper and live execution')
   .option('-c, --config <path>', 'config file path', 'config.yaml');
 
-program.command('scan').description('Scan enabled chains and print scored candidates').action(async () => {
+program.command('scan').description('Scan Solana and print scored candidates').action(async () => {
   const config = loadConfigFromFile(program.opts().config);
   const store = new SqliteStore();
   const candidates = config.chains.solana.enabled ? await scanSolanaCandidates(config.chains.solana) : [];
@@ -230,7 +234,7 @@ program.command('report').description('Print persisted scan, position, and trade
 
 program
   .command('stats')
-  .description('Aggregate paper-trade performance: expectancy, win rate, and PnL by reason / score / source / strategy')
+  .description('Aggregate trade performance: expectancy, win rate, and PnL by reason / score / source / strategy')
   .action(() => {
     const store = new SqliteStore();
     const analytics = computeTradeAnalytics(store.loadClosedTradeStats());
@@ -421,13 +425,44 @@ program
         ? await fetchPumpPortalMarketCandidates(orphanedMints)
         : [];
       const candidateByMint = new Map(marketCandidates.map((c) => [c.address, c]));
+      const recoveryDeps = createLiveBrokerDeps(keypair, {
+        rpcUrl,
+        maxSlippageBps: solana.maxSlippageBps,
+        priorityFeeLamports: solana.priorityFeeLamports ?? 'auto',
+      });
 
       let nextSeq = store.getNextPositionSeq();
-      const orphanedRecoveries = reconciliation.orphaned.map((h) => {
+      const orphanedRecoveries = await Promise.all(reconciliation.orphaned.map(async (h) => {
         const candidate = candidateByMint.get(h.mint);
         const positionId = `live-${nextSeq++}`;
+        try {
+          const buy = await findMostRecentWalletBuy({
+            walletPublicKey,
+            outputMint: h.mint,
+            rpcUrl,
+          });
+          if (buy) {
+            const decimals = await recoveryDeps.getTokenDecimals(h.mint);
+            const entryPriceUsd = recoveredBuyEntryPriceUsd(buy, decimals);
+            if (entryPriceUsd !== undefined) {
+              let entryNetworkFeeUsd: number | undefined;
+              try {
+                entryNetworkFeeUsd = (buy.networkFeeLamports / 1e9) * await recoveryDeps.getSolPriceUsd();
+              } catch {
+                // Raw lamports are still preserved when SOL/USD is unavailable.
+              }
+              return buildOrphanedRecovery(h, candidate, positionId, new Date(), {
+                buy,
+                entryPriceUsd,
+                entryNetworkFeeUsd,
+              });
+            }
+          }
+        } catch {
+          // Recovery remains useful when history is unavailable or pruned.
+        }
         return buildOrphanedRecovery(h, candidate, positionId);
-      });
+      }));
 
       // ── show plan ───────────────────────────────────────────────────────
       const plan = renderRecoveryPlan(staleRecoveries, orphanedRecoveries);
@@ -596,7 +631,7 @@ program
 
 program
   .command('run')
-  .description('Continuously watch PumpPortal and process pending events into paper candidates')
+  .description('Continuously watch PumpPortal, process candidates, and manage paper or live positions')
   .option('--api-key <key>', 'PumpPortal API key; defaults to PUMPPORTAL_API_KEY')
   .option('--process-interval-seconds <seconds>', 'seconds between PumpPortal processing passes', '30')
   .option('--exit-interval-seconds <seconds>', 'seconds between exit-only passes in live mode (default: 10 in live, disabled in paper)')

@@ -13,22 +13,6 @@ const config: BotConfig = {
       minVolume5mUsd: 5_000,
       maxSlippageBps: 500,
     },
-    base: {
-      enabled: false,
-      walletFile: './wallet/chain-ethereum.txt',
-      rpcUrlEnv: 'BASE_RPC_URL',
-      minLiquidityUsd: 15_000,
-      minVolume5mUsd: 7_500,
-      maxSlippageBps: 500,
-    },
-    ethereum: {
-      enabled: false,
-      walletFile: './wallet/chain-ethereum.txt',
-      rpcUrlEnv: 'ETHEREUM_RPC_URL',
-      minLiquidityUsd: 50_000,
-      minVolume5mUsd: 20_000,
-      maxSlippageBps: 300,
-    },
   },
   paper: {
     startingBalanceUsd: 1000,
