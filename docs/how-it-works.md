@@ -98,7 +98,12 @@ When `mode: live` is set in the config, the bot executes real on-chain swaps:
 
 Exit trades follow the same path in reverse (token → USDC). Every trade's transaction signature is stored in SQLite so it can be verified on-chain.
 
-At startup in live mode, the bot cross-checks the wallet's on-chain token balances against its SQLite records. Any discrepancy is logged immediately, and the `recover-positions` command can resolve it.
+At startup in live mode, the bot cross-checks the wallet's on-chain token
+balances against its SQLite records. Any discrepancy is logged immediately, and
+the `recover-positions` command can resolve it. A tracked position with no
+meaningful matching wallet balance is quarantined: the bot will not submit
+repeated exit transactions or open new positions until the discrepancy is
+resolved.
 
 When recovering an untracked token holding, the bot searches recent wallet
 transactions for the original buy. Stablecoin-funded buys can recover the exact

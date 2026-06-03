@@ -143,6 +143,14 @@ describe('LiveBroker.canOpenPosition', () => {
     expect(broker.canOpenPosition()).toMatchObject({ ok: false, reason: expect.stringContaining('max open positions') });
   });
 
+  it('blocks new entries while a stale live position is quarantined', async () => {
+    const broker = makeBroker();
+    const position = await broker.openPosition(makeCandidate(), 80);
+
+    expect(broker.quarantinePositions([position.id])).toBe(1);
+    expect(broker.canOpenPosition()).toMatchObject({ ok: false, reason: expect.stringContaining('recover-positions') });
+  });
+
   it('blocks when cash is insufficient', () => {
     const broker = makeBroker({}, {}, 10); // only $10, needs $25
     expect(broker.canOpenPosition()).toMatchObject({ ok: false, reason: expect.stringContaining('insufficient funds') });
@@ -514,5 +522,28 @@ describe('LiveBroker state restoration', () => {
     expect(broker.getCashUsd()).toBe(475);
     expect(broker.getRealizedPnlUsd()).toBe(-5);
     expect(broker.getOpenPositions()[0].entryNetworkFeeUsd).toBe(0.002);
+  });
+
+  it('excludes quarantined positions from automated position management without deleting them', () => {
+    const existingPosition = {
+      id: 'live-99',
+      token: makeCandidate(),
+      score: 85,
+      entryPriceUsd: 0.001,
+      quantity: 25_000,
+      openedAt: new Date('2026-01-01'),
+      highWaterMarkUsd: 0.0012,
+      lastMarkUsd: 0.0011,
+    };
+    const broker = new LiveBroker(defaultOptions, makeDeps(), {
+      openPositions: [existingPosition],
+      nextPositionSeq: 100,
+      initialCashUsd: 475,
+    });
+
+    expect(broker.quarantinePositions(['live-99', 'missing-position'])).toBe(1);
+    expect(broker.quarantinePositions(['live-99'])).toBe(0);
+    expect(broker.getOpenPositions()).toHaveLength(0);
+    expect(broker.canOpenPosition()).toMatchObject({ ok: false, reason: expect.stringContaining('stale live position') });
   });
 });

@@ -12,7 +12,7 @@ Technical reference for the Hermes trading bot. Covers architecture, data flow, 
 | Live trading (Solana) | Implemented — Jupiter swap execution, keypair signing, on-chain confirmation |
 | Supported chain | Solana only |
 | Persistence | SQLite (auto-migrating schema) |
-| Test coverage | 37 files, 274 tests |
+| Test coverage | 37 files, 276 tests |
 
 ---
 
@@ -251,6 +251,11 @@ When `mode: live`, the `run` command queries wallet SPL token balances (`getToke
 
 - **ORPHANED** — token held on-chain but absent from SQLite. Likely from a crash after swap confirmation but before `saveOpenPosition`. Use `recover-positions` to register a synthetic position.
 - **STALE** — position in SQLite but no on-chain balance. Likely manually sold or a partial fill. Use `recover-positions` to close it out.
+
+During `run`, stale positions are quarantined in the live broker after a
+successful reconciliation. They remain in SQLite for audit and recovery, but
+are excluded from automated exit attempts and block new entries until
+`recover-positions` resolves them.
 
 For orphaned holdings, `recover-positions` scans recent successful wallet
 transactions and parses confirmed balance deltas. USDC/USDT-funded buys recover
@@ -500,7 +505,7 @@ src/
 
 ```bash
 npm install
-npm test              # 37 test files, 274 tests
+npm test              # 37 test files, 276 tests
 npm run typecheck     # must be clean before committing
 npm run bot -- --help # show all commands
 ```

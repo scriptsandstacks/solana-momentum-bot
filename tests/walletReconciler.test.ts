@@ -234,6 +234,7 @@ describe('renderReconciliationReport', () => {
     expect(report).toContain('STALE');
     expect(report).toContain('GONE');
     expect(report).toContain('live-1');
+    expect(report).toContain('quarantine');
   });
 
   it('surfaces RPC errors clearly', () => {

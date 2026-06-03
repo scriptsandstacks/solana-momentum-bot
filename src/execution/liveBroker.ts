@@ -93,6 +93,7 @@ export class LiveBroker implements ExecutionBroker {
   private realizedPnlUsd: number;
   private readonly dailyPnlByDay = new Map<string, number>();
   private readonly openPositions = new Map<string, PaperPosition>();
+  private readonly quarantinedPositionIds = new Set<string>();
   private readonly closedTrades: PaperTrade[] = [];
   private nextId: number;
 
@@ -143,6 +144,13 @@ export class LiveBroker implements ExecutionBroker {
   canOpenPosition(now = new Date(), requiredSizeUsd?: number): { ok: boolean; reason?: string } {
     if (!this.options.solana.walletFile) {
       return { ok: false, reason: 'chains.solana.walletFile is not configured' };
+    }
+
+    if (this.quarantinedPositionIds.size > 0) {
+      return {
+        ok: false,
+        reason: `${this.quarantinedPositionIds.size} stale live position(s) require recover-positions`,
+      };
     }
 
     if (this.openPositions.size >= this.options.maxOpenPositions) {
@@ -402,7 +410,21 @@ export class LiveBroker implements ExecutionBroker {
   }
 
   getOpenPositions(): PaperPosition[] {
-    return [...this.openPositions.values()];
+    return [...this.openPositions.values()].filter((position) => !this.quarantinedPositionIds.has(position.id));
+  }
+
+  // Stop automated exit attempts for positions that startup reconciliation
+  // proved do not have a meaningful matching wallet balance. The position stays
+  // in SQLite and in broker accounting until recover-positions resolves it.
+  quarantinePositions(positionIds: string[]): number {
+    let added = 0;
+    for (const positionId of positionIds) {
+      if (this.openPositions.has(positionId) && !this.quarantinedPositionIds.has(positionId)) {
+        this.quarantinedPositionIds.add(positionId);
+        added += 1;
+      }
+    }
+    return added;
   }
 
   getClosedTrades(): PaperTrade[] {

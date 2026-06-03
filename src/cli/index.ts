@@ -763,6 +763,15 @@ program
           });
           const report = renderReconciliationReport(reconciliation);
           if (report) log(report);
+          if (reconciliation.stale.length > 0) {
+            const quarantined = liveBroker.quarantinePositions(
+              reconciliation.stale.map((position) => position.positionId),
+            );
+            log(
+              `[reconcile] QUARANTINED ${quarantined} stale live position(s); ` +
+              'automated exits and new entries are blocked until recover-positions resolves them',
+            );
+          }
         }
       }
 

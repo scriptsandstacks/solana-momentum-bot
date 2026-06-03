@@ -7,7 +7,7 @@
 ## Current Health
 
 ```text
-npm test          -> 37 files, 274 tests passing
+npm test          -> 37 files, 276 tests passing
 npm run typecheck -> clean
 git diff --check  -> clean
 ```
@@ -34,6 +34,7 @@ Live mode is functionally implemented:
 - Live startup blocks when submitted or confirmed executions remain unpersisted
 - `journal` lists blocking executions; `journal-resolve` only clears RPC-proven failed or expired submissions
 - Interactive `recover-positions` support for stale and orphaned positions
+- Startup quarantine for stale positions: no repeated exits or new entries until recovery
 - Stablecoin-funded orphan buys recovered from recent wallet transaction history
 
 ## Important Files
@@ -72,12 +73,6 @@ This branch adds:
 Confirmation accepts both `confirmed` and `finalized`. Requiring only
 `finalized` would reduce reorg risk but add latency. This is a trading-policy
 decision rather than missing plumbing.
-
-**Stale position auto-handling**
-
-Failed live exits are isolated per position, but stale SQLite positions remain
-open until `recover-positions` is run. The exit path could detect and quarantine
-stale positions automatically.
 
 **SOL-funded orphan recovery valuation**
 
