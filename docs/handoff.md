@@ -7,7 +7,7 @@
 ## Current Health
 
 ```text
-npm test          -> 37 files, 270 tests passing
+npm test          -> 37 files, 274 tests passing
 npm run typecheck -> clean
 git diff --check  -> clean
 ```
@@ -32,6 +32,7 @@ Live mode is functionally implemented:
 - Startup wallet/SQLite reconciliation
 - Persistent live execution journal for prepared, submitted, confirmed, persisted, and failed swaps
 - Live startup blocks when submitted or confirmed executions remain unpersisted
+- `journal` lists blocking executions; `journal-resolve` only clears RPC-proven failed or expired submissions
 - Interactive `recover-positions` support for stale and orphaned positions
 - Stablecoin-funded orphan buys recovered from recent wallet transaction history
 
@@ -77,14 +78,6 @@ decision rather than missing plumbing.
 Failed live exits are isolated per position, but stale SQLite positions remain
 open until `recover-positions` is run. The exit path could detect and quarantine
 stale positions automatically.
-
-**Journal resolution for uncertain submissions**
-
-Submitted transactions that time out remain intentionally incomplete because an
-RPC timeout does not prove failure. `recover-positions` resolves confirmed open
-and close outcomes when wallet state exposes them, but a dedicated operator
-command for explicitly resolving verified failed signatures would improve the
-workflow.
 
 **SOL-funded orphan recovery valuation**
 

@@ -45,7 +45,10 @@ import {
   findMostRecentWalletBuy,
   recoveredBuyEntryPriceUsd,
 } from '../execution/solanaTransactionHistory.js';
-import { renderIncompleteLiveExecutions } from '../execution/liveExecutionJournal.js';
+import {
+  inspectSubmittedLiveExecution,
+  renderIncompleteLiveExecutions,
+} from '../execution/liveExecutionJournal.js';
 import { fetchPumpPortalMarketCandidates } from '../bot/pumpCandidates.js';
 import type { ExitRules } from '../bot/exitPositions.js';
 import type { TradingStrategy } from '../strategies/types.js';
@@ -193,6 +196,64 @@ program
         liveExecutionImplemented: true,
       });
       process.stdout.write(renderLiveReadinessReport(report));
+    } finally {
+      store.close();
+    }
+  });
+
+program
+  .command('journal')
+  .description('List submitted or confirmed live executions that still require reconciliation')
+  .action(() => {
+    const store = new SqliteStore();
+    try {
+      const report = renderIncompleteLiveExecutions(store.listIncompleteLiveExecutions());
+      process.stdout.write(report ? `${report}\n` : 'No incomplete live executions.\n');
+    } finally {
+      store.close();
+    }
+  });
+
+program
+  .command('journal-resolve')
+  .description('Resolve an RPC-proven failed or expired submitted live execution')
+  .argument('<id>', 'live execution journal id')
+  .option('--yes', 'resolve without interactive confirmation', false)
+  .action(async (id: string, options: { yes: boolean }) => {
+    const config = loadConfigFromFile(program.opts().config);
+    const solana = config.chains.solana;
+    const rpcUrl = solana.rpcUrlEnv ? process.env[solana.rpcUrlEnv] : undefined;
+    if (!rpcUrl) {
+      throw new Error(`Solana RPC URL env var "${solana.rpcUrlEnv ?? 'rpcUrlEnv'}" is not set.`);
+    }
+
+    const store = new SqliteStore();
+    try {
+      const entry = store.getLiveExecutionJournalEntry(id);
+      if (!entry) throw new Error(`No live execution journal entry found for "${id}".`);
+
+      const resolution = await inspectSubmittedLiveExecution({ entry, rpcUrl });
+      process.stdout.write(`${resolution.reason}\n`);
+      if (!resolution.resolvable) return;
+
+      if (!options.yes) {
+        if (!process.stdin.isTTY) {
+          throw new Error('Non-interactive shell — re-run with --yes to resolve this journal entry.');
+        }
+        const rl = createInterface({ input, output });
+        try {
+          const answer = await rl.question(`Mark journal entry "${id}" failed? Type "yes" to continue: `);
+          if (answer.trim().toLowerCase() !== 'yes') {
+            process.stdout.write('No changes applied.\n');
+            return;
+          }
+        } finally {
+          rl.close();
+        }
+      }
+
+      store.recordLiveExecutionFailed(id, resolution.reason);
+      process.stdout.write(`Resolved journal entry "${id}" as failed.\n`);
     } finally {
       store.close();
     }

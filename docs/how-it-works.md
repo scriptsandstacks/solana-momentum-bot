@@ -111,6 +111,10 @@ submitted. If the process stops after submission or confirmation but before the
 position or trade is saved, the next live startup refuses to open new risk until
 the incomplete execution is reconciled.
 
+The `journal` command lists these executions. `journal-resolve` can only clear a
+submitted transaction when Solana RPC proves it failed or expired; it cannot
+dismiss a confirmed or still-unknown transaction.
+
 ---
 
 ## What does the system track?

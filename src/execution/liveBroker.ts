@@ -217,7 +217,7 @@ export class LiveBroker implements ExecutionBroker {
         wrapAndUnwrapSol: true,
       });
       const signature = await signAndSendTransaction(swapTransaction);
-      this.journal?.recordLiveExecutionSubmitted(journalId, signature);
+      this.journal?.recordLiveExecutionSubmitted(journalId, signature, lastValidBlockHeight);
       submitted = true;
       await confirmTransaction(signature, lastValidBlockHeight);
       this.journal?.recordLiveExecutionConfirmed(journalId);
@@ -323,7 +323,7 @@ export class LiveBroker implements ExecutionBroker {
         wrapAndUnwrapSol: true,
       });
       const signature = await signAndSendTransaction(swapTransaction);
-      this.journal?.recordLiveExecutionSubmitted(journalId, signature);
+      this.journal?.recordLiveExecutionSubmitted(journalId, signature, lastValidBlockHeight);
       submitted = true;
       await confirmTransaction(signature, lastValidBlockHeight);
       this.journal?.recordLiveExecutionConfirmed(journalId);

@@ -244,13 +244,14 @@ describe('SqliteStore', () => {
       outputMint: candidate.address,
       inputAmountBaseUnits: '25000000',
     });
-    store.recordLiveExecutionSubmitted('open:live-1:test', 'sig-open');
+    store.recordLiveExecutionSubmitted('open:live-1:test', 'sig-open', 12345);
     store.recordLiveExecutionConfirmed('open:live-1:test');
 
     expect(store.listIncompleteLiveExecutions()).toMatchObject([{
       side: 'open',
       positionId: 'live-1',
       signature: 'sig-open',
+      lastValidBlockHeight: 12345,
       status: 'confirmed',
     }]);
 
@@ -281,7 +282,7 @@ describe('SqliteStore', () => {
       outputMint: 'usdc',
       inputAmountBaseUnits: '2500000000',
     });
-    store.recordLiveExecutionSubmitted('close:live-1:test', 'sig-close');
+    store.recordLiveExecutionSubmitted('close:live-1:test', 'sig-close', 23456);
     store.recordLiveExecutionConfirmed('close:live-1:test');
 
     store.saveClosedTrade({

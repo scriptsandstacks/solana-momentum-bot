@@ -12,7 +12,7 @@ Technical reference for the Hermes trading bot. Covers architecture, data flow, 
 | Live trading (Solana) | Implemented — Jupiter swap execution, keypair signing, on-chain confirmation |
 | Supported chain | Solana only |
 | Persistence | SQLite (auto-migrating schema) |
-| Test coverage | 37 files, 270 tests |
+| Test coverage | 37 files, 274 tests |
 
 ---
 
@@ -278,6 +278,11 @@ inside the same SQLite transaction as the position/trade write. Live startup
 blocks when submitted or confirmed rows remain incomplete, and directs the
 operator to `recover-positions` before new risk is opened.
 
+`journal` lists blocking rows. `journal-resolve <id>` queries Solana RPC and only
+marks a submitted row failed when the signature has an on-chain error or its
+Jupiter validity window is provably expired. Confirmed or still-unknown
+transactions cannot be dismissed through this command.
+
 ---
 
 ## Analytics and reporting
@@ -302,6 +307,8 @@ operator to `recover-positions` before new risk is opened.
 | `run` | Main loop. `mode: live` enables on-chain swaps. `--exit-interval-seconds` (default 10 in live). |
 | `live-readiness` | Audit live prerequisites without reading wallet contents or placing trades. |
 | `recover-positions` | Resolve wallet/SQLite discrepancies. `--dry-run`, `--yes`. |
+| `journal` | List submitted or confirmed live executions that still require reconciliation. |
+| `journal-resolve` | Resolve an RPC-proven failed or expired submitted execution. |
 | `report` | Persisted scores, open positions, closed trades, events. |
 | `stats` | Trade analytics: expectancy, win rate, P&L by strategy / reason / score bucket / source. |
 | `strategies` | Compact per-strategy performance summary. |
@@ -493,7 +500,7 @@ src/
 
 ```bash
 npm install
-npm test              # 37 test files, 270 tests
+npm test              # 37 test files, 274 tests
 npm run typecheck     # must be clean before committing
 npm run bot -- --help # show all commands
 ```

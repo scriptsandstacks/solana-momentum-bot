@@ -556,8 +556,8 @@ export class SqliteStore {
       .run({ ...entry, createdAt: now, updatedAt: now });
   }
 
-  recordLiveExecutionSubmitted(id: string, signature: string): void {
-    this.updateLiveExecutionJournal(id, 'submitted', { signature });
+  recordLiveExecutionSubmitted(id: string, signature: string, lastValidBlockHeight?: number): void {
+    this.updateLiveExecutionJournal(id, 'submitted', { signature, lastValidBlockHeight });
   }
 
   recordLiveExecutionConfirmed(id: string): void {
@@ -574,12 +574,27 @@ export class SqliteStore {
         `SELECT id, side, position_id as positionId, mint, symbol,
                 input_mint as inputMint, output_mint as outputMint,
                 input_amount_base_units as inputAmountBaseUnits,
-                signature, status, error, created_at as createdAt, updated_at as updatedAt
+                signature, last_valid_block_height as lastValidBlockHeight,
+                status, error, created_at as createdAt, updated_at as updatedAt
          FROM live_execution_journal
          WHERE status IN ('submitted', 'confirmed')
          ORDER BY created_at ASC`,
       )
       .all() as LiveExecutionJournalEntry[];
+  }
+
+  getLiveExecutionJournalEntry(id: string): LiveExecutionJournalEntry | undefined {
+    return this.db
+      .prepare(
+        `SELECT id, side, position_id as positionId, mint, symbol,
+                input_mint as inputMint, output_mint as outputMint,
+                input_amount_base_units as inputAmountBaseUnits,
+                signature, last_valid_block_height as lastValidBlockHeight,
+                status, error, created_at as createdAt, updated_at as updatedAt
+         FROM live_execution_journal
+         WHERE id = ?`,
+      )
+      .get(id) as LiveExecutionJournalEntry | undefined;
   }
 
   // All closed trades projected to the fields performance analytics needs. Not
@@ -895,6 +910,7 @@ export class SqliteStore {
         output_mint TEXT NOT NULL,
         input_amount_base_units TEXT NOT NULL,
         signature TEXT,
+        last_valid_block_height INTEGER,
         status TEXT NOT NULL,
         error TEXT,
         created_at TEXT NOT NULL,
@@ -937,6 +953,7 @@ export class SqliteStore {
     this.addColumnIfMissing('closed_trades', 'exit_network_fee_usd', 'REAL');
     this.addColumnIfMissing('closed_trades', 'entry_network_fee_lamports', 'INTEGER');
     this.addColumnIfMissing('closed_trades', 'exit_network_fee_lamports', 'INTEGER');
+    this.addColumnIfMissing('live_execution_journal', 'last_valid_block_height', 'INTEGER');
     this.addColumnIfMissing('scored_candidates', 'route_input_mint', 'TEXT');
     this.addColumnIfMissing('scored_candidates', 'route_input_symbol', 'TEXT');
     this.addColumnIfMissing('scored_candidates', 'strategy_id', "TEXT NOT NULL DEFAULT 'freshLaunchMomentum'");
@@ -972,13 +989,14 @@ export class SqliteStore {
   private updateLiveExecutionJournal(
     id: string,
     status: LiveExecutionJournalEntry['status'],
-    values: { signature?: string; error?: string } = {},
+    values: { signature?: string; error?: string; lastValidBlockHeight?: number } = {},
   ): void {
     this.db
       .prepare(
         `UPDATE live_execution_journal
          SET status = @status,
              signature = COALESCE(@signature, signature),
+             last_valid_block_height = COALESCE(@lastValidBlockHeight, last_valid_block_height),
              error = COALESCE(@error, error),
              updated_at = @updatedAt
          WHERE id = @id`,
@@ -988,6 +1006,7 @@ export class SqliteStore {
         status,
         signature: values.signature ?? null,
         error: values.error ?? null,
+        lastValidBlockHeight: values.lastValidBlockHeight ?? null,
         updatedAt: new Date().toISOString(),
       });
   }

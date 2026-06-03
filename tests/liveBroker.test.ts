@@ -111,7 +111,9 @@ function makeJournal(): LiveExecutionJournalStore & {
     confirmed: [] as string[],
     failed: [] as any[],
     recordLiveExecutionPrepared(entry: any) { journal.prepared.push(entry); },
-    recordLiveExecutionSubmitted(id: string, signature: string) { journal.submitted.push({ id, signature }); },
+    recordLiveExecutionSubmitted(id: string, signature: string, lastValidBlockHeight?: number) {
+      journal.submitted.push({ id, signature, lastValidBlockHeight });
+    },
     recordLiveExecutionConfirmed(id: string) { journal.confirmed.push(id); },
     recordLiveExecutionFailed(id: string, error: string) { journal.failed.push({ id, error }); },
   };
