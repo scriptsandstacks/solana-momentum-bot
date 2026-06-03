@@ -12,7 +12,7 @@ Technical reference for the Hermes trading bot. Covers architecture, data flow, 
 | Live trading (Solana) | Implemented — Jupiter swap execution, keypair signing, on-chain confirmation |
 | Supported chain | Solana only |
 | Persistence | SQLite (auto-migrating schema) |
-| Test coverage | 37 files, 276 tests |
+| Test coverage | 38 files, 279 tests |
 
 ---
 
@@ -208,12 +208,13 @@ Executes real on-chain trades via Jupiter and the Solana RPC.
 
 **`openPosition` flow:**
 1. `canOpenPosition()` — checks wallet config, cash, cap, daily-loss limit
-2. `getJupiterQuoteForSwap` — sized to `positionSizeUsd` (USDC direct, SOL via price query)
-3. `getJupiterSwapTransaction` — POST to `/swap/v1/swap`
-4. `VersionedTransaction.deserialize` → `tx.sign([keypair])` → `sendTransaction` RPC
-5. `confirmTransaction` — polls `getSignatureStatuses` and aborts immediately if Jupiter's `lastValidBlockHeight` is exceeded; 90 s remains the fallback timeout
-6. `getTransaction` — reads confirmed wallet balance deltas for the actual input and output amounts
-7. Returns `PaperPosition` with actual fill quantity, price, and `entryTxSignature`
+2. `getWalletBalance` — verifies the selected route input mint can fund the buy
+3. `getJupiterQuoteForSwap` — sized to `positionSizeUsd` (USDC direct, SOL via price query)
+4. `getJupiterSwapTransaction` — POST to `/swap/v1/swap`
+5. `VersionedTransaction.deserialize` → `tx.sign([keypair])` → `sendTransaction` RPC
+6. `confirmTransaction` — polls `getSignatureStatuses` and aborts immediately if Jupiter's `lastValidBlockHeight` is exceeded; 90 s remains the fallback timeout
+7. `getTransaction` — reads confirmed wallet balance deltas for the actual input and output amounts
+8. Returns `PaperPosition` with actual fill quantity, price, and `entryTxSignature`
 
 **`closePosition` flow:**
 1. Quote token → USDC (`getJupiterQuoteForSwap`)
@@ -229,7 +230,9 @@ when SOL/USD pricing is available, valued in USD and included in realized P&L.
 
 **Deps are injectable** (`LiveBrokerDeps`) — all network calls are mocked in tests; no real keys needed.
 
-**Startup:** `LiveBroker.restore(store, options, deps, initialCashUsd)` seeds position state from SQLite and cash from the on-chain wallet balance.
+**Startup:** `LiveBroker.restore(store, options, deps, initialCashUsd)` seeds
+position state from SQLite. Live cash is the USD value of the wallet's supported
+route-input inventory: native SOL plus USDC and USDT token balances.
 
 ---
 
@@ -505,7 +508,7 @@ src/
 
 ```bash
 npm install
-npm test              # 37 test files, 276 tests
+npm test              # 38 test files, 279 tests
 npm run typecheck     # must be clean before committing
 npm run bot -- --help # show all commands
 ```

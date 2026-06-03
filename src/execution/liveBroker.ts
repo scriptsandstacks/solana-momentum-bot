@@ -51,6 +51,9 @@ export interface LiveBrokerDeps {
   // Return the current SOL/USD price. Used to size SOL-routed buys.
   getSolPriceUsd: () => Promise<number>;
 
+  // Return the wallet's spendable base-unit balance for a route input mint.
+  getWalletBalance: (mint: string) => Promise<bigint>;
+
   // Return the Base58 public key of the trading wallet.
   getPublicKey: () => string;
 }
@@ -185,8 +188,8 @@ export class LiveBroker implements ExecutionBroker {
     const sizeUsd = positionSizeUsd ?? this.options.positionSizeUsd;
     const maxSlippage = this.options.solana.maxSlippageBps;
 
-    const { getJupiterQuote, getSwapTransaction, signAndSendTransaction, confirmTransaction, getConfirmedSwapFill, getTokenDecimals, getSolPriceUsd, getPublicKey } = this.deps;
-    if (!getJupiterQuote || !getSwapTransaction || !signAndSendTransaction || !confirmTransaction || !getConfirmedSwapFill || !getTokenDecimals || !getSolPriceUsd || !getPublicKey) {
+    const { getJupiterQuote, getSwapTransaction, signAndSendTransaction, confirmTransaction, getConfirmedSwapFill, getTokenDecimals, getSolPriceUsd, getWalletBalance, getPublicKey } = this.deps;
+    if (!getJupiterQuote || !getSwapTransaction || !signAndSendTransaction || !confirmTransaction || !getConfirmedSwapFill || !getTokenDecimals || !getSolPriceUsd || !getWalletBalance || !getPublicKey) {
       throw new Error('LiveBroker: execution deps are not configured — use LiveBroker.restore() with createLiveBrokerDeps()');
     }
 
@@ -194,6 +197,12 @@ export class LiveBroker implements ExecutionBroker {
     // Determine input mint and amount from the pre-computed best route.
     const inputMint = candidate.routeInputMint ?? SOL_MINT;
     const inputAmountBaseUnits = await this.resolveInputAmount(inputMint, sizeUsd, getSolPriceUsd);
+    const walletInputBalance = await getWalletBalance(inputMint);
+    if (walletInputBalance < BigInt(inputAmountBaseUnits)) {
+      throw new Error(
+        `Cannot open position: insufficient ${candidate.routeInputSymbol ?? inputMint} balance for selected route`,
+      );
+    }
     const journalId = `open:${id}:${randomUUID()}`;
     this.journal?.recordLiveExecutionPrepared({
       id: journalId,
