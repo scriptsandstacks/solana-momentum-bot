@@ -64,6 +64,10 @@ This branch adds:
 - Transaction-history-based orphan recovery for USDC/USDT-funded buys
 - Jupiter validity-window propagation and early expired-transaction failure
 - Deterministic token watcher integration testing
+- Persistent live execution journaling with operator inspection and safe resolution
+- Stale-position quarantine after wallet reconciliation
+- SOL, USDC, and USDT live cash inventory with mint-specific funding checks
+- Actual-size live route selection across funded wallet inputs
 
 ## Remaining Risks
 
