@@ -52,11 +52,18 @@ fees:
 scoring:
   minimumScoreToEnter: 75
 
-# Data retention. `prune` deletes scored candidates older than this that never
-# led to a position (trades are always kept). Also the counterfactual window for
-# the `outcomes` report.
+# Data retention. The run loop auto-prunes once per UTC day; `prune` can also
+# be run manually. Trades are always kept regardless of these settings.
 retention:
+  # Scored candidates that never led to a position. Also the counterfactual
+  # window for the `outcomes` report — lower values shorten that window.
   scoredCandidateDays: 30
+  # Raw PumpPortal event blobs (~1–5 KB each). Processed events are safe to
+  # delete after a short window; pending events are never pruned automatically.
+  pumpPortalEventDays: 7
+  # Token volume snapshots used for the 30-minute volume acceleration z-score.
+  # Nothing older than 1 day is ever queried, so 1 day is the effective minimum.
+  volumeSnapshotDays: 1
 
 # Notifications. console=true logs trade events to stdout.
 # Set discordWebhookUrlEnv to the name of an env var holding your Discord

@@ -728,6 +728,26 @@ export class SqliteStore {
     return result.changes;
   }
 
+  // Delete token volume snapshots older than cutoff. Only snapshots used for
+  // volume acceleration z-score need to be kept (30-minute window). Anything
+  // beyond the scored-candidate retention window is pure waste.
+  pruneTokenVolumeSnapshots(cutoffIso: string): number {
+    const result = this.db
+      .prepare(`DELETE FROM token_volume_snapshots WHERE observed_at < ?`)
+      .run(cutoffIso);
+    return result.changes;
+  }
+
+  // Delete processed PumpPortal events older than cutoff. Raw events are only
+  // needed until they are scored and persisted as scored_candidates. Keeping
+  // them longer than a few days wastes significant disk on large raw_json blobs.
+  prunePumpPortalEvents(cutoffIso: string): number {
+    const result = this.db
+      .prepare(`DELETE FROM pumpportal_events WHERE received_at < ? AND processing_status != 'pending'`)
+      .run(cutoffIso);
+    return result.changes;
+  }
+
   // Reclaim disk after large deletes. SQLite does not shrink the file or release
   // freed pages without VACUUM. Cannot run inside a transaction.
   vacuum(): void {

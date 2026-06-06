@@ -42,6 +42,8 @@ const config: BotConfig = {
   },
   retention: {
     scoredCandidateDays: 30,
+    pumpPortalEventDays: 7,
+    volumeSnapshotDays: 1,
   },
   notifications: {
     console: true,

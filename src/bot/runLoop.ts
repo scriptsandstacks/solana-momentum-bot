@@ -51,6 +51,10 @@ interface RunLoopStore {
   }): RetriableScoredCandidateRow[];
   // Analytics: when present the run loop can emit periodic performance summaries.
   loadClosedTradeStats?(): ClosedTradeStatRow[];
+  // Data retention: when present the run loop auto-prunes once per UTC day.
+  pruneScoredCandidates?(cutoffIso: string): number;
+  pruneTokenVolumeSnapshots?(cutoffIso: string): number;
+  prunePumpPortalEvents?(cutoffIso: string): number;
 }
 
 type ProcessExits = (options: {
@@ -142,6 +146,13 @@ interface RunBotLoopOptions {
   resolveExits?: (strategyId: string | undefined) => ExitRules | undefined;
   // Emit a full analytics summary via onLog every N process passes. 0 = disabled.
   analyticsIntervalPasses?: number;
+  // Data-retention windows. When set and the store supports pruning, the run
+  // loop prunes once per UTC day automatically so disk never grows unboundedly.
+  retention?: {
+    scoredCandidateDays: number;
+    pumpPortalEventDays: number;
+    volumeSnapshotDays: number;
+  };
   ClientCtor?: PumpPortalClientCtor;
   processPumpEvents?: ProcessPumpEvents;
   processExits?: ProcessExits;
@@ -244,6 +255,8 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
   // Set when on-chain token activity arrives while a pass is in-flight.
   // Checked at the end of every pass so the exit runs immediately after.
   let activityPendingExit = false;
+  // Track the UTC day on which we last pruned so auto-prune fires once per day.
+  let lastPrunedDay = '';
 
   // Token watcher — created only when broker is set (live mode) and a factory
   // is provided. Tracks which mints are currently held so subscriptions stay
@@ -378,8 +391,8 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
 
       // Periodic analytics summary — emitted every N passes so long-running
       // sessions stay legible without stopping the bot to run `stats`.
-      const interval = options.analyticsIntervalPasses ?? 0;
-      if (interval > 0 && result.processRuns % interval === 0 && typeof options.store.loadClosedTradeStats === 'function') {
+      const analyticsInterval = options.analyticsIntervalPasses ?? 0;
+      if (analyticsInterval > 0 && result.processRuns % analyticsInterval === 0 && typeof options.store.loadClosedTradeStats === 'function') {
         const stats = options.store.loadClosedTradeStats();
         if (stats.length > 0) {
           const analyticsReport = renderAnalyticsReport(computeTradeAnalytics(stats));
@@ -388,6 +401,27 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
           }
         }
       }
+
+      // Auto-prune once per UTC day to keep disk bounded. Fires after the first
+      // pass of each new day so it never delays time-sensitive startup paths.
+      const todayUtc = new Date().toISOString().slice(0, 10);
+      if (options.retention && todayUtc !== lastPrunedDay) {
+        const { scoredCandidateDays, pumpPortalEventDays, volumeSnapshotDays } = options.retention;
+        const now = Date.now();
+        const candidateCutoff = new Date(now - scoredCandidateDays * 864e5).toISOString();
+        const eventCutoff = new Date(now - pumpPortalEventDays * 864e5).toISOString();
+        const snapshotCutoff = new Date(now - volumeSnapshotDays * 864e5).toISOString();
+        const candidates = options.store.pruneScoredCandidates?.(candidateCutoff) ?? 0;
+        const events = options.store.prunePumpPortalEvents?.(eventCutoff) ?? 0;
+        const snapshots = options.store.pruneTokenVolumeSnapshots?.(snapshotCutoff) ?? 0;
+        lastPrunedDay = todayUtc;
+        if (candidates + events + snapshots > 0) {
+          options.onLog?.(
+            `[prune] daily retention pass: candidates=${candidates} events=${events} snapshots=${snapshots}`,
+          );
+        }
+      }
+
       syncTokenWatcher();
     } finally {
       processInFlight = false;

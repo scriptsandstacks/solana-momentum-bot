@@ -94,8 +94,14 @@ export const botConfigSchema = z.object({
   retention: z
     .object({
       scoredCandidateDays: z.number().positive(),
+      // Raw PumpPortal event blobs (1–5 KB each). Events are only needed until
+      // they are processed into scored candidates — 7 days is generous.
+      pumpPortalEventDays: z.number().positive().default(7),
+      // Token volume snapshots used for the 30-minute volume acceleration
+      // z-score signal. Nothing older than 1 day is ever queried.
+      volumeSnapshotDays: z.number().positive().default(1),
     })
-    .default({ scoredCandidateDays: 30 }),
+    .default({ scoredCandidateDays: 30, pumpPortalEventDays: 7, volumeSnapshotDays: 1 }),
   // Controls whether trade open/close/cycle events are formatted as human-readable
   // summary lines during `run` (separate from the raw [run:process] logs).
   // Omitting the section defaults to console=true so the run loop is legible.

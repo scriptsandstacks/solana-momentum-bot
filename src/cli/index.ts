@@ -652,28 +652,47 @@ program
 
 program
   .command('prune')
-  .description('Delete old scored candidates that never led to a position (trades are always kept)')
-  .option('--days <days>', 'retention window in days; defaults to config retention.scoredCandidateDays')
+  .description('Delete old data to reclaim disk: scored candidates, volume snapshots, and processed PumpPortal events')
+  .option('--days <days>', 'scored-candidate retention in days; defaults to config retention.scoredCandidateDays')
   .option('--dry-run', 'report what would be deleted without deleting', false)
   .option('--no-vacuum', 'skip reclaiming disk with VACUUM after deleting')
   .action(async (options: { days?: string; dryRun: boolean; vacuum: boolean }) => {
     const config = loadConfigFromFile(program.opts().config);
-    const days = options.days === undefined ? config.retention.scoredCandidateDays : Number(options.days);
-    if (!Number.isFinite(days) || days <= 0) {
+    const candidateDays = options.days === undefined ? config.retention.scoredCandidateDays : Number(options.days);
+    if (!Number.isFinite(candidateDays) || candidateDays <= 0) {
       throw new Error('--days must be a positive number');
     }
-    const cutoffIso = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const now = Date.now();
+    const candidateCutoff = new Date(now - candidateDays * 864e5).toISOString();
+    const eventCutoff = new Date(now - config.retention.pumpPortalEventDays * 864e5).toISOString();
+    const snapshotCutoff = new Date(now - config.retention.volumeSnapshotDays * 864e5).toISOString();
+
     const store = new SqliteStore();
     try {
-      const prunable = store.countPrunableScoredCandidates(cutoffIso);
       if (options.dryRun) {
-        process.stdout.write(`Dry run: ${prunable} scored candidate(s) older than ${days}d (before ${cutoffIso}) would be deleted.\n`);
+        const prunable = store.countPrunableScoredCandidates(candidateCutoff);
+        process.stdout.write([
+          `Dry run (no changes written):`,
+          `  scored candidates  : ${prunable} rows older than ${candidateDays}d`,
+          `  pumpportal events  : rows older than ${config.retention.pumpPortalEventDays}d (processed only)`,
+          `  volume snapshots   : rows older than ${config.retention.volumeSnapshotDays}d`,
+        ].join('\n') + '\n');
         return;
       }
-      const deleted = store.pruneScoredCandidates(cutoffIso);
-      if (deleted > 0 && options.vacuum) store.vacuum();
-      const reclaimed = deleted > 0 && options.vacuum ? ' (disk reclaimed)' : '';
-      process.stdout.write(`Pruned ${deleted} scored candidate(s) older than ${days}d.${reclaimed}\n`);
+
+      const candidates = store.pruneScoredCandidates(candidateCutoff);
+      const events = store.prunePumpPortalEvents(eventCutoff);
+      const snapshots = store.pruneTokenVolumeSnapshots(snapshotCutoff);
+      const total = candidates + events + snapshots;
+
+      if (total > 0 && options.vacuum) store.vacuum();
+      const reclaimed = total > 0 && options.vacuum ? ' (disk reclaimed with VACUUM)' : '';
+      process.stdout.write([
+        `Prune complete${reclaimed}:`,
+        `  scored candidates  : ${candidates} deleted (>${candidateDays}d)`,
+        `  pumpportal events  : ${events} deleted (>${config.retention.pumpPortalEventDays}d, processed only)`,
+        `  volume snapshots   : ${snapshots} deleted (>${config.retention.volumeSnapshotDays}d)`,
+      ].join('\n') + '\n');
     } finally {
       store.close();
     }
@@ -866,6 +885,11 @@ program
         exits: config.exits,
         resolveExits: buildExitResolver(strategies, config.exits),
         analyticsIntervalPasses,
+        retention: {
+          scoredCandidateDays: config.retention.scoredCandidateDays,
+          pumpPortalEventDays: config.retention.pumpPortalEventDays,
+          volumeSnapshotDays: config.retention.volumeSnapshotDays,
+        },
         stopSignal: stopController.signal,
         onLog: log,
         reporter,
