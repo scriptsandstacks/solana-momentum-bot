@@ -7,6 +7,7 @@ import { renderReport } from '../bot/report.js';
 import { runPaperCycle } from '../bot/paperCycle.js';
 import { renderStorageReport } from '../bot/storageReport.js';
 import { computeTradeAnalytics, renderAnalyticsReport, computeOutcomeAnalytics, renderOutcomeAnalytics } from '../bot/analytics.js';
+import { renderDashboard } from '../bot/dashboard.js';
 import { trackCandidateOutcomes } from '../bot/trackOutcomes.js';
 import { runPumpWatch } from '../bot/pumpWatch.js';
 import { processPumpPortalEvents } from '../bot/pumpProcess.js';
@@ -873,6 +874,99 @@ program
     } finally {
       process.off('SIGINT', stop);
       process.off('SIGTERM', stop);
+      store.close();
+    }
+  });
+
+program
+  .command('dashboard')
+  .description('Read-only operator view: readiness, wallet balances, open positions, recent trades, journal, and analytics')
+  .option('--trades <n>', 'number of recent closed trades to show', '5')
+  .action(async (options: { trades: string }) => {
+    const tradeLimit = Math.max(1, Number(options.trades) || 5);
+    const config = loadConfigFromFile(program.opts().config);
+    const store = new SqliteStore();
+    const generatedAt = new Date().toISOString();
+
+    try {
+      // ── live readiness (static; no wallet read) ──────────────────────────
+      const walletFile = config.chains.solana.walletFile;
+      const walletFileExists = walletFile ? fs.existsSync(path.resolve(process.cwd(), walletFile)) : false;
+      const readiness = evaluateLiveReadiness({
+        config,
+        env: process.env,
+        walletFileExists,
+        closedTrades: store.loadClosedTradeStats().length,
+        trackedOutcomes: store.loadScoredOutcomeStats().length,
+        liveBrokerAvailable: true,
+        liveExecutionImplemented: true,
+      });
+
+      // ── wallet balances (live only; skipped if RPC not configured) ────────
+      let walletBalances;
+      let walletError: string | undefined;
+      const rpcUrl = config.chains.solana.rpcUrlEnv ? process.env[config.chains.solana.rpcUrlEnv] : undefined;
+      if (walletFile && rpcUrl) {
+        try {
+          const keypair = loadSolanaKeypair(walletFile);
+          const deps = createLiveBrokerDeps(keypair, {
+            rpcUrl,
+            maxSlippageBps: config.chains.solana.maxSlippageBps,
+            confirmationCommitment: config.chains.solana.confirmationCommitment,
+            priorityFeeLamports: config.chains.solana.priorityFeeLamports ?? 'auto',
+          });
+          const inventory = await queryWalletCashInventory(
+            keypair.publicKey.toBase58(),
+            deps,
+            solanaRpcRequest(rpcUrl),
+          );
+          const minReserve = BigInt(
+            config.chains.solana.minSolFeeReserveLamports ?? DEFAULT_MIN_SOL_FEE_RESERVE_LAMPORTS,
+          );
+          walletBalances = {
+            publicKey: inventory.publicKey,
+            sol: inventory.sol,
+            solUsd: inventory.solUsd,
+            solPriceUsd: inventory.solPriceUsd,
+            usdc: inventory.usdc,
+            usdt: inventory.usdt,
+            totalUsd: inventory.totalUsd,
+            solLamports: inventory.solLamports,
+            reserveStatus: (inventory.solLamports >= minReserve ? 'OK' : 'LOW') as 'OK' | 'LOW',
+            minReserveLamports: minReserve,
+          };
+        } catch (err) {
+          walletError = `Wallet balance fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+
+      // ── journal ───────────────────────────────────────────────────────────
+      const incomplete = store.listIncompleteLiveExecutions();
+      const journalText = renderIncompleteLiveExecutions(incomplete);
+      const journalSummary = journalText ? journalText.trim() : 'No incomplete live executions.';
+
+      // ── positions and trades ──────────────────────────────────────────────
+      const openPositions = store.listOpenPositions();
+      const recentTrades = store.listClosedTrades(tradeLimit);
+
+      // ── analytics ────────────────────────────────────────────────────────
+      const analytics = computeTradeAnalytics(store.loadClosedTradeStats());
+
+      process.stdout.write(
+        renderDashboard({
+          mode: config.mode,
+          generatedAt,
+          readiness,
+          walletBalances,
+          walletError,
+          openPositions,
+          recentTrades,
+          journalBlockers: incomplete.length,
+          journalSummary,
+          analytics,
+        }),
+      );
+    } finally {
       store.close();
     }
   });
