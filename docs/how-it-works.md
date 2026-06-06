@@ -101,8 +101,10 @@ Exit trades follow the same path in reverse (token → USDC). Every trade's tran
 The live cash figure values the wallet's supported funding assets: SOL, USDC,
 and USDT. Before a buy is submitted, the bot re-quotes the actual position size
 across the inputs the wallet can fund and selects the route that returns the
-most tokens. An unfunded discovery-time route therefore does not prevent a
-funded alternative from trading.
+most tokens, while rejecting quotes above the configured price-impact cap. An
+unfunded discovery-time route therefore does not prevent a funded alternative
+from trading, and a thin actual-size route cannot slip through just because the
+small discovery probe looked acceptable.
 
 At startup in live mode, the bot cross-checks the wallet's on-chain token
 balances against its SQLite records. Any discrepancy is logged immediately, and

@@ -7,7 +7,7 @@
 ## Current Health
 
 ```text
-npm test          -> 38 files, 287 tests passing
+npm test          -> 38 files, 289 tests passing
 npm run typecheck -> clean
 git diff --check  -> clean
 ```
@@ -36,7 +36,7 @@ Live mode is functionally implemented:
 - Interactive `recover-positions` support for stale and orphaned positions
 - Startup quarantine for stale positions: no repeated exits or new entries until recovery
 - Stablecoin-funded orphan buys recover exact transaction-history basis; SOL-funded buys recover approximate basis from actual SOL spend and current SOL/USD
-- Live cash inventory values SOL, USDC, and USDT; opens select the best actual-size quote among funded inputs
+- Live cash inventory values SOL, USDC, and USDT; opens select the best actual-size quote among funded inputs and reject excessive price impact
 - Configurable live confirmation commitment: `confirmed` for lower latency or `finalized` for stronger reorg protection
 
 ## Important Files
@@ -69,6 +69,7 @@ Recent live-readiness work adds:
 - Stale-position quarantine after wallet reconciliation
 - SOL, USDC, and USDT live cash inventory with mint-specific funding checks
 - Actual-size live route selection across funded wallet inputs
+- Actual-size live price-impact cap before signing swaps
 - Configurable live swap confirmation commitment
 - SOL-funded orphan recovery uses recovered SOL input amount with current SOL/USD and labels the basis approximate
 

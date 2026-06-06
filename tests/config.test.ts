@@ -55,6 +55,20 @@ describe('config loading', () => {
     expect(config.chains.solana.confirmationCommitment).toBe('finalized');
   });
 
+  it('accepts an explicit live max price impact cap', () => {
+    const config = parseConfig({
+      ...validConfig,
+      chains: {
+        solana: {
+          ...validConfig.chains.solana,
+          maxPriceImpactBps: 250,
+        },
+      },
+    });
+
+    expect(config.chains.solana.maxPriceImpactBps).toBe(250);
+  });
+
   it('accepts live mode in config (CLI guards against running it)', () => {
     const config = parseConfig({ ...validConfig, mode: 'live' });
     expect(config.mode).toBe('live');

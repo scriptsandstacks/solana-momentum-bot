@@ -12,6 +12,9 @@ chains:
     minLiquidityUsd: 10000
     minVolume5mUsd: 5000
     maxSlippageBps: 500
+    # Max actual-size quote price impact allowed before signing a live buy.
+    # Omit to use maxSlippageBps as the impact ceiling.
+    maxPriceImpactBps: 500
     # Priority fee added to every live trade transaction (lamports).
     # 'auto' lets Jupiter set a dynamic fee based on current network congestion.
     # Increase during high-traffic periods if transactions are not landing.

@@ -12,7 +12,7 @@ Technical reference for the Hermes trading bot. Covers architecture, data flow, 
 | Live trading (Solana) | Implemented — Jupiter swap execution, keypair signing, on-chain confirmation |
 | Supported chain | Solana only |
 | Persistence | SQLite (auto-migrating schema) |
-| Test coverage | 38 files, 287 tests |
+| Test coverage | 38 files, 289 tests |
 
 ---
 
@@ -209,7 +209,7 @@ Executes real on-chain trades via Jupiter and the Solana RPC.
 **`openPosition` flow:**
 1. `canOpenPosition()` — checks wallet config, cash, cap, daily-loss limit
 2. `getWalletBalance` — finds which SOL, USDC, and USDT route inputs can fund the buy
-3. `getJupiterQuoteForSwap` — quotes the actual `positionSizeUsd` across funded inputs and selects the highest token output
+3. `getJupiterQuoteForSwap` — quotes the actual `positionSizeUsd` across funded inputs, rejects routes above `maxPriceImpactBps`, and selects the highest token output
 4. `getJupiterSwapTransaction` — POST to `/swap/v1/swap`
 5. `VersionedTransaction.deserialize` → `tx.sign([keypair])` → `sendTransaction` RPC
 6. `confirmTransaction` — polls `getSignatureStatuses` until `confirmationCommitment` is reached and aborts immediately if Jupiter's `lastValidBlockHeight` is exceeded; 90 s remains the fallback timeout
@@ -399,6 +399,7 @@ chains:
     minLiquidityUsd: 10000
     minVolume5mUsd: 5000
     maxSlippageBps: 500
+    maxPriceImpactBps: 500              # optional; defaults to maxSlippageBps
     priorityFeeLamports: auto               # live mode: lamports per tx, or 'auto' (Jupiter dynamic)
     confirmationCommitment: confirmed       # 'confirmed' for lower latency, 'finalized' for stronger finality
 
@@ -512,7 +513,7 @@ src/
 
 ```bash
 npm install
-npm test              # 38 test files, 287 tests
+npm test              # 38 test files, 289 tests
 npm run typecheck     # must be clean before committing
 npm run bot -- --help # show all commands
 ```
