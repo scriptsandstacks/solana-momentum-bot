@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderDashboard, type DashboardInput } from '../src/bot/dashboard.js';
+import { renderSnapshot, type SnapshotInput } from '../src/bot/snapshot.js';
 import { computeTradeAnalytics, type AnalyticsTrade } from '../src/bot/analytics.js';
 
 function emptyAnalytics() {
@@ -21,7 +21,7 @@ function trade(overrides: Partial<AnalyticsTrade>): AnalyticsTrade {
   };
 }
 
-const baseInput: DashboardInput = {
+const baseInput: SnapshotInput = {
   mode: 'paper',
   generatedAt: '2026-06-06T12:00:00.000Z',
   openPositions: [],
@@ -31,16 +31,16 @@ const baseInput: DashboardInput = {
   analytics: emptyAnalytics(),
 };
 
-describe('renderDashboard', () => {
+describe('renderSnapshot', () => {
   it('includes header with mode and timestamp', () => {
-    const output = renderDashboard(baseInput);
-    expect(output).toContain('Solana Trade Engine Dashboard');
+    const output = renderSnapshot(baseInput);
+    expect(output).toContain('Solana Trade Engine Snapshot');
     expect(output).toContain('2026-06-06T12:00:00.000Z');
     expect(output).toContain('mode=paper');
   });
 
   it('renders all required sections', () => {
-    const output = renderDashboard(baseInput);
+    const output = renderSnapshot(baseInput);
     expect(output).toContain('Live Readiness');
     expect(output).toContain('Wallet Balances');
     expect(output).toContain('Journal');
@@ -50,12 +50,12 @@ describe('renderDashboard', () => {
   });
 
   it('shows wallet skip message when no wallet configured', () => {
-    const output = renderDashboard(baseInput);
+    const output = renderSnapshot(baseInput);
     expect(output).toContain('skipped — wallet file or RPC URL not configured');
   });
 
   it('shows wallet balances when provided', () => {
-    const output = renderDashboard({
+    const output = renderSnapshot({
       ...baseInput,
       walletBalances: {
         publicKey: 'WaLLeT1234',
@@ -77,7 +77,7 @@ describe('renderDashboard', () => {
   });
 
   it('shows wallet error when balance fetch fails', () => {
-    const output = renderDashboard({
+    const output = renderSnapshot({
       ...baseInput,
       walletError: 'Wallet balance fetch failed: connection refused',
     });
@@ -85,14 +85,14 @@ describe('renderDashboard', () => {
   });
 
   it('shows (none) when there are no open positions or trades', () => {
-    const output = renderDashboard(baseInput);
+    const output = renderSnapshot(baseInput);
     // two (none) entries — one for positions, one for trades
     const noneMatches = output.match(/\(none\)/g);
     expect(noneMatches?.length).toBe(2);
   });
 
   it('renders open position details', () => {
-    const output = renderDashboard({
+    const output = renderSnapshot({
       ...baseInput,
       openPositions: [
         {
@@ -113,7 +113,7 @@ describe('renderDashboard', () => {
   });
 
   it('renders recent trade details', () => {
-    const output = renderDashboard({
+    const output = renderSnapshot({
       ...baseInput,
       recentTrades: [
         {
@@ -133,7 +133,7 @@ describe('renderDashboard', () => {
   });
 
   it('renders journal blocker count in section header', () => {
-    const output = renderDashboard({
+    const output = renderSnapshot({
       ...baseInput,
       journalBlockers: 3,
       journalSummary: 'entry-1 pending\nentry-2 pending\nentry-3 pending',
@@ -146,7 +146,7 @@ describe('renderDashboard', () => {
       trade({ pnlUsd: 20, pnlPct: 40 }),
       trade({ pnlUsd: -10, pnlPct: -20, reason: 'stop_loss' }),
     ]);
-    const output = renderDashboard({ ...baseInput, analytics });
+    const output = renderSnapshot({ ...baseInput, analytics });
     expect(output).toContain('Closed trades: 2');
     expect(output).toContain('Win rate: 50.0%');
   });
@@ -162,13 +162,13 @@ describe('renderDashboard', () => {
         exitNetworkFeeUsd: 0.01,
       }),
     ]);
-    const output = renderDashboard({ ...baseInput, analytics });
+    const output = renderSnapshot({ ...baseInput, analytics });
     expect(output).toContain('Execution (live)');
     expect(output).toContain('fees=');
   });
 
   it('shows empty analytics message when no trades', () => {
-    const output = renderDashboard({ ...baseInput, analytics: emptyAnalytics() });
+    const output = renderSnapshot({ ...baseInput, analytics: emptyAnalytics() });
     expect(output).toContain('No closed trades yet.');
   });
 });

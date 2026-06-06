@@ -7,7 +7,7 @@ import { renderReport } from '../bot/report.js';
 import { runPaperCycle } from '../bot/paperCycle.js';
 import { renderStorageReport } from '../bot/storageReport.js';
 import { computeTradeAnalytics, renderAnalyticsReport, computeOutcomeAnalytics, renderOutcomeAnalytics } from '../bot/analytics.js';
-import { renderDashboard } from '../bot/dashboard.js';
+import { renderSnapshot } from '../bot/snapshot.js';
 import { trackCandidateOutcomes } from '../bot/trackOutcomes.js';
 import { runPumpWatch } from '../bot/pumpWatch.js';
 import { processPumpPortalEvents } from '../bot/pumpProcess.js';
@@ -879,8 +879,8 @@ program
   });
 
 program
-  .command('dashboard')
-  .description('Read-only operator view: readiness, wallet balances, open positions, recent trades, journal, and analytics')
+  .command('snapshot')
+  .description('Read-only operator snapshot: readiness, wallet balances, open positions, recent trades, journal, and analytics')
   .option('--trades <n>', 'number of recent closed trades to show', '5')
   .action(async (options: { trades: string }) => {
     const tradeLimit = Math.max(1, Number(options.trades) || 5);
@@ -953,7 +953,7 @@ program
       const analytics = computeTradeAnalytics(store.loadClosedTradeStats());
 
       process.stdout.write(
-        renderDashboard({
+        renderSnapshot({
           mode: config.mode,
           generatedAt,
           readiness,

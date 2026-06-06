@@ -10,7 +10,7 @@ function section(title: string): string {
 
 // ─── input shapes (all optional so callers omit sections they can't populate) ─
 
-export interface DashboardWalletBalances {
+export interface SnapshotWalletBalances {
   publicKey: string;
   sol: number;
   solUsd: number;
@@ -23,7 +23,7 @@ export interface DashboardWalletBalances {
   minReserveLamports: bigint;
 }
 
-export interface DashboardOpenPosition {
+export interface SnapshotOpenPosition {
   id: string;
   chain: string;
   symbol: string;
@@ -36,7 +36,7 @@ export interface DashboardOpenPosition {
   entryNetworkFeeUsd?: number;
 }
 
-export interface DashboardClosedTrade {
+export interface SnapshotClosedTrade {
   positionId: string;
   chain: string;
   symbol: string;
@@ -48,14 +48,14 @@ export interface DashboardClosedTrade {
   exitTxSignature?: string;
 }
 
-export interface DashboardInput {
+export interface SnapshotInput {
   mode: 'paper' | 'live';
   generatedAt: string;
   readiness?: LiveReadinessReport;
-  walletBalances?: DashboardWalletBalances;
+  walletBalances?: SnapshotWalletBalances;
   walletError?: string;
-  openPositions: DashboardOpenPosition[];
-  recentTrades: DashboardClosedTrade[];
+  openPositions: SnapshotOpenPosition[];
+  recentTrades: SnapshotClosedTrade[];
   journalBlockers: number;
   journalSummary: string;
   analytics: TradeAnalytics;
@@ -63,11 +63,6 @@ export interface DashboardInput {
 
 function sign(n: number): string {
   return n >= 0 ? `+$${n.toFixed(2)}` : `-$${Math.abs(n).toFixed(2)}`;
-}
-
-function holdMinutes(openedAt: string, closedAt: string): string {
-  const ms = new Date(closedAt).getTime() - new Date(openedAt).getTime();
-  return Number.isFinite(ms) && ms >= 0 ? `${Math.round(ms / 60_000)}m` : '?m';
 }
 
 function positionAge(openedAt: string, now: string): string {
@@ -86,7 +81,7 @@ function readinessSection(report: LiveReadinessReport): string {
   return lines.join('\n');
 }
 
-function walletSection(w: DashboardWalletBalances): string {
+function walletSection(w: SnapshotWalletBalances): string {
   const lines: string[] = [
     `  Wallet: ${w.publicKey}`,
     `  SOL: ${w.sol.toFixed(6)} ($${w.solUsd.toFixed(2)} at $${w.solPriceUsd.toFixed(2)}/SOL)`,
@@ -97,7 +92,7 @@ function walletSection(w: DashboardWalletBalances): string {
   return lines.join('\n');
 }
 
-function positionsSection(positions: DashboardOpenPosition[], now: string): string {
+function positionsSection(positions: SnapshotOpenPosition[], now: string): string {
   if (positions.length === 0) return '  (none)';
   return positions
     .map((p) => {
@@ -113,7 +108,7 @@ function positionsSection(positions: DashboardOpenPosition[], now: string): stri
     .join('\n');
 }
 
-function tradesSection(trades: DashboardClosedTrade[]): string {
+function tradesSection(trades: SnapshotClosedTrade[]): string {
   if (trades.length === 0) return '  (none)';
   return trades
     .map((t) => {
@@ -146,10 +141,10 @@ function analyticsSummarySection(a: TradeAnalytics): string {
   return lines.join('\n');
 }
 
-export function renderDashboard(input: DashboardInput): string {
+export function renderSnapshot(input: SnapshotInput): string {
   const lines: string[] = [
     THICK,
-    'Solana Trade Engine Dashboard',
+    'Solana Trade Engine Snapshot',
     `${input.generatedAt}  mode=${input.mode}`,
     THICK,
   ];
