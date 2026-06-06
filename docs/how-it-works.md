@@ -172,7 +172,9 @@ Reads outcome data and produces specific, confidence-rated recommendations:
 `tune --apply` writes concrete numeric threshold recommendations directly to `config.yaml`; risk-signal notes stay advisory.
 
 ### `live-readiness`
-Before switching to live mode, this command audits every prerequisite — wallet file presence, RPC URL, position sizing, slippage config — without reading private keys or placing any trades.
+Before switching to live mode, this command audits every prerequisite — wallet
+file presence, RPC URL, position sizing, price-impact cap, confirmation policy,
+and slippage config — without reading private keys or placing any trades.
 
 ---
 

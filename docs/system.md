@@ -12,7 +12,7 @@ Technical reference for the Hermes trading bot. Covers architecture, data flow, 
 | Live trading (Solana) | Implemented — Jupiter swap execution, keypair signing, on-chain confirmation |
 | Supported chain | Solana only |
 | Persistence | SQLite (auto-migrating schema) |
-| Test coverage | 38 files, 289 tests |
+| Test coverage | 38 files, 290 tests |
 
 ---
 
@@ -316,7 +316,7 @@ transactions cannot be dismissed through this command.
 | Command | Purpose |
 |---|---|
 | `run` | Main loop. `mode: live` enables on-chain swaps. `--exit-interval-seconds` (default 10 in live). |
-| `live-readiness` | Audit live prerequisites without reading wallet contents or placing trades. |
+| `live-readiness` | Audit live prerequisites, confirmation/impact policy, and sizing without reading wallet contents or placing trades. |
 | `recover-positions` | Resolve wallet/SQLite discrepancies. `--dry-run`, `--yes`. |
 | `journal` | List submitted or confirmed live executions that still require reconciliation. |
 | `journal-resolve` | Resolve an RPC-proven failed or expired submitted execution. |
@@ -513,7 +513,7 @@ src/
 
 ```bash
 npm install
-npm test              # 38 test files, 289 tests
+npm test              # 38 test files, 290 tests
 npm run typecheck     # must be clean before committing
 npm run bot -- --help # show all commands
 ```

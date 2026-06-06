@@ -99,6 +99,7 @@ describe('evaluateLiveReadiness', () => {
     expect(report.block).toBe(0);
     expect(report.checks.find((check) => check.label === 'Paper trade sample')).toMatchObject({ status: 'warn' });
     expect(report.checks.find((check) => check.label === 'Confirmation commitment')).toMatchObject({ status: 'warn' });
+    expect(report.checks.find((check) => check.label === 'Live price impact cap')).toMatchObject({ status: 'pass' });
   });
 
   it('passes the confirmation commitment check when finalized is configured', () => {
@@ -121,5 +122,27 @@ describe('evaluateLiveReadiness', () => {
     });
 
     expect(report.checks.find((check) => check.label === 'Confirmation commitment')).toMatchObject({ status: 'pass' });
+  });
+
+  it('warns when live price impact cap is loose', () => {
+    const report = evaluateLiveReadiness({
+      config: {
+        ...config,
+        chains: {
+          solana: {
+            ...config.chains.solana,
+            maxPriceImpactBps: 1_500,
+          },
+        },
+      },
+      env: { SOLANA_RPC_URL: 'https://rpc.example' },
+      walletFileExists: true,
+      closedTrades: 60,
+      trackedOutcomes: 120,
+      liveBrokerAvailable: true,
+      liveExecutionImplemented: true,
+    });
+
+    expect(report.checks.find((check) => check.label === 'Live price impact cap')).toMatchObject({ status: 'warn' });
   });
 });

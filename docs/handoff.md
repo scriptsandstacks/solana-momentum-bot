@@ -7,7 +7,7 @@
 ## Current Health
 
 ```text
-npm test          -> 38 files, 289 tests passing
+npm test          -> 38 files, 290 tests passing
 npm run typecheck -> clean
 git diff --check  -> clean
 ```
@@ -70,6 +70,7 @@ Recent live-readiness work adds:
 - SOL, USDC, and USDT live cash inventory with mint-specific funding checks
 - Actual-size live route selection across funded wallet inputs
 - Actual-size live price-impact cap before signing swaps
+- `live-readiness` audit surfaces the configured live price-impact cap
 - Configurable live swap confirmation commitment
 - SOL-funded orphan recovery uses recovered SOL input amount with current SOL/USD and labels the basis approximate
 
