@@ -56,9 +56,15 @@ PUMPPORTAL_API_KEY=your_key npm run bot -- run
 ```
 
 **Before going live:**
+
+Read the operator checklist in [`docs/go-live-runbook.md`](docs/go-live-runbook.md).
+
 ```bash
 # Audit all prerequisites (no keys read, no trades placed)
 npm run bot -- live-readiness
+
+# Verify route-input inventory and SOL fee reserve (no trades placed)
+npm run bot -- wallet-balances
 
 # Check wallet/SQLite are in sync (dry run)
 npm run bot -- recover-positions --dry-run
@@ -75,6 +81,7 @@ SOLANA_RPC_URL=https://... PUMPPORTAL_API_KEY=... npm run bot -- run
 |---|---|
 | `run` | Main loop: watch PumpPortal, process events, manage exits, track outcomes. Live mode: real Jupiter swaps with real-time WebSocket exit triggers. |
 | `live-readiness` | Audit every live-trading prerequisite without reading keys or placing trades |
+| `wallet-balances` | Read live wallet SOL/USDC/USDT balances and SOL fee reserve status without placing trades |
 | `recover-positions` | Resolve wallet/SQLite discrepancies after crashes (`--dry-run`, `--yes`) |
 | `report` | Persisted scores, open positions, closed trades, events |
 | `stats` | Trade analytics: expectancy, win rate, P&L by strategy / reason / score bucket |

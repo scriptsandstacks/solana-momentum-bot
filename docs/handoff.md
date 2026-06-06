@@ -2,14 +2,15 @@
 
 **Author:** Codex  
 **Last updated:** 2026-06-06
-**Branch:** `codex/solana-live-readiness-hardening`
+**Branch:** `codex/solana-operator-readiness`
 
 ## Current Health
 
 ```text
-npm test          -> 38 files, 290 tests passing
+npm test          -> 38 files, 295 tests passing
 npm run typecheck -> clean
 git diff --check  -> clean
+npm run bot -- --help -> clean; `wallet-balances` listed
 ```
 
 Solana Trade Engine is intentionally Solana-only. Paper and live trading share the same
@@ -40,6 +41,8 @@ Live mode is functionally implemented:
 - Stablecoin-funded orphan buys recover exact transaction-history basis; SOL-funded buys recover approximate basis from actual SOL spend and current SOL/USD
 - Live cash inventory values SOL, USDC, and USDT; opens select the best actual-size quote among funded inputs and reject excessive price impact
 - Configurable live confirmation commitment: `confirmed` for lower latency or `finalized` for stronger reorg protection
+- Read-only `wallet-balances` command reports SOL, USDC, USDT, total route-input value, and configured SOL fee reserve status without placing trades
+- Live opens preserve the configured SOL fee reserve; low-reserve wallets reject new entries before quote/sign/submit, while exits and recovery remain available
 
 ## Important Files
 
@@ -47,6 +50,7 @@ Live mode is functionally implemented:
 |---|---|
 | `src/execution/liveBroker.ts` | Live broker state, entry, exit, cash, and P&L accounting |
 | `src/execution/liveDeps.ts` | Production keypair, RPC, Jupiter, confirmation, and fill dependencies |
+| `src/execution/liveReadiness.ts` | Static live prerequisite and policy audit logic |
 | `src/execution/solanaTransactionFill.ts` | Confirmed wallet balance-delta parser |
 | `src/execution/solanaTransactionHistory.ts` | Recent wallet buy lookup for orphan recovery |
 | `src/execution/solanaConfirmation.ts` | Block-height-aware transaction confirmation |
@@ -55,6 +59,7 @@ Live mode is functionally implemented:
 | `src/execution/positionRecovery.ts` | Pure stale/orphan recovery transformations |
 | `src/storage/sqliteStore.ts` | Auto-migrating persistence layer |
 | `src/bot/runLoop.ts` | Main process, exit, outcome, and watcher orchestration |
+| `docs/go-live-runbook.md` | Owner/operator live trading checklist and recovery sequence |
 
 ## Recent Live-Readiness Work
 
@@ -76,6 +81,9 @@ Recent live-readiness work adds:
 - Configurable live swap confirmation commitment
 - SOL-funded orphan recovery uses recovered SOL input amount with current SOL/USD and labels the basis approximate
 - Project naming is Solana Trade Engine across docs, reports, CLI metadata, and default SQLite/test paths
+- Operator readiness adds configurable SOL fee reserve checks plus `wallet-balances` for read-only route-input inventory
+- Runtime live opens enforce the SOL fee reserve and avoid SOL-funded routes that would spend below it
+- Go-live runbook documents pre-flight checks, first live session, monitoring, shutdown, and recovery priorities
 
 ## Remaining Risks
 
@@ -83,6 +91,21 @@ Recent live-readiness work adds:
 
 No known medium-priority live-execution plumbing gaps remain. Remaining work is
 mostly calibration and operator preference tuning.
+
+### Recommended Next Steps
+
+- Review this branch for live-operator correctness: `wallet-balances`, SOL fee
+  reserve config, reserve enforcement before live opens, and the go-live runbook.
+- Consider a lite read-only local dashboard after this branch merges. Keep the
+  first version operator-focused: readiness status, wallet balances, open
+  positions, recent trades, journal blockers, reconciliation status, and basic
+  analytics. Do not add browser-based wallet key handling, manual trading
+  buttons, or destructive recovery actions in the first dashboard pass.
+- If continuing engineering work instead of dashboard work, the next practical
+  improvement is to separate strategy performance from execution quality in
+  reports: signal outcome stats versus live fill/slippage/fee behavior.
+- Keep paper/live switching seamless. Paper mode is useful for calibration, but
+  should not become a required gate before live trading.
 
 ### Data Calibration
 

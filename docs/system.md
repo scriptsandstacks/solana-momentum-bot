@@ -298,6 +298,9 @@ transactions cannot be dismissed through this command.
 
 ## Analytics and reporting
 
+For the owner/operator go-live checklist, see
+[`docs/go-live-runbook.md`](go-live-runbook.md).
+
 ### During `run`
 
 | Log prefix | Content |
@@ -317,6 +320,7 @@ transactions cannot be dismissed through this command.
 |---|---|
 | `run` | Main loop. `mode: live` enables on-chain swaps. `--exit-interval-seconds` (default 10 in live). |
 | `live-readiness` | Audit live prerequisites, confirmation/impact policy, and sizing without reading wallet contents or placing trades. |
+| `wallet-balances` | Read live wallet SOL/USDC/USDT route-input balances and SOL fee reserve status without placing trades. |
 | `recover-positions` | Resolve wallet/SQLite discrepancies. `--dry-run`, `--yes`. |
 | `journal` | List submitted or confirmed live executions that still require reconciliation. |
 | `journal-resolve` | Resolve an RPC-proven failed or expired submitted execution. |
@@ -521,8 +525,13 @@ npm run bot -- --help # show all commands
 **Before running live:**
 ```bash
 npm run bot -- live-readiness   # audit all prerequisites
+npm run bot -- wallet-balances  # verify route-input inventory and SOL fee reserve
 npm run bot -- recover-positions --dry-run  # verify wallet/SQLite sync
 ```
+
+Live opens enforce the configured SOL fee reserve before quote/sign/submit and
+skip SOL-funded buy routes that would spend below it. This prevents avoidable
+entry failures without blocking exits or recovery.
 
 **Never commit:** `wallet/`, `.env`, `data/`, `logs/`, `node_modules/`
 **Never log:** private keys, seed phrases, API keys

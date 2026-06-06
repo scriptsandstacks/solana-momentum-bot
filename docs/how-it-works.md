@@ -173,8 +173,20 @@ Reads outcome data and produces specific, confidence-rated recommendations:
 
 ### `live-readiness`
 Before switching to live mode, this command audits every prerequisite — wallet
-file presence, RPC URL, position sizing, price-impact cap, confirmation policy,
-and slippage config — without reading private keys or placing any trades.
+file presence, RPC URL, position sizing, SOL fee reserve target, price-impact
+cap, confirmation policy, and slippage config — without reading private keys or
+placing any trades.
+
+### `wallet-balances`
+This is the explicit read-only wallet check. It loads the configured live wallet,
+queries SOL, USDC, and USDT balances, values SOL through Jupiter, and reports
+whether the wallet meets the configured SOL fee reserve. It does not build,
+sign, or submit swaps.
+
+Live opens also preserve this reserve at runtime: if SOL is below the configured
+floor, the bot will not open a new position, and SOL-funded routes are skipped
+when they would spend into the reserve. Existing exits and recovery flows remain
+available.
 
 ---
 
@@ -191,9 +203,10 @@ Adjust config.yaml
         ↓
 Repeat until consistently profitable
         ↓
-live-readiness → confirm all prerequisites met
+live-readiness → confirm static prerequisites met
+wallet-balances → confirm live wallet inventory and SOL fee reserve
 recover-positions (dry-run) → confirm wallet in sync
-Switch mode: live
+Switch mode: live when the owner is ready
 ```
 
 ---
