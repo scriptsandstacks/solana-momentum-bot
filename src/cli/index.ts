@@ -14,6 +14,7 @@ import { processPumpPortalEvents } from '../bot/pumpProcess.js';
 import { processExits } from '../bot/exitPositions.js';
 import { runBotLoop } from '../bot/runLoop.js';
 import { consoleReporter } from '../bot/reporter.js';
+import { discordReporter } from '../bot/discordReporter.js';
 import {
   applyTuneConfigUpdates,
   computeStrategyTuneRecommendations,
@@ -776,7 +777,26 @@ program
 
     const strategies = buildStrategies(config);
     const log = (message: string) => process.stdout.write(`${message}\n`);
-    const reporter = config.notifications.console ? consoleReporter(log) : undefined;
+
+    const reporters: import('../bot/reporter.js').Reporter[] = [];
+    if (config.notifications.console) reporters.push(consoleReporter(log));
+
+    const discordWebhookEnv = config.notifications.discordWebhookUrlEnv;
+    const discordWebhookUrl = discordWebhookEnv ? process.env[discordWebhookEnv] : undefined;
+    if (discordWebhookUrl) {
+      reporters.push(discordReporter(discordWebhookUrl, log));
+      log(`[discord] reporter active (${discordWebhookEnv})`);
+    }
+
+    // Fan out to all active reporters. Methods are all optional so undefined is safe.
+    const reporter = reporters.length === 0 ? undefined : {
+      onPositionOpened: (e: Parameters<NonNullable<typeof reporters[0]['onPositionOpened']>>[0]) =>
+        reporters.forEach((r) => r.onPositionOpened?.(e)),
+      onPositionClosed: (e: Parameters<NonNullable<typeof reporters[0]['onPositionClosed']>>[0]) =>
+        reporters.forEach((r) => r.onPositionClosed?.(e)),
+      onCycleSummary: (s: Parameters<NonNullable<typeof reporters[0]['onCycleSummary']>>[0]) =>
+        reporters.forEach((r) => r.onCycleSummary?.(s)),
+    };
 
     const stopController = new AbortController();
     const stop = () => stopController.abort();

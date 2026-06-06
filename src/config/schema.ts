@@ -102,6 +102,10 @@ export const botConfigSchema = z.object({
   notifications: z
     .object({
       console: z.boolean().default(true),
+      // Env var name holding a Discord webhook URL. When set, trade opens,
+      // closes, and daily-loss-limit hits are posted as Discord embeds.
+      // Example: export DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+      discordWebhookUrlEnv: z.string().min(1).optional(),
     })
     .default({ console: true }),
 });

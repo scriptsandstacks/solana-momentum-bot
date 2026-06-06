@@ -57,3 +57,11 @@ scoring:
 # the `outcomes` report.
 retention:
   scoredCandidateDays: 30
+
+# Notifications. console=true logs trade events to stdout.
+# Set discordWebhookUrlEnv to the name of an env var holding your Discord
+# webhook URL to receive trade open/close alerts in a Discord channel.
+# Example: export DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/<id>/<token>
+notifications:
+  console: true
+  discordWebhookUrlEnv: DISCORD_WEBHOOK_URL
