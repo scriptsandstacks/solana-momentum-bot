@@ -1,4 +1,4 @@
-# How Hermes Works — Plain English Guide
+# How Solana Trade Engine Works — Plain English Guide
 
 This document explains what the bot does, why it does it, and how to read its results. No programming knowledge required.
 
@@ -6,15 +6,15 @@ This document explains what the bot does, why it does it, and how to read its re
 
 ## What is this?
 
-Hermes is an automated trading bot for Solana memecoins. It watches for newly created or newly listed tokens in real time, evaluates whether they show signs of real demand, and executes real swaps on-chain using Jupiter. It also supports a **paper trading** mode where it simulates trades without using real money.
+Solana Trade Engine is an automated trading bot for Solana memecoins. It watches for newly created or newly listed tokens in real time, evaluates whether they show signs of real demand, and executes real swaps on-chain using Jupiter. It also supports a **paper trading** mode where it simulates trades without using real money.
 
-The recommended path is to run paper trading for a few weeks to validate and tune the strategy, then switch to live mode once the numbers are consistently good.
+Paper mode is an optional calibration loop. The owner can switch between paper and live mode through configuration when they are ready; the system does not require a fixed number of paper cycles before live trading.
 
 ---
 
 ## What market does it trade?
 
-Hermes trades **Pump.fun tokens on Solana**. Pump.fun is a platform where anyone can create a new token in seconds. The vast majority of tokens created there are worthless and die within minutes. A small fraction, however, go on to move 200%, 500%, or more within their first hour.
+Solana Trade Engine trades **Pump.fun tokens on Solana**. Pump.fun is a platform where anyone can create a new token in seconds. The vast majority of tokens created there are worthless and die within minutes. A small fraction, however, go on to move 200%, 500%, or more within their first hour.
 
 The bot's job is to find that small fraction before the move happens.
 
@@ -92,7 +92,7 @@ When `mode: live` is set in the config, the bot executes real on-chain swaps:
 3. Builds a swap transaction
 4. Signs it with the wallet keypair
 5. Submits to the Solana network
-6. Waits for confirmation
+6. Waits for the configured commitment level (`confirmed` or `finalized`)
 7. Reads the confirmed transaction's wallet balance changes
 8. Records the actual fill quantity, price, and transaction signature
 
@@ -101,8 +101,10 @@ Exit trades follow the same path in reverse (token → USDC). Every trade's tran
 The live cash figure values the wallet's supported funding assets: SOL, USDC,
 and USDT. Before a buy is submitted, the bot re-quotes the actual position size
 across the inputs the wallet can fund and selects the route that returns the
-most tokens. An unfunded discovery-time route therefore does not prevent a
-funded alternative from trading.
+most tokens, while rejecting quotes above the configured price-impact cap. An
+unfunded discovery-time route therefore does not prevent a funded alternative
+from trading, and a thin actual-size route cannot slip through just because the
+small discovery probe looked acceptable.
 
 At startup in live mode, the bot cross-checks the wallet's on-chain token
 balances against its SQLite records. Any discrepancy is logged immediately, and
@@ -114,8 +116,10 @@ resolved.
 When recovering an untracked token holding, the bot searches recent wallet
 transactions for the original buy. Stablecoin-funded buys can recover the exact
 USD entry basis and transaction signature. If the transaction history is
-unavailable or the buy was funded with SOL, the recovery plan clearly labels the
-current-price entry basis as approximate.
+unavailable, the recovery plan clearly labels the current-price entry basis as
+approximate. SOL-funded buys use the recovered SOL amount and current SOL/USD,
+and are also labeled approximate because historical SOL/USD is not encoded in
+the transaction.
 
 Every live swap is also written to a persistent execution journal before it is
 submitted. If the process stops after submission or confirmation but before the
@@ -163,18 +167,21 @@ The counterfactual view — all scored candidates whether traded or not. Shows a
 Reads outcome data and produces specific, confidence-rated recommendations:
 - "Raise the entry threshold from 75 to 80 — the 75-79 bucket hits stop-loss 53% of the time. [HIGH confidence]"
 - "Take-profit ceiling of 50% is too low — best bucket averages +87% MFE. Raise to 200–300 and rely on trailing stop. [HIGH confidence]"
+- Risk-signal notes when volume acceleration, holder concentration, or authority-status buckets contradict current assumptions.
 
-`tune --apply` writes concrete numeric recommendations directly to `config.yaml`.
+`tune --apply` writes concrete numeric threshold recommendations directly to `config.yaml`; risk-signal notes stay advisory.
 
 ### `live-readiness`
-Before switching to live mode, this command audits every prerequisite — wallet file presence, RPC URL, position sizing, slippage config — without reading private keys or placing any trades.
+Before switching to live mode, this command audits every prerequisite — wallet
+file presence, RPC URL, position sizing, price-impact cap, confirmation policy,
+and slippage config — without reading private keys or placing any trades.
 
 ---
 
 ## The improvement cycle
 
 ```
-Run paper trading for 2–4 weeks
+Use paper mode to calibrate, or switch to live when the owner is ready
         ↓
 stats + strategies → is expectancy positive?
 outcomes → is the threshold set correctly?

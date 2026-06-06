@@ -68,7 +68,7 @@ export interface OrphanedRecovery {
   position: PaperPosition;
   // undefined when market data was not available; this recovery cannot proceed.
   currentPriceUsd: number | undefined;
-  entryPriceSource: 'transaction_history' | 'current_price';
+  entryPriceSource: 'transaction_history' | 'transaction_history_approx' | 'current_price';
 }
 
 export function buildOrphanedRecovery(
@@ -79,6 +79,7 @@ export function buildOrphanedRecovery(
   history?: {
     buy: RecoveredWalletBuy;
     entryPriceUsd: number;
+    entryPriceSource?: OrphanedRecovery['entryPriceSource'];
     entryNetworkFeeUsd?: number;
   },
 ): OrphanedRecovery {
@@ -115,7 +116,7 @@ export function buildOrphanedRecovery(
     holding,
     position,
     currentPriceUsd: candidate.priceUsd,
-    entryPriceSource: history ? 'transaction_history' : 'current_price',
+    entryPriceSource: history?.entryPriceSource ?? (history ? 'transaction_history' : 'current_price'),
   };
 }
 
@@ -158,6 +159,8 @@ export function renderRecoveryPlan(
     lines.push(`            amount=${r.holding.uiAmount.toFixed(4)}  current=$${r.currentPriceUsd.toFixed(6)}`);
     if (r.entryPriceSource === 'transaction_history') {
       lines.push(`            entry=$${r.position.entryPriceUsd.toFixed(6)} from tx=${r.position.entryTxSignature}`);
+    } else if (r.entryPriceSource === 'transaction_history_approx') {
+      lines.push(`            entry=$${r.position.entryPriceUsd.toFixed(6)} from tx=${r.position.entryTxSignature} (SOL/USD approximate)`);
     } else {
       lines.push(`            NOTE: entry price is approximate (current price, transaction history unavailable)`);
     }

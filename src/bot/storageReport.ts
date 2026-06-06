@@ -77,7 +77,7 @@ export function renderStorageReport(input: StorageReportInput): string {
   const wins = input.closedTrades.filter((trade) => trade.pnlUsd > 0).length;
   const winRate = input.closedTrades.length === 0 ? 0 : (wins / input.closedTrades.length) * 100;
   const lines = [
-    'Hermes Paper Bot Storage Report',
+    'Solana Trade Engine Storage Report',
     `Recent scores: ${input.recentScores.length}`,
     `Open positions: ${input.openPositions.length}`,
     `Closed trades: ${input.closedTrades.length}`,

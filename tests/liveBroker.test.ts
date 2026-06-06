@@ -16,6 +16,7 @@ const defaultOptions: LiveBrokerOptions = {
     minLiquidityUsd: 10_000,
     minVolume5mUsd: 5_000,
     maxSlippageBps: 500,
+    confirmationCommitment: 'confirmed',
   },
   positionSizeUsd: 25,
   maxOpenPositions: 3,
@@ -47,14 +48,20 @@ function makeCandidate(overrides: Partial<TokenCandidate> = {}): TokenCandidate 
 }
 
 // Build quote-like object Jupiter would return for an ExactIn USDC→token swap
-function makeQuote(inAmount: string, outAmount: string, inputMint = USDC_MINT, outputMint = 'token-mint-abc123') {
+function makeQuote(
+  inAmount: string,
+  outAmount: string,
+  inputMint = USDC_MINT,
+  outputMint = 'token-mint-abc123',
+  priceImpactPct = '0.005',
+) {
   return {
     inputMint,
     inAmount,
     outputMint,
     outAmount,
     slippageBps: 500,
-    priceImpactPct: '0.5',
+    priceImpactPct,
     otherAmountThreshold: outAmount,
     swapMode: 'ExactIn',
     routePlan: [],
@@ -278,6 +285,20 @@ describe('LiveBroker.openPosition', () => {
 
     expect(getJupiterQuote).toHaveBeenCalledOnce();
     expect(getJupiterQuote.mock.calls[0][0].inputMint).toBe(USDC_MINT);
+  });
+
+  it('refuses to submit when actual-size quote price impact exceeds the live cap', async () => {
+    const signAndSendTransaction = vi.fn(async () => 'should-not-submit');
+    const broker = makeBroker({ solana: { ...defaultOptions.solana, maxPriceImpactBps: 250 } }, {
+      getJupiterQuote: async ({ outputMint }) =>
+        outputMint === 'token-mint-abc123'
+          ? (makeQuote('25000000', '25000000000', USDC_MINT, 'token-mint-abc123', '0.04') as any)
+          : (makeQuote('25000000000', '24875000', 'token-mint-abc123', USDC_MINT) as any),
+      signAndSendTransaction,
+    });
+
+    await expect(broker.openPosition(makeCandidate(), 80)).rejects.toThrow('exceeds max price impact');
+    expect(signAndSendTransaction).not.toHaveBeenCalled();
   });
 
   it('attaches entry tx signature to the returned position', async () => {

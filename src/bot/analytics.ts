@@ -292,7 +292,7 @@ function outcomeBucketLine(bucket: OutcomeBucket): string {
 
 export function renderOutcomeAnalytics(analytics: OutcomeAnalytics, thresholds: OutcomeThresholds): string {
   const lines = [
-    'Hermes Paper Bot Candidate Outcomes (MFE/MAE)',
+    'Solana Trade Engine Candidate Outcomes (MFE/MAE)',
     `Tracked candidates: ${analytics.overall.candidates}`,
     `Thresholds: take-profit +${thresholds.takeProfitPct}% / stop-loss -${thresholds.stopLossPct}%`,
   ];
@@ -335,7 +335,7 @@ function bucketLine(bucket: AnalyticsBucket): string {
 export function renderAnalyticsReport(analytics: TradeAnalytics): string {
   const o = analytics.overall;
   const lines = [
-    'Hermes Paper Bot Analytics',
+    'Solana Trade Engine Analytics',
     `Closed trades: ${o.trades}`,
     '',
     'Overall:',

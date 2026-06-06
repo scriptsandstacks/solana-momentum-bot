@@ -36,7 +36,7 @@ const score: OpportunityScore = {
 };
 
 function createStore(): SqliteStore {
-  const dir = mkdtempSync(path.join(tmpdir(), 'hermes-paper-bot-'));
+  const dir = mkdtempSync(path.join(tmpdir(), 'solana-trade-engine-'));
   return new SqliteStore(path.join(dir, 'bot.sqlite'));
 }
 
@@ -459,7 +459,7 @@ describe('SqliteStore', () => {
   });
 
   it('upgrades an older database that is missing newer columns', () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'hermes-paper-bot-migrate-'));
+    const dir = mkdtempSync(path.join(tmpdir(), 'solana-trade-engine-migrate-'));
     const dbPath = path.join(dir, 'legacy.sqlite');
 
     // Hand-build a legacy schema: pumpportal_events without processing_* /
@@ -563,7 +563,7 @@ describe('SqliteStore', () => {
   });
 
   it('dedupes legacy duplicate closed_trades on migrate and builds the unique index', () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'hermes-paper-bot-dedup-'));
+    const dir = mkdtempSync(path.join(tmpdir(), 'solana-trade-engine-dedup-'));
     const dbPath = path.join(dir, 'legacy.sqlite');
 
     // A pre-index DB could hold duplicate closes for one position_id. migrate()

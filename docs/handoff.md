@@ -1,20 +1,22 @@
-# Hermes Engineering Handoff
+# Solana Trade Engine Engineering Handoff
 
 **Author:** Codex  
-**Last updated:** 2026-06-03  
-**Branch:** `codex/confirmed-live-fill-accounting`
+**Last updated:** 2026-06-06
+**Branch:** `codex/solana-live-readiness-hardening`
 
 ## Current Health
 
 ```text
-npm test          -> 38 files, 280 tests passing
+npm test          -> 38 files, 290 tests passing
 npm run typecheck -> clean
 git diff --check  -> clean
 ```
 
-Hermes is intentionally Solana-only. Paper and live trading share the same
+Solana Trade Engine is intentionally Solana-only. Paper and live trading share the same
 strategy and execution-broker interface, and the owner can switch modes through
 configuration without completing any mandatory paper-trading cycle.
+Project naming is now Solana Trade Engine across noticeable user-facing
+surfaces; the CLI/package binary slug is `solana-trade-engine`.
 
 ## Current Live Execution State
 
@@ -35,8 +37,9 @@ Live mode is functionally implemented:
 - `journal` lists blocking executions; `journal-resolve` only clears RPC-proven failed or expired submissions
 - Interactive `recover-positions` support for stale and orphaned positions
 - Startup quarantine for stale positions: no repeated exits or new entries until recovery
-- Stablecoin-funded orphan buys recovered from recent wallet transaction history
-- Live cash inventory values SOL, USDC, and USDT; opens select the best actual-size quote among funded inputs
+- Stablecoin-funded orphan buys recover exact transaction-history basis; SOL-funded buys recover approximate basis from actual SOL spend and current SOL/USD
+- Live cash inventory values SOL, USDC, and USDT; opens select the best actual-size quote among funded inputs and reject excessive price impact
+- Configurable live confirmation commitment: `confirmed` for lower latency or `finalized` for stronger reorg protection
 
 ## Important Files
 
@@ -53,9 +56,9 @@ Live mode is functionally implemented:
 | `src/storage/sqliteStore.ts` | Auto-migrating persistence layer |
 | `src/bot/runLoop.ts` | Main process, exit, outcome, and watcher orchestration |
 
-## This Branch
+## Recent Live-Readiness Work
 
-This branch adds:
+Recent live-readiness work adds:
 
 - Confirmed on-chain fill accounting instead of Jupiter quote-based accounting
 - Solana network fee persistence and P&L attribution
@@ -68,27 +71,22 @@ This branch adds:
 - Stale-position quarantine after wallet reconciliation
 - SOL, USDC, and USDT live cash inventory with mint-specific funding checks
 - Actual-size live route selection across funded wallet inputs
+- Actual-size live price-impact cap before signing swaps
+- `live-readiness` audit surfaces the configured live price-impact cap
+- Configurable live swap confirmation commitment
+- SOL-funded orphan recovery uses recovered SOL input amount with current SOL/USD and labels the basis approximate
+- Project naming is Solana Trade Engine across docs, reports, CLI metadata, and default SQLite/test paths
 
 ## Remaining Risks
 
 ### Medium Priority
 
-**Confirmation commitment**
-
-Confirmation accepts both `confirmed` and `finalized`. Requiring only
-`finalized` would reduce reorg risk but add latency. This is a trading-policy
-decision rather than missing plumbing.
-
-**SOL-funded orphan recovery valuation**
-
-Stablecoin-funded buys recover an exact USD basis from transaction history.
-SOL-funded or pruned-history recoveries still use current market price because
-historical SOL/USD is not encoded in the transaction.
+No known medium-priority live-execution plumbing gaps remain. Remaining work is
+mostly calibration and operator preference tuning.
 
 ### Data Calibration
 
-- Tune volume acceleration thresholds from `outcomes`.
-- Validate holder concentration and authority penalties from observed MFE/MAE.
+- Use `tune` risk-signal notes to validate volume acceleration, holder concentration, and authority penalties from observed MFE/MAE.
 - Evaluate strategy thresholds independently after enough trades accumulate.
 
 ## Safe Continuation

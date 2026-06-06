@@ -44,6 +44,7 @@ import {
 import {
   findMostRecentWalletBuy,
   recoveredBuyEntryPriceUsd,
+  SOL_MINT,
 } from '../execution/solanaTransactionHistory.js';
 import {
   inspectSubmittedLiveExecution,
@@ -86,6 +87,7 @@ async function buildLiveBrokerIfNeeded(
   const deps = createLiveBrokerDeps(keypair, {
     rpcUrl,
     maxSlippageBps: solana.maxSlippageBps,
+    confirmationCommitment: solana.confirmationCommitment,
     priorityFeeLamports: solana.priorityFeeLamports ?? 'auto',
   });
 
@@ -130,7 +132,7 @@ function buildExitResolver(strategies: TradingStrategy[], globalExits: ExitRules
 const program = new Command();
 
 program
-  .name('hermes-paper-bot')
+  .name('solana-trade-engine')
   .description('Solana memecoin trading bot with paper and live execution')
   .option('-c, --config <path>', 'config file path', 'config.yaml');
 
@@ -498,6 +500,7 @@ program
       const recoveryDeps = createLiveBrokerDeps(keypair, {
         rpcUrl,
         maxSlippageBps: solana.maxSlippageBps,
+        confirmationCommitment: solana.confirmationCommitment,
         priorityFeeLamports: solana.priorityFeeLamports ?? 'auto',
       });
 
@@ -513,7 +516,8 @@ program
           });
           if (buy) {
             const decimals = await recoveryDeps.getTokenDecimals(h.mint);
-            const entryPriceUsd = recoveredBuyEntryPriceUsd(buy, decimals);
+            const solPriceUsd = buy.inputMint === SOL_MINT ? await recoveryDeps.getSolPriceUsd() : undefined;
+            const entryPriceUsd = recoveredBuyEntryPriceUsd(buy, decimals, solPriceUsd);
             if (entryPriceUsd !== undefined) {
               let entryNetworkFeeUsd: number | undefined;
               try {
@@ -524,6 +528,7 @@ program
               return buildOrphanedRecovery(h, candidate, positionId, new Date(), {
                 buy,
                 entryPriceUsd,
+                entryPriceSource: buy.inputMint === SOL_MINT ? 'transaction_history_approx' : 'transaction_history',
                 entryNetworkFeeUsd,
               });
             }

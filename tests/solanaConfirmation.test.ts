@@ -15,6 +15,31 @@ describe('confirmSolanaTransaction', () => {
     expect(rpcRequest).toHaveBeenCalledTimes(1);
   });
 
+  it('waits for finalized status when finalized commitment is required', async () => {
+    let now = 0;
+    const rpcRequest = vi.fn(async (method: string) => {
+      if (method === 'getSignatureStatuses') {
+        return {
+          value: [{
+            confirmationStatus: rpcRequest.mock.calls.length === 1 ? 'confirmed' : 'finalized',
+            err: null,
+          }],
+        };
+      }
+      throw new Error(`Unexpected method ${method}`);
+    });
+
+    await confirmSolanaTransaction({
+      signature: 'sig-finalized',
+      commitment: 'finalized',
+      rpcRequest,
+      now: () => now,
+      sleep: async (ms) => { now += ms; },
+    });
+
+    expect(rpcRequest).toHaveBeenCalledTimes(2);
+  });
+
   it('throws when the transaction failed on-chain', async () => {
     const rpcRequest = vi.fn(async () => ({
       value: [{ confirmationStatus: 'confirmed', err: { InstructionError: [0, 'Custom'] } }],
@@ -33,8 +58,10 @@ describe('confirmSolanaTransaction', () => {
     await expect(confirmSolanaTransaction({
       signature: 'sig-expired',
       lastValidBlockHeight: 100,
+      commitment: 'finalized',
       rpcRequest,
     })).rejects.toThrow('expired at block height 100');
+    expect(rpcRequest).toHaveBeenCalledWith('getBlockHeight', [{ commitment: 'finalized' }]);
   });
 
   it('falls back to timeout when no block-height validity window is available', async () => {

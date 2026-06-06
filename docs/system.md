@@ -1,6 +1,6 @@
-# Hermes — System Documentation
+# Solana Trade Engine — System Documentation
 
-Technical reference for the Hermes trading bot. Covers architecture, data flow, strategy logic, exit rules, analytics, live trading, and CLI commands.
+Technical reference for the Solana Trade Engine trading bot. Covers architecture, data flow, strategy logic, exit rules, analytics, live trading, and CLI commands.
 
 ---
 
@@ -12,7 +12,7 @@ Technical reference for the Hermes trading bot. Covers architecture, data flow, 
 | Live trading (Solana) | Implemented — Jupiter swap execution, keypair signing, on-chain confirmation |
 | Supported chain | Solana only |
 | Persistence | SQLite (auto-migrating schema) |
-| Test coverage | 38 files, 280 tests |
+| Test coverage | 38 files, 290 tests |
 
 ---
 
@@ -209,10 +209,10 @@ Executes real on-chain trades via Jupiter and the Solana RPC.
 **`openPosition` flow:**
 1. `canOpenPosition()` — checks wallet config, cash, cap, daily-loss limit
 2. `getWalletBalance` — finds which SOL, USDC, and USDT route inputs can fund the buy
-3. `getJupiterQuoteForSwap` — quotes the actual `positionSizeUsd` across funded inputs and selects the highest token output
+3. `getJupiterQuoteForSwap` — quotes the actual `positionSizeUsd` across funded inputs, rejects routes above `maxPriceImpactBps`, and selects the highest token output
 4. `getJupiterSwapTransaction` — POST to `/swap/v1/swap`
 5. `VersionedTransaction.deserialize` → `tx.sign([keypair])` → `sendTransaction` RPC
-6. `confirmTransaction` — polls `getSignatureStatuses` and aborts immediately if Jupiter's `lastValidBlockHeight` is exceeded; 90 s remains the fallback timeout
+6. `confirmTransaction` — polls `getSignatureStatuses` until `confirmationCommitment` is reached and aborts immediately if Jupiter's `lastValidBlockHeight` is exceeded; 90 s remains the fallback timeout
 7. `getTransaction` — reads confirmed wallet balance deltas for the actual input and output amounts
 8. Returns `PaperPosition` with actual fill quantity, price, and `entryTxSignature`
 
@@ -263,8 +263,11 @@ are excluded from automated exit attempts and block new entries until
 For orphaned holdings, `recover-positions` scans recent successful wallet
 transactions and parses confirmed balance deltas. USDC/USDT-funded buys recover
 the original transaction signature, block time, token fill, network fee, and
-exact USD entry basis. If history is unavailable, pruned, or SOL-funded, recovery
-falls back to the current market price and labels the basis as approximate.
+exact USD entry basis. SOL-funded buys recover the original transaction
+signature, block time, token fill, network fee, and an approximate USD basis from
+the recovered SOL input amount and current SOL/USD. If history is unavailable or
+pruned, recovery falls back to the current token market price and labels the
+basis as approximate.
 
 ## Live execution journal
 
@@ -313,7 +316,7 @@ transactions cannot be dismissed through this command.
 | Command | Purpose |
 |---|---|
 | `run` | Main loop. `mode: live` enables on-chain swaps. `--exit-interval-seconds` (default 10 in live). |
-| `live-readiness` | Audit live prerequisites without reading wallet contents or placing trades. |
+| `live-readiness` | Audit live prerequisites, confirmation/impact policy, and sizing without reading wallet contents or placing trades. |
 | `recover-positions` | Resolve wallet/SQLite discrepancies. `--dry-run`, `--yes`. |
 | `journal` | List submitted or confirmed live executions that still require reconciliation. |
 | `journal-resolve` | Resolve an RPC-proven failed or expired submitted execution. |
@@ -321,7 +324,7 @@ transactions cannot be dismissed through this command.
 | `stats` | Trade analytics: expectancy, win rate, P&L by strategy / reason / score bucket / source. |
 | `strategies` | Compact per-strategy performance summary. |
 | `outcomes` | Counterfactual MFE/MAE by score bucket. |
-| `tune` | Outcome data → specific threshold recommendations with confidence. `--apply` (`--yes`). |
+| `tune` | Outcome data → threshold recommendations plus risk-signal calibration notes. `--apply` (`--yes`) only writes concrete config thresholds. |
 | `pump-watch` | Bounded PumpPortal listener. |
 | `pump-process` | Process pending events into scored candidates. |
 | `manage-exits` | One-shot exit pass. |
@@ -396,7 +399,9 @@ chains:
     minLiquidityUsd: 10000
     minVolume5mUsd: 5000
     maxSlippageBps: 500
+    maxPriceImpactBps: 500              # optional; defaults to maxSlippageBps
     priorityFeeLamports: auto               # live mode: lamports per tx, or 'auto' (Jupiter dynamic)
+    confirmationCommitment: confirmed       # 'confirmed' for lower latency, 'finalized' for stronger finality
 
 paper:                                      # controls position sizing in both paper and live modes
   startingBalanceUsd: 1000
@@ -508,7 +513,7 @@ src/
 
 ```bash
 npm install
-npm test              # 38 test files, 280 tests
+npm test              # 38 test files, 290 tests
 npm run typecheck     # must be clean before committing
 npm run bot -- --help # show all commands
 ```

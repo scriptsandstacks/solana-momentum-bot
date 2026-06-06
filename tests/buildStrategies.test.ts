@@ -11,6 +11,7 @@ function configWithStrategies(strategies: unknown) {
         minLiquidityUsd: 10_000,
         minVolume5mUsd: 5_000,
         maxSlippageBps: 500,
+        confirmationCommitment: 'confirmed',
       },
     },
     paper: {

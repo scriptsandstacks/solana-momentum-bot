@@ -91,6 +91,19 @@ export function evaluateLiveReadiness(input: LiveReadinessInput): LiveReadinessR
       : warn('Paper cost model', 'Paper fills should model route slippage and nonzero fees before live calibration.'),
   );
 
+  const maxPriceImpactBps = solana.maxPriceImpactBps ?? solana.maxSlippageBps;
+  checks.push(
+    maxPriceImpactBps <= 1_000
+      ? pass('Live price impact cap', `Actual-size live buys reject Jupiter quotes above ${maxPriceImpactBps} bps price impact.`)
+      : warn('Live price impact cap', `Actual-size live buys allow up to ${maxPriceImpactBps} bps price impact; consider tightening before live trading.`),
+  );
+
+  checks.push(
+    solana.confirmationCommitment === 'finalized'
+      ? pass('Confirmation commitment', 'Live swaps wait for finalized commitment before accounting them as confirmed.')
+      : warn('Confirmation commitment', 'Live swaps use confirmed commitment for lower latency; finalized reduces reorg risk if the owner prefers slower confirmation.'),
+  );
+
   checks.push(
     input.closedTrades >= 50
       ? pass('Paper trade sample', `${input.closedTrades} closed paper trades recorded.`)

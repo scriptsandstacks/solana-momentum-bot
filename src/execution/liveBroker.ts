@@ -466,6 +466,7 @@ export class LiveBroker implements ExecutionBroker {
       outputAmount: bigint;
     }> = [];
     let hasFundedInput = false;
+    let rejectedForPriceImpact = false;
 
     for (const route of routes) {
       const walletBalance = await getWalletBalance(route.mint);
@@ -481,6 +482,12 @@ export class LiveBroker implements ExecutionBroker {
         slippageBps: maxSlippageBps,
       });
       if (!quote) continue;
+      const priceImpactBps = quotePriceImpactBps(quote);
+      const maxPriceImpactBps = this.options.solana.maxPriceImpactBps ?? maxSlippageBps;
+      if (priceImpactBps === undefined || priceImpactBps > maxPriceImpactBps) {
+        rejectedForPriceImpact = true;
+        continue;
+      }
 
       try {
         fundedQuotes.push({
@@ -497,6 +504,13 @@ export class LiveBroker implements ExecutionBroker {
     fundedQuotes.sort((a, b) => a.outputAmount > b.outputAmount ? -1 : a.outputAmount < b.outputAmount ? 1 : 0);
     const best = fundedQuotes[0];
     if (!best) {
+      if (rejectedForPriceImpact) {
+        const maxPriceImpactBps = this.options.solana.maxPriceImpactBps ?? maxSlippageBps;
+        throw new Error(
+          `Cannot open position: actual-size Jupiter buy route exceeds max price impact (${maxPriceImpactBps} bps) ` +
+          `for ${candidate.symbol} (${candidate.address})`,
+        );
+      }
       if (hasFundedInput) {
         throw new Error(`No Jupiter buy route for ${candidate.symbol} (${candidate.address})`);
       }
@@ -547,6 +561,12 @@ export class LiveBroker implements ExecutionBroker {
       return undefined;
     }
   }
+}
+
+function quotePriceImpactBps(quote: JupiterQuoteResponse): number | undefined {
+  const priceImpactPct = Number(quote.priceImpactPct);
+  if (!Number.isFinite(priceImpactPct) || priceImpactPct < 0) return undefined;
+  return Math.round(priceImpactPct * 10_000);
 }
 
 function isLiveExecutionJournalStore(store: unknown): store is LiveExecutionJournalStore {

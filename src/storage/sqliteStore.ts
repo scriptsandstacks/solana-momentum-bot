@@ -176,7 +176,7 @@ export interface TokenVolumeSnapshotRow {
 export class SqliteStore {
   private readonly db: Database.Database;
 
-  constructor(dbPath = 'data/hermes-paper-bot.sqlite') {
+  constructor(dbPath = 'data/solana-trade-engine.sqlite') {
     fs.mkdirSync(path.dirname(path.resolve(dbPath)), { recursive: true });
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');

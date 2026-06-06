@@ -11,10 +11,16 @@ const chainConfigSchema = z.object({
   minLiquidityUsd: z.number().positive(),
   minVolume5mUsd: z.number().nonnegative(),
   maxSlippageBps: z.number().int().min(1).max(10_000),
+  // Maximum actual-size Jupiter quote price impact allowed before signing a
+  // live buy. Defaults in code to maxSlippageBps when omitted.
+  maxPriceImpactBps: z.number().int().min(1).max(10_000).optional(),
   // Lamports to add as a Solana priority fee per transaction in live mode.
   // 'auto' lets Jupiter set a dynamic fee based on current network congestion.
   // Omit to use no priority fee (not recommended during high congestion periods).
   priorityFeeLamports: z.union([z.number().int().nonnegative(), z.literal('auto')]).optional(),
+  // Commitment required before a live swap is treated as confirmed. `confirmed`
+  // is faster; `finalized` reduces reorg risk at the cost of extra latency.
+  confirmationCommitment: z.enum(['confirmed', 'finalized']).default('confirmed'),
 });
 
 const exitRulesSchema = z.object({
