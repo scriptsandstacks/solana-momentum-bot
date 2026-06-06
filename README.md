@@ -1,4 +1,4 @@
-# Hermes — Solana Memecoin Trading Bot
+# Solana Trade Engine — Solana Memecoin Trading Bot
 
 Automated trading bot for Pump.fun tokens on Solana. Watches for newly created and migrating tokens in real time, filters them through scoring and multi-signal risk screens, and executes real on-chain swaps via Jupiter. Supports seamless switching between paper and live trading.
 
@@ -93,7 +93,7 @@ SOLANA_RPC_URL=https://... PUMPPORTAL_API_KEY=... npm run bot -- run
 ## Improvement cycle
 
 ```
-Run paper trading 2–4 weeks
+Use paper mode to calibrate, or switch to live when the owner is ready
         ↓
 stats + strategies → is expectancy positive?
 outcomes → is the threshold set correctly?

@@ -1,4 +1,4 @@
-# Hermes Engineering Handoff
+# Solana Trade Engine Engineering Handoff
 
 **Author:** Codex  
 **Last updated:** 2026-06-06
@@ -12,9 +12,11 @@ npm run typecheck -> clean
 git diff --check  -> clean
 ```
 
-Hermes is intentionally Solana-only. Paper and live trading share the same
+Solana Trade Engine is intentionally Solana-only. Paper and live trading share the same
 strategy and execution-broker interface, and the owner can switch modes through
 configuration without completing any mandatory paper-trading cycle.
+Project naming is now Solana Trade Engine across noticeable user-facing
+surfaces; the CLI/package binary slug is `solana-trade-engine`.
 
 ## Current Live Execution State
 
@@ -73,6 +75,7 @@ Recent live-readiness work adds:
 - `live-readiness` audit surfaces the configured live price-impact cap
 - Configurable live swap confirmation commitment
 - SOL-funded orphan recovery uses recovered SOL input amount with current SOL/USD and labels the basis approximate
+- Project naming is Solana Trade Engine across docs, reports, CLI metadata, and default SQLite/test paths
 
 ## Remaining Risks
 

@@ -132,7 +132,7 @@ function buildExitResolver(strategies: TradingStrategy[], globalExits: ExitRules
 const program = new Command();
 
 program
-  .name('hermes-paper-bot')
+  .name('solana-trade-engine')
   .description('Solana memecoin trading bot with paper and live execution')
   .option('-c, --config <path>', 'config file path', 'config.yaml');
 

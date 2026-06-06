@@ -1,4 +1,4 @@
-# How Hermes Works — Plain English Guide
+# How Solana Trade Engine Works — Plain English Guide
 
 This document explains what the bot does, why it does it, and how to read its results. No programming knowledge required.
 
@@ -6,15 +6,15 @@ This document explains what the bot does, why it does it, and how to read its re
 
 ## What is this?
 
-Hermes is an automated trading bot for Solana memecoins. It watches for newly created or newly listed tokens in real time, evaluates whether they show signs of real demand, and executes real swaps on-chain using Jupiter. It also supports a **paper trading** mode where it simulates trades without using real money.
+Solana Trade Engine is an automated trading bot for Solana memecoins. It watches for newly created or newly listed tokens in real time, evaluates whether they show signs of real demand, and executes real swaps on-chain using Jupiter. It also supports a **paper trading** mode where it simulates trades without using real money.
 
-The recommended path is to run paper trading for a few weeks to validate and tune the strategy, then switch to live mode once the numbers are consistently good.
+Paper mode is an optional calibration loop. The owner can switch between paper and live mode through configuration when they are ready; the system does not require a fixed number of paper cycles before live trading.
 
 ---
 
 ## What market does it trade?
 
-Hermes trades **Pump.fun tokens on Solana**. Pump.fun is a platform where anyone can create a new token in seconds. The vast majority of tokens created there are worthless and die within minutes. A small fraction, however, go on to move 200%, 500%, or more within their first hour.
+Solana Trade Engine trades **Pump.fun tokens on Solana**. Pump.fun is a platform where anyone can create a new token in seconds. The vast majority of tokens created there are worthless and die within minutes. A small fraction, however, go on to move 200%, 500%, or more within their first hour.
 
 The bot's job is to find that small fraction before the move happens.
 
@@ -181,7 +181,7 @@ and slippage config — without reading private keys or placing any trades.
 ## The improvement cycle
 
 ```
-Run paper trading for 2–4 weeks
+Use paper mode to calibrate, or switch to live when the owner is ready
         ↓
 stats + strategies → is expectancy positive?
 outcomes → is the threshold set correctly?

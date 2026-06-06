@@ -1,6 +1,6 @@
-# Hermes — System Documentation
+# Solana Trade Engine — System Documentation
 
-Technical reference for the Hermes trading bot. Covers architecture, data flow, strategy logic, exit rules, analytics, live trading, and CLI commands.
+Technical reference for the Solana Trade Engine trading bot. Covers architecture, data flow, strategy logic, exit rules, analytics, live trading, and CLI commands.
 
 ---
 
