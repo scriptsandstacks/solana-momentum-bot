@@ -8,6 +8,7 @@ chains:
     minVolume5mUsd: 5000
     maxSlippageBps: 500
     maxPriceImpactBps: 500
+    minSolFeeReserveLamports: 5000000
     confirmationCommitment: confirmed
 
 paper:

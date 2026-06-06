@@ -14,6 +14,9 @@ const chainConfigSchema = z.object({
   // Maximum actual-size Jupiter quote price impact allowed before signing a
   // live buy. Defaults in code to maxSlippageBps when omitted.
   maxPriceImpactBps: z.number().int().min(1).max(10_000).optional(),
+  // Minimum SOL balance reserved for live network fees and account/rent edge
+  // cases. This is an operator readiness check, not a trading-mode gate.
+  minSolFeeReserveLamports: z.number().int().nonnegative().optional(),
   // Lamports to add as a Solana priority fee per transaction in live mode.
   // 'auto' lets Jupiter set a dynamic fee based on current network congestion.
   // Omit to use no priority fee (not recommended during high congestion periods).

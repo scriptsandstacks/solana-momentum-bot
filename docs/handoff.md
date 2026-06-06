@@ -2,14 +2,15 @@
 
 **Author:** Codex  
 **Last updated:** 2026-06-06
-**Branch:** `codex/solana-live-readiness-hardening`
+**Branch:** `codex/solana-operator-readiness`
 
 ## Current Health
 
 ```text
-npm test          -> 38 files, 290 tests passing
+npm test          -> 38 files, 293 tests passing
 npm run typecheck -> clean
 git diff --check  -> clean
+npm run bot -- --help -> clean; `wallet-balances` listed
 ```
 
 Solana Trade Engine is intentionally Solana-only. Paper and live trading share the same
@@ -40,6 +41,7 @@ Live mode is functionally implemented:
 - Stablecoin-funded orphan buys recover exact transaction-history basis; SOL-funded buys recover approximate basis from actual SOL spend and current SOL/USD
 - Live cash inventory values SOL, USDC, and USDT; opens select the best actual-size quote among funded inputs and reject excessive price impact
 - Configurable live confirmation commitment: `confirmed` for lower latency or `finalized` for stronger reorg protection
+- Read-only `wallet-balances` command reports SOL, USDC, USDT, total route-input value, and configured SOL fee reserve status without placing trades
 
 ## Important Files
 
@@ -47,6 +49,7 @@ Live mode is functionally implemented:
 |---|---|
 | `src/execution/liveBroker.ts` | Live broker state, entry, exit, cash, and P&L accounting |
 | `src/execution/liveDeps.ts` | Production keypair, RPC, Jupiter, confirmation, and fill dependencies |
+| `src/execution/liveReadiness.ts` | Static live prerequisite and policy audit logic |
 | `src/execution/solanaTransactionFill.ts` | Confirmed wallet balance-delta parser |
 | `src/execution/solanaTransactionHistory.ts` | Recent wallet buy lookup for orphan recovery |
 | `src/execution/solanaConfirmation.ts` | Block-height-aware transaction confirmation |
@@ -76,6 +79,7 @@ Recent live-readiness work adds:
 - Configurable live swap confirmation commitment
 - SOL-funded orphan recovery uses recovered SOL input amount with current SOL/USD and labels the basis approximate
 - Project naming is Solana Trade Engine across docs, reports, CLI metadata, and default SQLite/test paths
+- Operator readiness adds configurable SOL fee reserve checks plus `wallet-balances` for read-only route-input inventory
 
 ## Remaining Risks
 

@@ -29,9 +29,9 @@ import { PaperBroker } from '../paper/paperBroker.js';
 import { scoreTokenCandidate } from '../scoring/scoreToken.js';
 import { SqliteStore } from '../storage/sqliteStore.js';
 import { buildStrategies, strategyThresholdMap } from '../strategies/buildStrategies.js';
-import { evaluateLiveReadiness, renderLiveReadinessReport } from '../execution/liveReadiness.js';
+import { DEFAULT_MIN_SOL_FEE_RESERVE_LAMPORTS, evaluateLiveReadiness, renderLiveReadinessReport } from '../execution/liveReadiness.js';
 import { LiveBroker } from '../execution/liveBroker.js';
-import { loadSolanaKeypair, createLiveBrokerDeps, queryWalletCashUsd } from '../execution/liveDeps.js';
+import { loadSolanaKeypair, createLiveBrokerDeps, queryWalletCashInventory, queryWalletCashUsd } from '../execution/liveDeps.js';
 import { TokenActivityWatcher, rpcUrlToWs } from '../execution/tokenActivityWatcher.js';
 import { reconcileWalletPositions, renderReconciliationReport } from '../execution/walletReconciler.js';
 import {
@@ -72,6 +72,21 @@ function paperBrokerOptions(config: BotConfig): PaperBrokerOptions {
   };
 }
 
+function solanaRpcRequest(rpcUrl: string): (method: string, params: unknown[]) => Promise<unknown> {
+  return async (method, params) => {
+    const res = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) throw new Error(`Solana RPC ${method} failed: ${res.status} ${res.statusText}`);
+    const json = await res.json() as { result?: unknown; error?: { message: string } };
+    if (json.error) throw new Error(`Solana RPC ${method}: ${json.error.message}`);
+    return json.result;
+  };
+}
+
 async function buildLiveBrokerIfNeeded(
   config: BotConfig,
   store: { loadOpenPositions(): any; getRealizedPnlUsd(): number; getRealizedPnlUsdSince(s: string): number; getNextPositionSeq(): number },
@@ -91,15 +106,7 @@ async function buildLiveBrokerIfNeeded(
     priorityFeeLamports: solana.priorityFeeLamports ?? 'auto',
   });
 
-  const initialCashUsd = await queryWalletCashUsd(keypair.publicKey.toBase58(), deps, async (method, params) => {
-    const res = await fetch(rpcUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-    });
-    const json = await res.json() as { result?: unknown };
-    return json.result;
-  });
+  const initialCashUsd = await queryWalletCashUsd(keypair.publicKey.toBase58(), deps, solanaRpcRequest(rpcUrl));
 
   const brokerOptions = {
     solana,
@@ -201,6 +208,39 @@ program
     } finally {
       store.close();
     }
+  });
+
+program
+  .command('wallet-balances')
+  .description('Read live wallet route-input balances without placing trades')
+  .action(async () => {
+    const config = loadConfigFromFile(program.opts().config);
+    const solana = config.chains.solana;
+    if (!solana.walletFile) throw new Error('chains.solana.walletFile must be set to inspect wallet balances.');
+    const rpcUrl = solana.rpcUrlEnv ? process.env[solana.rpcUrlEnv] : undefined;
+    if (!rpcUrl) throw new Error(`Solana RPC URL env var "${solana.rpcUrlEnv ?? 'rpcUrlEnv'}" is not set or not configured.`);
+
+    const keypair = loadSolanaKeypair(solana.walletFile);
+    const deps = createLiveBrokerDeps(keypair, {
+      rpcUrl,
+      maxSlippageBps: solana.maxSlippageBps,
+      confirmationCommitment: solana.confirmationCommitment,
+      priorityFeeLamports: solana.priorityFeeLamports ?? 'auto',
+    });
+    const inventory = await queryWalletCashInventory(keypair.publicKey.toBase58(), deps, solanaRpcRequest(rpcUrl));
+    const minReserve = BigInt(solana.minSolFeeReserveLamports ?? DEFAULT_MIN_SOL_FEE_RESERVE_LAMPORTS);
+    const reserveStatus = inventory.solLamports >= minReserve ? 'OK' : 'LOW';
+
+    process.stdout.write([
+      'Live Wallet Balances',
+      `Wallet: ${inventory.publicKey}`,
+      `SOL: ${inventory.sol.toFixed(6)} ($${inventory.solUsd.toFixed(2)} at $${inventory.solPriceUsd.toFixed(2)}/SOL)`,
+      `USDC: ${inventory.usdc.toFixed(2)}`,
+      `USDT: ${inventory.usdt.toFixed(2)}`,
+      `Total route-input value: $${inventory.totalUsd.toFixed(2)}`,
+      `SOL fee reserve: ${reserveStatus} (${inventory.solLamports.toString()} / ${minReserve.toString()} lamports)`,
+      '',
+    ].join('\n'));
   });
 
 program
