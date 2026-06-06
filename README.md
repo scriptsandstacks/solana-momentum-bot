@@ -56,6 +56,9 @@ PUMPPORTAL_API_KEY=your_key npm run bot -- run
 ```
 
 **Before going live:**
+
+Read the operator checklist in [`docs/go-live-runbook.md`](docs/go-live-runbook.md).
+
 ```bash
 # Audit all prerequisites (no keys read, no trades placed)
 npm run bot -- live-readiness

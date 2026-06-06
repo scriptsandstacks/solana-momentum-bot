@@ -298,6 +298,9 @@ transactions cannot be dismissed through this command.
 
 ## Analytics and reporting
 
+For the owner/operator go-live checklist, see
+[`docs/go-live-runbook.md`](go-live-runbook.md).
+
 ### During `run`
 
 | Log prefix | Content |

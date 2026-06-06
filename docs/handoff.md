@@ -59,6 +59,7 @@ Live mode is functionally implemented:
 | `src/execution/positionRecovery.ts` | Pure stale/orphan recovery transformations |
 | `src/storage/sqliteStore.ts` | Auto-migrating persistence layer |
 | `src/bot/runLoop.ts` | Main process, exit, outcome, and watcher orchestration |
+| `docs/go-live-runbook.md` | Owner/operator live trading checklist and recovery sequence |
 
 ## Recent Live-Readiness Work
 
@@ -82,6 +83,7 @@ Recent live-readiness work adds:
 - Project naming is Solana Trade Engine across docs, reports, CLI metadata, and default SQLite/test paths
 - Operator readiness adds configurable SOL fee reserve checks plus `wallet-balances` for read-only route-input inventory
 - Runtime live opens enforce the SOL fee reserve and avoid SOL-funded routes that would spend below it
+- Go-live runbook documents pre-flight checks, first live session, monitoring, shutdown, and recovery priorities
 
 ## Remaining Risks
 
