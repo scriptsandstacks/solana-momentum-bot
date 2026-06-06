@@ -300,7 +300,7 @@ describe('runBotLoop token watcher integration', () => {
       processIntervalMs: 15,
       processLimit: 5,
       store: { savePumpPortalEvent: () => {} },
-      solanaConfig: { enabled: true, minLiquidityUsd: 10_000, minVolume5mUsd: 5_000, maxSlippageBps: 500 },
+      solanaConfig: { enabled: true, minLiquidityUsd: 10_000, minVolume5mUsd: 5_000, maxSlippageBps: 500, confirmationCommitment: 'confirmed' },
       paper: { startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 3 },
       minimumScoreToEnter: 75,
       ClientCtor: class {

@@ -1,13 +1,13 @@
 # Hermes Engineering Handoff
 
 **Author:** Codex  
-**Last updated:** 2026-06-03  
-**Branch:** `codex/confirmed-live-fill-accounting`
+**Last updated:** 2026-06-06
+**Branch:** `codex/solana-live-readiness-hardening`
 
 ## Current Health
 
 ```text
-npm test          -> 38 files, 280 tests passing
+npm test          -> 38 files, 283 tests passing
 npm run typecheck -> clean
 git diff --check  -> clean
 ```
@@ -37,6 +37,7 @@ Live mode is functionally implemented:
 - Startup quarantine for stale positions: no repeated exits or new entries until recovery
 - Stablecoin-funded orphan buys recovered from recent wallet transaction history
 - Live cash inventory values SOL, USDC, and USDT; opens select the best actual-size quote among funded inputs
+- Configurable live confirmation commitment: `confirmed` for lower latency or `finalized` for stronger reorg protection
 
 ## Important Files
 
@@ -53,9 +54,9 @@ Live mode is functionally implemented:
 | `src/storage/sqliteStore.ts` | Auto-migrating persistence layer |
 | `src/bot/runLoop.ts` | Main process, exit, outcome, and watcher orchestration |
 
-## This Branch
+## Recent Live-Readiness Work
 
-This branch adds:
+Recent live-readiness work adds:
 
 - Confirmed on-chain fill accounting instead of Jupiter quote-based accounting
 - Solana network fee persistence and P&L attribution
@@ -68,16 +69,11 @@ This branch adds:
 - Stale-position quarantine after wallet reconciliation
 - SOL, USDC, and USDT live cash inventory with mint-specific funding checks
 - Actual-size live route selection across funded wallet inputs
+- Configurable live swap confirmation commitment
 
 ## Remaining Risks
 
 ### Medium Priority
-
-**Confirmation commitment**
-
-Confirmation accepts both `confirmed` and `finalized`. Requiring only
-`finalized` would reduce reorg risk but add latency. This is a trading-policy
-decision rather than missing plumbing.
 
 **SOL-funded orphan recovery valuation**
 

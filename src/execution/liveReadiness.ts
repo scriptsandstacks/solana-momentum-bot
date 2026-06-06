@@ -92,6 +92,12 @@ export function evaluateLiveReadiness(input: LiveReadinessInput): LiveReadinessR
   );
 
   checks.push(
+    solana.confirmationCommitment === 'finalized'
+      ? pass('Confirmation commitment', 'Live swaps wait for finalized commitment before accounting them as confirmed.')
+      : warn('Confirmation commitment', 'Live swaps use confirmed commitment for lower latency; finalized reduces reorg risk if the owner prefers slower confirmation.'),
+  );
+
+  checks.push(
     input.closedTrades >= 50
       ? pass('Paper trade sample', `${input.closedTrades} closed paper trades recorded.`)
       : warn('Paper trade sample', `${input.closedTrades} closed paper trades recorded; more paper data improves calibration but does not block live mode.`),

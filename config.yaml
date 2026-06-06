@@ -7,6 +7,7 @@ chains:
     minLiquidityUsd: 10000
     minVolume5mUsd: 5000
     maxSlippageBps: 500
+    confirmationCommitment: confirmed
 
 paper:
   startingBalanceUsd: 1000

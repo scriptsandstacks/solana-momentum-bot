@@ -10,6 +10,7 @@ const validConfig = {
       minLiquidityUsd: 10000,
       minVolume5mUsd: 5000,
       maxSlippageBps: 500,
+      confirmationCommitment: 'confirmed',
     },
   },
   paper: {
@@ -35,8 +36,23 @@ describe('config loading', () => {
 
     expect(config.mode).toBe('paper');
     expect(config.chains.solana.enabled).toBe(true);
+    expect(config.chains.solana.confirmationCommitment).toBe('confirmed');
     expect(config.paper.positionSizeUsd).toBe(25);
     expect(config.strategies.freshLaunchMomentum.minScoreToEnter).toBeUndefined();
+  });
+
+  it('accepts finalized live confirmation commitment', () => {
+    const config = parseConfig({
+      ...validConfig,
+      chains: {
+        solana: {
+          ...validConfig.chains.solana,
+          confirmationCommitment: 'finalized',
+        },
+      },
+    });
+
+    expect(config.chains.solana.confirmationCommitment).toBe('finalized');
   });
 
   it('accepts live mode in config (CLI guards against running it)', () => {

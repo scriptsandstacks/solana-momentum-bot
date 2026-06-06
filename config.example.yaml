@@ -16,6 +16,9 @@ chains:
     # 'auto' lets Jupiter set a dynamic fee based on current network congestion.
     # Increase during high-traffic periods if transactions are not landing.
     priorityFeeLamports: auto
+    # Required commitment before a live swap is treated as confirmed.
+    # confirmed = lower latency; finalized = stronger reorg protection.
+    confirmationCommitment: confirmed
 
 paper:
   startingBalanceUsd: 1000

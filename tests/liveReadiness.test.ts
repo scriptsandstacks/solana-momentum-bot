@@ -12,6 +12,7 @@ const config: BotConfig = {
       minLiquidityUsd: 10_000,
       minVolume5mUsd: 5_000,
       maxSlippageBps: 500,
+      confirmationCommitment: 'confirmed',
     },
   },
   paper: {
@@ -97,5 +98,28 @@ describe('evaluateLiveReadiness', () => {
     expect(report.ready).toBe(true);
     expect(report.block).toBe(0);
     expect(report.checks.find((check) => check.label === 'Paper trade sample')).toMatchObject({ status: 'warn' });
+    expect(report.checks.find((check) => check.label === 'Confirmation commitment')).toMatchObject({ status: 'warn' });
+  });
+
+  it('passes the confirmation commitment check when finalized is configured', () => {
+    const report = evaluateLiveReadiness({
+      config: {
+        ...config,
+        chains: {
+          solana: {
+            ...config.chains.solana,
+            confirmationCommitment: 'finalized',
+          },
+        },
+      },
+      env: { SOLANA_RPC_URL: 'https://rpc.example' },
+      walletFileExists: true,
+      closedTrades: 60,
+      trackedOutcomes: 120,
+      liveBrokerAvailable: true,
+      liveExecutionImplemented: true,
+    });
+
+    expect(report.checks.find((check) => check.label === 'Confirmation commitment')).toMatchObject({ status: 'pass' });
   });
 });

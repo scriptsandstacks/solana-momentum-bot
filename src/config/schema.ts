@@ -15,6 +15,9 @@ const chainConfigSchema = z.object({
   // 'auto' lets Jupiter set a dynamic fee based on current network congestion.
   // Omit to use no priority fee (not recommended during high congestion periods).
   priorityFeeLamports: z.union([z.number().int().nonnegative(), z.literal('auto')]).optional(),
+  // Commitment required before a live swap is treated as confirmed. `confirmed`
+  // is faster; `finalized` reduces reorg risk at the cost of extra latency.
+  confirmationCommitment: z.enum(['confirmed', 'finalized']).default('confirmed'),
 });
 
 const exitRulesSchema = z.object({

@@ -2,6 +2,7 @@ export interface ConfirmSolanaTransactionOptions {
   signature: string;
   lastValidBlockHeight?: number;
   rpcRequest: (method: string, params: unknown[]) => Promise<unknown>;
+  commitment?: 'confirmed' | 'finalized';
   timeoutMs?: number;
   pollIntervalMs?: number;
   now?: () => number;
@@ -13,6 +14,7 @@ export async function confirmSolanaTransaction(options: ConfirmSolanaTransaction
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const timeoutMs = options.timeoutMs ?? 90_000;
   const pollIntervalMs = options.pollIntervalMs ?? 2_000;
+  const commitment = options.commitment ?? 'confirmed';
   const deadline = now() + timeoutMs;
 
   while (now() < deadline) {
@@ -25,12 +27,12 @@ export async function confirmSolanaTransaction(options: ConfirmSolanaTransaction
     if (status?.err) {
       throw new Error(`Transaction ${options.signature} failed on-chain: ${JSON.stringify(status.err)}`);
     }
-    if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
+    if (isAcceptedCommitment(status?.confirmationStatus, commitment)) {
       return;
     }
 
     if (options.lastValidBlockHeight !== undefined) {
-      const blockHeight = await options.rpcRequest('getBlockHeight', [{ commitment: 'confirmed' }]);
+      const blockHeight = await options.rpcRequest('getBlockHeight', [{ commitment }]);
       if (typeof blockHeight === 'number' && blockHeight > options.lastValidBlockHeight) {
         throw new Error(
           `Transaction ${options.signature} expired at block height ${options.lastValidBlockHeight} ` +
@@ -43,4 +45,12 @@ export async function confirmSolanaTransaction(options: ConfirmSolanaTransaction
   }
 
   throw new Error(`Transaction ${options.signature} was not confirmed within ${Math.round(timeoutMs / 1000)} seconds`);
+}
+
+function isAcceptedCommitment(
+  actual: string | undefined,
+  required: 'confirmed' | 'finalized',
+): boolean {
+  if (required === 'finalized') return actual === 'finalized';
+  return actual === 'confirmed' || actual === 'finalized';
 }

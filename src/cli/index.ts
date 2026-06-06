@@ -86,6 +86,7 @@ async function buildLiveBrokerIfNeeded(
   const deps = createLiveBrokerDeps(keypair, {
     rpcUrl,
     maxSlippageBps: solana.maxSlippageBps,
+    confirmationCommitment: solana.confirmationCommitment,
     priorityFeeLamports: solana.priorityFeeLamports ?? 'auto',
   });
 
@@ -498,6 +499,7 @@ program
       const recoveryDeps = createLiveBrokerDeps(keypair, {
         rpcUrl,
         maxSlippageBps: solana.maxSlippageBps,
+        confirmationCommitment: solana.confirmationCommitment,
         priorityFeeLamports: solana.priorityFeeLamports ?? 'auto',
       });
 

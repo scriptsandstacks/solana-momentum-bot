@@ -18,6 +18,7 @@ const USDC_DECIMALS = 6;
 export interface LiveDepsConfig {
   rpcUrl: string;
   maxSlippageBps: number;
+  confirmationCommitment?: 'confirmed' | 'finalized';
   // lamports charged per transaction for prioritisation. 'auto' lets Jupiter
   // set a dynamic fee; omit to use no prioritisation fee.
   priorityFeeLamports?: number | 'auto';
@@ -135,6 +136,7 @@ export function createLiveBrokerDeps(keypair: Keypair, config: LiveDepsConfig): 
       await confirmSolanaTransaction({
         signature,
         lastValidBlockHeight,
+        commitment: config.confirmationCommitment,
         rpcRequest,
       });
     },
@@ -145,7 +147,7 @@ export function createLiveBrokerDeps(keypair: Keypair, config: LiveDepsConfig): 
         const result = await rpcRequest('getTransaction', [
           params.signature,
           {
-            commitment: 'confirmed',
+            commitment: config.confirmationCommitment ?? 'confirmed',
             encoding: 'jsonParsed',
             maxSupportedTransactionVersion: 0,
           },

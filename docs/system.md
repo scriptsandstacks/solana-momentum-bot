@@ -12,7 +12,7 @@ Technical reference for the Hermes trading bot. Covers architecture, data flow, 
 | Live trading (Solana) | Implemented — Jupiter swap execution, keypair signing, on-chain confirmation |
 | Supported chain | Solana only |
 | Persistence | SQLite (auto-migrating schema) |
-| Test coverage | 38 files, 280 tests |
+| Test coverage | 38 files, 283 tests |
 
 ---
 
@@ -212,7 +212,7 @@ Executes real on-chain trades via Jupiter and the Solana RPC.
 3. `getJupiterQuoteForSwap` — quotes the actual `positionSizeUsd` across funded inputs and selects the highest token output
 4. `getJupiterSwapTransaction` — POST to `/swap/v1/swap`
 5. `VersionedTransaction.deserialize` → `tx.sign([keypair])` → `sendTransaction` RPC
-6. `confirmTransaction` — polls `getSignatureStatuses` and aborts immediately if Jupiter's `lastValidBlockHeight` is exceeded; 90 s remains the fallback timeout
+6. `confirmTransaction` — polls `getSignatureStatuses` until `confirmationCommitment` is reached and aborts immediately if Jupiter's `lastValidBlockHeight` is exceeded; 90 s remains the fallback timeout
 7. `getTransaction` — reads confirmed wallet balance deltas for the actual input and output amounts
 8. Returns `PaperPosition` with actual fill quantity, price, and `entryTxSignature`
 
@@ -397,6 +397,7 @@ chains:
     minVolume5mUsd: 5000
     maxSlippageBps: 500
     priorityFeeLamports: auto               # live mode: lamports per tx, or 'auto' (Jupiter dynamic)
+    confirmationCommitment: confirmed       # 'confirmed' for lower latency, 'finalized' for stronger finality
 
 paper:                                      # controls position sizing in both paper and live modes
   startingBalanceUsd: 1000
@@ -508,7 +509,7 @@ src/
 
 ```bash
 npm install
-npm test              # 38 test files, 280 tests
+npm test              # 38 test files, 283 tests
 npm run typecheck     # must be clean before committing
 npm run bot -- --help # show all commands
 ```

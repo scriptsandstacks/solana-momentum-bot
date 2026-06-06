@@ -92,7 +92,7 @@ When `mode: live` is set in the config, the bot executes real on-chain swaps:
 3. Builds a swap transaction
 4. Signs it with the wallet keypair
 5. Submits to the Solana network
-6. Waits for confirmation
+6. Waits for the configured commitment level (`confirmed` or `finalized`)
 7. Reads the confirmed transaction's wallet balance changes
 8. Records the actual fill quantity, price, and transaction signature
 
