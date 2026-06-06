@@ -7,7 +7,7 @@
 ## Current Health
 
 ```text
-npm test          -> 38 files, 293 tests passing
+npm test          -> 38 files, 295 tests passing
 npm run typecheck -> clean
 git diff --check  -> clean
 npm run bot -- --help -> clean; `wallet-balances` listed
@@ -42,6 +42,7 @@ Live mode is functionally implemented:
 - Live cash inventory values SOL, USDC, and USDT; opens select the best actual-size quote among funded inputs and reject excessive price impact
 - Configurable live confirmation commitment: `confirmed` for lower latency or `finalized` for stronger reorg protection
 - Read-only `wallet-balances` command reports SOL, USDC, USDT, total route-input value, and configured SOL fee reserve status without placing trades
+- Live opens preserve the configured SOL fee reserve; low-reserve wallets reject new entries before quote/sign/submit, while exits and recovery remain available
 
 ## Important Files
 
@@ -80,6 +81,7 @@ Recent live-readiness work adds:
 - SOL-funded orphan recovery uses recovered SOL input amount with current SOL/USD and labels the basis approximate
 - Project naming is Solana Trade Engine across docs, reports, CLI metadata, and default SQLite/test paths
 - Operator readiness adds configurable SOL fee reserve checks plus `wallet-balances` for read-only route-input inventory
+- Runtime live opens enforce the SOL fee reserve and avoid SOL-funded routes that would spend below it
 
 ## Remaining Risks
 

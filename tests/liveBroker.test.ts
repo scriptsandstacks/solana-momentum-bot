@@ -77,7 +77,7 @@ function makeDeps(overrides: Partial<LiveBrokerDeps> = {}): LiveBrokerDeps {
   return {
     getPublicKey: () => 'wallet-pubkey-1111',
     getSolPriceUsd: async () => 150,
-    getWalletBalance: async (mint) => mint === USDC_MINT ? 1_000_000_000_000n : 0n,
+    getWalletBalance: async (mint) => mint === SOL_MINT ? 5_000_000n : mint === USDC_MINT ? 1_000_000_000_000n : 0n,
     getTokenDecimals: async (mint) => (mint === USDC_MINT ? 6 : 6),
     getJupiterQuote: async ({ outputMint }) =>
       outputMint === 'token-mint-abc123' ? (buyQuote as any) : (sellQuote as any),
@@ -273,10 +273,43 @@ describe('LiveBroker.openPosition', () => {
     expect(signAndSendTransaction).not.toHaveBeenCalled();
   });
 
+  it('refuses to submit new opens when SOL fee reserve is below the configured floor', async () => {
+    const getJupiterQuote = vi.fn(makeDeps().getJupiterQuote);
+    const signAndSendTransaction = vi.fn(async () => 'should-not-submit');
+    const broker = makeBroker({ solana: { ...defaultOptions.solana, minSolFeeReserveLamports: 5_000_000 } }, {
+      getWalletBalance: async (mint) => mint === SOL_MINT ? 4_999_999n : mint === USDC_MINT ? 1_000_000_000_000n : 0n,
+      getJupiterQuote,
+      signAndSendTransaction,
+    });
+
+    await expect(broker.openPosition(makeCandidate(), 80)).rejects.toThrow('SOL fee reserve below configured minimum');
+    expect(getJupiterQuote).not.toHaveBeenCalled();
+    expect(signAndSendTransaction).not.toHaveBeenCalled();
+  });
+
   it('falls back to a funded route input when the discovery-time route is unfunded', async () => {
     const getJupiterQuote = vi.fn(makeDeps().getJupiterQuote);
     const broker = makeBroker({}, {
-      getWalletBalance: async (mint) => mint === USDC_MINT ? 1_000_000_000_000n : 0n,
+      getWalletBalance: async (mint) => mint === SOL_MINT ? 5_000_000n : mint === USDC_MINT ? 1_000_000_000_000n : 0n,
+      getJupiterQuote,
+    });
+    const candidate = makeCandidate({ routeInputMint: SOL_MINT, routeInputSymbol: 'SOL' });
+
+    await broker.openPosition(candidate, 80);
+
+    expect(getJupiterQuote).toHaveBeenCalledOnce();
+    expect(getJupiterQuote.mock.calls[0][0].inputMint).toBe(USDC_MINT);
+  });
+
+  it('does not spend SOL below the fee reserve when selecting a buy route', async () => {
+    const getJupiterQuote = vi.fn(makeDeps().getJupiterQuote);
+    const broker = makeBroker({ solana: { ...defaultOptions.solana, minSolFeeReserveLamports: 100_000_000 } }, {
+      getWalletBalance: async (mint) => {
+        if (mint === SOL_MINT) return 200_000_000n; // below 25 USD SOL spend + 0.1 SOL reserve
+        if (mint === USDC_MINT) return 1_000_000_000_000n;
+        return 0n;
+      },
+      getSolPriceUsd: async () => 200,
       getJupiterQuote,
     });
     const candidate = makeCandidate({ routeInputMint: SOL_MINT, routeInputSymbol: 'SOL' });
@@ -356,6 +389,7 @@ describe('LiveBroker.openPosition', () => {
 
   it('still records a confirmed position when the network fee cannot be valued', async () => {
     const getSolPriceUsd = vi.fn()
+      .mockResolvedValueOnce(150)
       .mockRejectedValueOnce(new Error('price unavailable'));
     const broker = makeBroker({}, { getSolPriceUsd });
 

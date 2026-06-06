@@ -183,6 +183,11 @@ queries SOL, USDC, and USDT balances, values SOL through Jupiter, and reports
 whether the wallet meets the configured SOL fee reserve. It does not build,
 sign, or submit swaps.
 
+Live opens also preserve this reserve at runtime: if SOL is below the configured
+floor, the bot will not open a new position, and SOL-funded routes are skipped
+when they would spend into the reserve. Existing exits and recovery flows remain
+available.
+
 ---
 
 ## The improvement cycle

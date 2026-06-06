@@ -6,6 +6,7 @@ import { startOfUtcDayIso } from '../paper/restoreBroker.js';
 import type { JupiterQuoteResponse } from './jupiterSwap.js';
 import type { ConfirmedSwapFill } from './solanaTransactionFill.js';
 import type { LiveExecutionJournalStore } from './liveExecutionJournal.js';
+import { DEFAULT_MIN_SOL_FEE_RESERVE_LAMPORTS } from './liveReadiness.js';
 import { randomUUID } from 'node:crypto';
 
 // ─── injectable dependencies ────────────────────────────────────────────────
@@ -198,6 +199,7 @@ export class LiveBroker implements ExecutionBroker {
     if (!getJupiterQuote || !getSwapTransaction || !signAndSendTransaction || !confirmTransaction || !getConfirmedSwapFill || !getTokenDecimals || !getSolPriceUsd || !getWalletBalance || !getPublicKey) {
       throw new Error('LiveBroker: execution deps are not configured — use LiveBroker.restore() with createLiveBrokerDeps()');
     }
+    await this.assertSolFeeReserveForOpen(getWalletBalance);
 
     const id = `live-${this.nextId++}`;
     // Discovery-time route probes are small and wallet-agnostic. Re-quote the
@@ -473,6 +475,7 @@ export class LiveBroker implements ExecutionBroker {
       if (walletBalance <= 0n) continue;
       const inputAmountBaseUnits = await this.resolveInputAmount(route.mint, sizeUsd, getSolPriceUsd);
       if (walletBalance < BigInt(inputAmountBaseUnits)) continue;
+      if (route.mint === SOL_MINT && walletBalance - BigInt(inputAmountBaseUnits) < this.minSolFeeReserveLamports()) continue;
       hasFundedInput = true;
 
       const quote = await getJupiterQuote({
@@ -517,6 +520,22 @@ export class LiveBroker implements ExecutionBroker {
       throw new Error(`Cannot open position: no funded Jupiter buy route for ${candidate.symbol} (${candidate.address})`);
     }
     return best;
+  }
+
+  private async assertSolFeeReserveForOpen(getWalletBalance: LiveBrokerDeps['getWalletBalance']): Promise<void> {
+    const reserve = this.minSolFeeReserveLamports();
+    if (reserve === 0n) return;
+    const solBalance = await getWalletBalance(SOL_MINT);
+    if (solBalance < reserve) {
+      throw new Error(
+        `Cannot open position: SOL fee reserve below configured minimum ` +
+        `(${solBalance.toString()} / ${reserve.toString()} lamports)`,
+      );
+    }
+  }
+
+  private minSolFeeReserveLamports(): bigint {
+    return BigInt(this.options.solana.minSolFeeReserveLamports ?? DEFAULT_MIN_SOL_FEE_RESERVE_LAMPORTS);
   }
 
   // Convert a USD position size to the base-unit amount of the input mint.

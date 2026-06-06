@@ -526,5 +526,9 @@ npm run bot -- wallet-balances  # verify route-input inventory and SOL fee reser
 npm run bot -- recover-positions --dry-run  # verify wallet/SQLite sync
 ```
 
+Live opens enforce the configured SOL fee reserve before quote/sign/submit and
+skip SOL-funded buy routes that would spend below it. This prevents avoidable
+entry failures without blocking exits or recovery.
+
 **Never commit:** `wallet/`, `.env`, `data/`, `logs/`, `node_modules/`
 **Never log:** private keys, seed phrases, API keys
