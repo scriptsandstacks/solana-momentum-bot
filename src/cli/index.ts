@@ -7,12 +7,14 @@ import { renderReport } from '../bot/report.js';
 import { runPaperCycle } from '../bot/paperCycle.js';
 import { renderStorageReport } from '../bot/storageReport.js';
 import { computeTradeAnalytics, renderAnalyticsReport, computeOutcomeAnalytics, renderOutcomeAnalytics } from '../bot/analytics.js';
+import { renderSnapshot } from '../bot/snapshot.js';
 import { trackCandidateOutcomes } from '../bot/trackOutcomes.js';
 import { runPumpWatch } from '../bot/pumpWatch.js';
 import { processPumpPortalEvents } from '../bot/pumpProcess.js';
 import { processExits } from '../bot/exitPositions.js';
 import { runBotLoop } from '../bot/runLoop.js';
 import { consoleReporter } from '../bot/reporter.js';
+import { discordReporter } from '../bot/discordReporter.js';
 import {
   applyTuneConfigUpdates,
   computeStrategyTuneRecommendations,
@@ -650,28 +652,47 @@ program
 
 program
   .command('prune')
-  .description('Delete old scored candidates that never led to a position (trades are always kept)')
-  .option('--days <days>', 'retention window in days; defaults to config retention.scoredCandidateDays')
+  .description('Delete old data to reclaim disk: scored candidates, volume snapshots, and processed PumpPortal events')
+  .option('--days <days>', 'scored-candidate retention in days; defaults to config retention.scoredCandidateDays')
   .option('--dry-run', 'report what would be deleted without deleting', false)
   .option('--no-vacuum', 'skip reclaiming disk with VACUUM after deleting')
   .action(async (options: { days?: string; dryRun: boolean; vacuum: boolean }) => {
     const config = loadConfigFromFile(program.opts().config);
-    const days = options.days === undefined ? config.retention.scoredCandidateDays : Number(options.days);
-    if (!Number.isFinite(days) || days <= 0) {
+    const candidateDays = options.days === undefined ? config.retention.scoredCandidateDays : Number(options.days);
+    if (!Number.isFinite(candidateDays) || candidateDays <= 0) {
       throw new Error('--days must be a positive number');
     }
-    const cutoffIso = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const now = Date.now();
+    const candidateCutoff = new Date(now - candidateDays * 864e5).toISOString();
+    const eventCutoff = new Date(now - config.retention.pumpPortalEventDays * 864e5).toISOString();
+    const snapshotCutoff = new Date(now - config.retention.volumeSnapshotDays * 864e5).toISOString();
+
     const store = new SqliteStore();
     try {
-      const prunable = store.countPrunableScoredCandidates(cutoffIso);
       if (options.dryRun) {
-        process.stdout.write(`Dry run: ${prunable} scored candidate(s) older than ${days}d (before ${cutoffIso}) would be deleted.\n`);
+        const prunable = store.countPrunableScoredCandidates(candidateCutoff);
+        process.stdout.write([
+          `Dry run (no changes written):`,
+          `  scored candidates  : ${prunable} rows older than ${candidateDays}d`,
+          `  pumpportal events  : rows older than ${config.retention.pumpPortalEventDays}d (processed only)`,
+          `  volume snapshots   : rows older than ${config.retention.volumeSnapshotDays}d`,
+        ].join('\n') + '\n');
         return;
       }
-      const deleted = store.pruneScoredCandidates(cutoffIso);
-      if (deleted > 0 && options.vacuum) store.vacuum();
-      const reclaimed = deleted > 0 && options.vacuum ? ' (disk reclaimed)' : '';
-      process.stdout.write(`Pruned ${deleted} scored candidate(s) older than ${days}d.${reclaimed}\n`);
+
+      const candidates = store.pruneScoredCandidates(candidateCutoff);
+      const events = store.prunePumpPortalEvents(eventCutoff);
+      const snapshots = store.pruneTokenVolumeSnapshots(snapshotCutoff);
+      const total = candidates + events + snapshots;
+
+      if (total > 0 && options.vacuum) store.vacuum();
+      const reclaimed = total > 0 && options.vacuum ? ' (disk reclaimed with VACUUM)' : '';
+      process.stdout.write([
+        `Prune complete${reclaimed}:`,
+        `  scored candidates  : ${candidates} deleted (>${candidateDays}d)`,
+        `  pumpportal events  : ${events} deleted (>${config.retention.pumpPortalEventDays}d, processed only)`,
+        `  volume snapshots   : ${snapshots} deleted (>${config.retention.volumeSnapshotDays}d)`,
+      ].join('\n') + '\n');
     } finally {
       store.close();
     }
@@ -775,7 +796,26 @@ program
 
     const strategies = buildStrategies(config);
     const log = (message: string) => process.stdout.write(`${message}\n`);
-    const reporter = config.notifications.console ? consoleReporter(log) : undefined;
+
+    const reporters: import('../bot/reporter.js').Reporter[] = [];
+    if (config.notifications.console) reporters.push(consoleReporter(log));
+
+    const discordWebhookEnv = config.notifications.discordWebhookUrlEnv;
+    const discordWebhookUrl = discordWebhookEnv ? process.env[discordWebhookEnv] : undefined;
+    if (discordWebhookUrl) {
+      reporters.push(discordReporter(discordWebhookUrl, log));
+      log(`[discord] reporter active (${discordWebhookEnv})`);
+    }
+
+    // Fan out to all active reporters. Methods are all optional so undefined is safe.
+    const reporter = reporters.length === 0 ? undefined : {
+      onPositionOpened: (e: Parameters<NonNullable<typeof reporters[0]['onPositionOpened']>>[0]) =>
+        reporters.forEach((r) => r.onPositionOpened?.(e)),
+      onPositionClosed: (e: Parameters<NonNullable<typeof reporters[0]['onPositionClosed']>>[0]) =>
+        reporters.forEach((r) => r.onPositionClosed?.(e)),
+      onCycleSummary: (s: Parameters<NonNullable<typeof reporters[0]['onCycleSummary']>>[0]) =>
+        reporters.forEach((r) => r.onCycleSummary?.(s)),
+    };
 
     const stopController = new AbortController();
     const stop = () => stopController.abort();
@@ -845,6 +885,11 @@ program
         exits: config.exits,
         resolveExits: buildExitResolver(strategies, config.exits),
         analyticsIntervalPasses,
+        retention: {
+          scoredCandidateDays: config.retention.scoredCandidateDays,
+          pumpPortalEventDays: config.retention.pumpPortalEventDays,
+          volumeSnapshotDays: config.retention.volumeSnapshotDays,
+        },
         stopSignal: stopController.signal,
         onLog: log,
         reporter,
@@ -873,6 +918,99 @@ program
     } finally {
       process.off('SIGINT', stop);
       process.off('SIGTERM', stop);
+      store.close();
+    }
+  });
+
+program
+  .command('snapshot')
+  .description('Read-only operator snapshot: readiness, wallet balances, open positions, recent trades, journal, and analytics')
+  .option('--trades <n>', 'number of recent closed trades to show', '5')
+  .action(async (options: { trades: string }) => {
+    const tradeLimit = Math.max(1, Number(options.trades) || 5);
+    const config = loadConfigFromFile(program.opts().config);
+    const store = new SqliteStore();
+    const generatedAt = new Date().toISOString();
+
+    try {
+      // ── live readiness (static; no wallet read) ──────────────────────────
+      const walletFile = config.chains.solana.walletFile;
+      const walletFileExists = walletFile ? fs.existsSync(path.resolve(process.cwd(), walletFile)) : false;
+      const readiness = evaluateLiveReadiness({
+        config,
+        env: process.env,
+        walletFileExists,
+        closedTrades: store.loadClosedTradeStats().length,
+        trackedOutcomes: store.loadScoredOutcomeStats().length,
+        liveBrokerAvailable: true,
+        liveExecutionImplemented: true,
+      });
+
+      // ── wallet balances (live only; skipped if RPC not configured) ────────
+      let walletBalances;
+      let walletError: string | undefined;
+      const rpcUrl = config.chains.solana.rpcUrlEnv ? process.env[config.chains.solana.rpcUrlEnv] : undefined;
+      if (walletFile && rpcUrl) {
+        try {
+          const keypair = loadSolanaKeypair(walletFile);
+          const deps = createLiveBrokerDeps(keypair, {
+            rpcUrl,
+            maxSlippageBps: config.chains.solana.maxSlippageBps,
+            confirmationCommitment: config.chains.solana.confirmationCommitment,
+            priorityFeeLamports: config.chains.solana.priorityFeeLamports ?? 'auto',
+          });
+          const inventory = await queryWalletCashInventory(
+            keypair.publicKey.toBase58(),
+            deps,
+            solanaRpcRequest(rpcUrl),
+          );
+          const minReserve = BigInt(
+            config.chains.solana.minSolFeeReserveLamports ?? DEFAULT_MIN_SOL_FEE_RESERVE_LAMPORTS,
+          );
+          walletBalances = {
+            publicKey: inventory.publicKey,
+            sol: inventory.sol,
+            solUsd: inventory.solUsd,
+            solPriceUsd: inventory.solPriceUsd,
+            usdc: inventory.usdc,
+            usdt: inventory.usdt,
+            totalUsd: inventory.totalUsd,
+            solLamports: inventory.solLamports,
+            reserveStatus: (inventory.solLamports >= minReserve ? 'OK' : 'LOW') as 'OK' | 'LOW',
+            minReserveLamports: minReserve,
+          };
+        } catch (err) {
+          walletError = `Wallet balance fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+
+      // ── journal ───────────────────────────────────────────────────────────
+      const incomplete = store.listIncompleteLiveExecutions();
+      const journalText = renderIncompleteLiveExecutions(incomplete);
+      const journalSummary = journalText ? journalText.trim() : 'No incomplete live executions.';
+
+      // ── positions and trades ──────────────────────────────────────────────
+      const openPositions = store.listOpenPositions();
+      const recentTrades = store.listClosedTrades(tradeLimit);
+
+      // ── analytics ────────────────────────────────────────────────────────
+      const analytics = computeTradeAnalytics(store.loadClosedTradeStats());
+
+      process.stdout.write(
+        renderSnapshot({
+          mode: config.mode,
+          generatedAt,
+          readiness,
+          walletBalances,
+          walletError,
+          openPositions,
+          recentTrades,
+          journalBlockers: incomplete.length,
+          journalSummary,
+          analytics,
+        }),
+      );
+    } finally {
       store.close();
     }
   });

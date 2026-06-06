@@ -3,12 +3,23 @@ mode: paper
 chains:
   solana:
     enabled: true
+    # Path to your Solana keypair file (Solana CLI JSON format — 64-byte array).
+    # Can be an absolute path anywhere on the machine; does not need to be
+    # inside the project directory. Only read in live mode.
     walletFile: ./wallet/chain-solana.txt
+    # Name of the env var holding your Solana RPC URL (Helius, QuickNode, etc.).
+    # Required for live trading and for on-chain risk signals in paper mode
+    # (mint authority revocation, holder concentration, top-5 holder %).
+    # Example: export SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<key>
+    rpcUrlEnv: SOLANA_RPC_URL
     minLiquidityUsd: 10000
     minVolume5mUsd: 5000
     maxSlippageBps: 500
     maxPriceImpactBps: 500
     minSolFeeReserveLamports: 5000000
+    # Dynamic priority fee — lets Jupiter set the fee based on current network
+    # congestion. Switch to a fixed number (lamports) during low-traffic periods.
+    priorityFeeLamports: auto
     confirmationCommitment: confirmed
 
 paper:
@@ -41,8 +52,23 @@ fees:
 scoring:
   minimumScoreToEnter: 75
 
-# Data retention. `prune` deletes scored candidates older than this that never
-# led to a position (trades are always kept). Also the counterfactual window for
-# the `outcomes` report.
+# Data retention. The run loop auto-prunes once per UTC day; `prune` can also
+# be run manually. Trades are always kept regardless of these settings.
 retention:
+  # Scored candidates that never led to a position. Also the counterfactual
+  # window for the `outcomes` report — lower values shorten that window.
   scoredCandidateDays: 30
+  # Raw PumpPortal event blobs (~1–5 KB each). Processed events are safe to
+  # delete after a short window; pending events are never pruned automatically.
+  pumpPortalEventDays: 7
+  # Token volume snapshots used for the 30-minute volume acceleration z-score.
+  # Nothing older than 1 day is ever queried, so 1 day is the effective minimum.
+  volumeSnapshotDays: 1
+
+# Notifications. console=true logs trade events to stdout.
+# Set discordWebhookUrlEnv to the name of an env var holding your Discord
+# webhook URL to receive trade open/close alerts in a Discord channel.
+# Example: export DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/<id>/<token>
+notifications:
+  console: true
+  discordWebhookUrlEnv: DISCORD_WEBHOOK_URL

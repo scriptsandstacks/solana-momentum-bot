@@ -91,6 +91,11 @@ export interface ClosedTradeStatRow {
   pnlPct: number;
   openedAt: string;
   closedAt: string;
+  entryPriceUsd: number;
+  exitPriceUsd: number;
+  quantity: number;
+  entryNetworkFeeUsd: number | null;
+  exitNetworkFeeUsd: number | null;
 }
 
 export interface TrackableScoredCandidateRow {
@@ -603,7 +608,9 @@ export class SqliteStore {
     return this.db
       .prepare(
         `SELECT reason, exit_price_source as exitPriceSource, score, source, strategy_id as strategyId,
-                pnl_usd as pnlUsd, pnl_pct as pnlPct, opened_at as openedAt, closed_at as closedAt
+                pnl_usd as pnlUsd, pnl_pct as pnlPct, opened_at as openedAt, closed_at as closedAt,
+                entry_price_usd as entryPriceUsd, exit_price_usd as exitPriceUsd, quantity,
+                entry_network_fee_usd as entryNetworkFeeUsd, exit_network_fee_usd as exitNetworkFeeUsd
          FROM closed_trades
          ORDER BY closed_at ASC`,
       )
@@ -718,6 +725,26 @@ export class SqliteStore {
     const result = this.db
       .prepare(`DELETE FROM scored_candidates WHERE ${SqliteStore.PRUNABLE_SCORED_WHERE}`)
       .run({ cutoff: cutoffIso });
+    return result.changes;
+  }
+
+  // Delete token volume snapshots older than cutoff. Only snapshots used for
+  // volume acceleration z-score need to be kept (30-minute window). Anything
+  // beyond the scored-candidate retention window is pure waste.
+  pruneTokenVolumeSnapshots(cutoffIso: string): number {
+    const result = this.db
+      .prepare(`DELETE FROM token_volume_snapshots WHERE observed_at < ?`)
+      .run(cutoffIso);
+    return result.changes;
+  }
+
+  // Delete processed PumpPortal events older than cutoff. Raw events are only
+  // needed until they are scored and persisted as scored_candidates. Keeping
+  // them longer than a few days wastes significant disk on large raw_json blobs.
+  prunePumpPortalEvents(cutoffIso: string): number {
+    const result = this.db
+      .prepare(`DELETE FROM pumpportal_events WHERE received_at < ? AND processing_status != 'pending'`)
+      .run(cutoffIso);
     return result.changes;
   }
 
