@@ -14,6 +14,29 @@ export interface AnalyticsTrade {
   pnlPct: number;
   openedAt: string;
   closedAt: string;
+  // Execution quality fields — present for live trades, null for paper.
+  entryPriceUsd?: number | null;
+  exitPriceUsd?: number | null;
+  quantity?: number | null;
+  entryNetworkFeeUsd?: number | null;
+  exitNetworkFeeUsd?: number | null;
+}
+
+// Separates strategy P&L (price movement) from execution cost (network fees).
+// Only meaningful for live trades; paper mode does not produce separate fee rows.
+export interface ExecutionQualityStats {
+  // Number of live trades with fee data.
+  liveTrades: number;
+  // Aggregate fee drag across all live trades.
+  totalNetworkFeesUsd: number;
+  avgNetworkFeePerTradeUsd: number;
+  // Gross P&L = price movement only; net P&L = gross minus all fees = pnlUsd.
+  totalGrossPnlUsd: number;
+  totalNetPnlUsd: number;
+  // Fee as a fraction of total position value (entry cost) across all live trades.
+  avgFeeAsPositionPct: number;
+  // Minimum price move to break even on fees alone, expressed as %.
+  avgBreakEvenMovePct: number;
 }
 
 export interface AnalyticsBucket {
@@ -42,6 +65,7 @@ export interface TradeAnalytics {
   byScoreBucket: AnalyticsBucket[];
   bySource: AnalyticsBucket[];
   byStrategy: AnalyticsBucket[];
+  executionQuality: ExecutionQualityStats;
 }
 
 const SCORE_BUCKETS: Array<{ label: string; min: number; max: number }> = [
@@ -104,6 +128,63 @@ function scoreBucketLabel(score: number): string {
   return bucket?.label ?? 'unknown';
 }
 
+function computeExecutionQuality(trades: AnalyticsTrade[]): ExecutionQualityStats {
+  // Only trades with on-chain fee data (live mode).
+  const live = trades.filter(
+    (t) =>
+      (t.entryNetworkFeeUsd != null || t.exitNetworkFeeUsd != null) &&
+      t.entryPriceUsd != null &&
+      t.exitPriceUsd != null &&
+      t.quantity != null,
+  );
+
+  if (live.length === 0) {
+    return {
+      liveTrades: 0,
+      totalNetworkFeesUsd: 0,
+      avgNetworkFeePerTradeUsd: 0,
+      totalGrossPnlUsd: 0,
+      totalNetPnlUsd: 0,
+      avgFeeAsPositionPct: 0,
+      avgBreakEvenMovePct: 0,
+    };
+  }
+
+  let totalFees = 0;
+  let totalGross = 0;
+  let totalNet = 0;
+  const feeAsPct: number[] = [];
+  const breakEven: number[] = [];
+
+  for (const t of live) {
+    const entryFee = t.entryNetworkFeeUsd ?? 0;
+    const exitFee = t.exitNetworkFeeUsd ?? 0;
+    const fee = entryFee + exitFee;
+    // price movement component, before any fee attribution
+    const gross = (t.exitPriceUsd! - t.entryPriceUsd!) * t.quantity!;
+    totalFees += fee;
+    totalGross += gross;
+    totalNet += t.pnlUsd;
+
+    const positionCost = t.entryPriceUsd! * t.quantity!;
+    if (positionCost > 0) {
+      feeAsPct.push((fee / positionCost) * 100);
+      // minimum price increase (%) needed just to cover the round-trip fee
+      breakEven.push((fee / positionCost) * 100);
+    }
+  }
+
+  return {
+    liveTrades: live.length,
+    totalNetworkFeesUsd: totalFees,
+    avgNetworkFeePerTradeUsd: totalFees / live.length,
+    totalGrossPnlUsd: totalGross,
+    totalNetPnlUsd: totalNet,
+    avgFeeAsPositionPct: mean(feeAsPct),
+    avgBreakEvenMovePct: mean(breakEven),
+  };
+}
+
 export function computeTradeAnalytics(trades: AnalyticsTrade[]): TradeAnalytics {
   return {
     overall: summarize('overall', trades),
@@ -112,6 +193,7 @@ export function computeTradeAnalytics(trades: AnalyticsTrade[]): TradeAnalytics 
     byScoreBucket: groupAndSummarize(trades, (trade) => scoreBucketLabel(trade.score)),
     bySource: groupAndSummarize(trades, (trade) => trade.source || 'unknown'),
     byStrategy: groupAndSummarize(trades, (trade) => trade.strategyId || 'unknown'),
+    executionQuality: computeExecutionQuality(trades),
   };
 }
 
@@ -360,6 +442,28 @@ export function renderAnalyticsReport(analytics: TradeAnalytics): string {
   section('By exit price source', analytics.byExitPriceSource);
   section('By score bucket', analytics.byScoreBucket);
   section('By discovery source', analytics.bySource);
+
+  const eq = analytics.executionQuality;
+  if (eq.liveTrades > 0) {
+    lines.push('', 'Execution quality (live trades only):');
+    lines.push(`  live trades with fee data: ${eq.liveTrades}`);
+    lines.push(
+      `  gross pnl (price movement): ${money(eq.totalGrossPnlUsd)}` +
+        `  net pnl (after fees): ${money(eq.totalNetPnlUsd)}`,
+    );
+    lines.push(
+      `  total network fees: ${money(eq.totalNetworkFeesUsd)}` +
+        `  avg per trade: ${money(eq.avgNetworkFeePerTradeUsd)}`,
+    );
+    lines.push(
+      `  avg fee as % of position: ${eq.avgFeeAsPositionPct.toFixed(3)}%` +
+        `  avg break-even move needed: ${eq.avgBreakEvenMovePct.toFixed(3)}%`,
+    );
+    const feeDrag = eq.totalNetPnlUsd - eq.totalGrossPnlUsd;
+    lines.push(`  fee drag on total pnl: ${money(feeDrag)}`);
+  } else {
+    lines.push('', 'Execution quality: no live trades with fee data yet.');
+  }
 
   return `${lines.join('\n')}\n`;
 }
