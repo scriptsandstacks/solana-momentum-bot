@@ -1,6 +1,6 @@
-# Hermes — System Documentation
+# Solana Trade Engine — System Documentation
 
-Technical reference for the Hermes trading bot. Covers architecture, data flow, strategy logic, exit rules, analytics, live trading, and CLI commands.
+Technical reference for the Solana Trade Engine trading bot. Covers architecture, data flow, strategy logic, exit rules, analytics, live trading, and CLI commands.
 
 ---
 
@@ -10,9 +10,9 @@ Technical reference for the Hermes trading bot. Covers architecture, data flow, 
 |---|---|
 | Paper trading (Solana) | Active |
 | Live trading (Solana) | Implemented — Jupiter swap execution, keypair signing, on-chain confirmation |
-| Base / Ethereum | Config present, disabled |
+| Supported chain | Solana only |
 | Persistence | SQLite (auto-migrating schema) |
-| Test coverage | 32 files, 240 tests |
+| Test coverage | 38 files, 290 tests |
 
 ---
 
@@ -208,20 +208,31 @@ Executes real on-chain trades via Jupiter and the Solana RPC.
 
 **`openPosition` flow:**
 1. `canOpenPosition()` — checks wallet config, cash, cap, daily-loss limit
-2. `getJupiterQuoteForSwap` — sized to `positionSizeUsd` (USDC direct, SOL via price query)
-3. `getJupiterSwapTransaction` — POST to `/swap/v1/swap`
-4. `VersionedTransaction.deserialize` → `tx.sign([keypair])` → `sendTransaction` RPC
-5. `confirmTransaction` — polls `getSignatureStatuses` every 2 s up to 90 s
-6. Returns `PaperPosition` with actual fill price and `entryTxSignature`
+2. `getWalletBalance` — finds which SOL, USDC, and USDT route inputs can fund the buy
+3. `getJupiterQuoteForSwap` — quotes the actual `positionSizeUsd` across funded inputs, rejects routes above `maxPriceImpactBps`, and selects the highest token output
+4. `getJupiterSwapTransaction` — POST to `/swap/v1/swap`
+5. `VersionedTransaction.deserialize` → `tx.sign([keypair])` → `sendTransaction` RPC
+6. `confirmTransaction` — polls `getSignatureStatuses` until `confirmationCommitment` is reached and aborts immediately if Jupiter's `lastValidBlockHeight` is exceeded; 90 s remains the fallback timeout
+7. `getTransaction` — reads confirmed wallet balance deltas for the actual input and output amounts
+8. Returns `PaperPosition` with actual fill quantity, price, and `entryTxSignature`
 
 **`closePosition` flow:**
 1. Quote token → USDC (`getJupiterQuoteForSwap`)
 2. Build, sign, send, confirm
-3. Returns `PaperTrade` with USDC proceeds and `exitTxSignature`
+3. Read confirmed token and USDC balance deltas
+4. Returns `PaperTrade` with actual USDC proceeds and `exitTxSignature`
+
+Live accounting never uses Jupiter quote amounts as the recorded fill. Quote amounts
+are estimates used only to construct the swap transaction. Confirmed transaction
+balance deltas are the source of truth for position quantity, entry basis, exit
+proceeds, and realized P&L. Raw Solana network fees are persisted in lamports and,
+when SOL/USD pricing is available, valued in USD and included in realized P&L.
 
 **Deps are injectable** (`LiveBrokerDeps`) — all network calls are mocked in tests; no real keys needed.
 
-**Startup:** `LiveBroker.restore(store, options, deps, initialCashUsd)` seeds position state from SQLite and cash from the on-chain wallet balance.
+**Startup:** `LiveBroker.restore(store, options, deps, initialCashUsd)` seeds
+position state from SQLite. Live cash is the USD value of the wallet's supported
+route-input inventory: native SOL plus USDC and USDT token balances.
 
 ---
 
@@ -244,9 +255,51 @@ When `mode: live`, the `run` command queries wallet SPL token balances (`getToke
 - **ORPHANED** — token held on-chain but absent from SQLite. Likely from a crash after swap confirmation but before `saveOpenPosition`. Use `recover-positions` to register a synthetic position.
 - **STALE** — position in SQLite but no on-chain balance. Likely manually sold or a partial fill. Use `recover-positions` to close it out.
 
+During `run`, stale positions are quarantined in the live broker after a
+successful reconciliation. They remain in SQLite for audit and recovery, but
+are excluded from automated exit attempts and block new entries until
+`recover-positions` resolves them.
+
+For orphaned holdings, `recover-positions` scans recent successful wallet
+transactions and parses confirmed balance deltas. USDC/USDT-funded buys recover
+the original transaction signature, block time, token fill, network fee, and
+exact USD entry basis. SOL-funded buys recover the original transaction
+signature, block time, token fill, network fee, and an approximate USD basis from
+the recovered SOL input amount and current SOL/USD. If history is unavailable or
+pruned, recovery falls back to the current token market price and labels the
+basis as approximate.
+
+## Live execution journal
+
+**File:** `src/execution/liveExecutionJournal.ts`
+
+Every live open and close is written to `live_execution_journal` before the swap
+is submitted. The journal advances through:
+
+```text
+prepared -> submitted -> confirmed -> persisted
+```
+
+Pre-submission errors become `failed`. Errors after submission remain
+`submitted`, and errors after confirmation remain `confirmed`, because RPC
+uncertainty must not be mistaken for on-chain failure.
+
+`saveOpenPosition` and `saveClosedTrade` mark matching journal rows `persisted`
+inside the same SQLite transaction as the position/trade write. Live startup
+blocks when submitted or confirmed rows remain incomplete, and directs the
+operator to `recover-positions` before new risk is opened.
+
+`journal` lists blocking rows. `journal-resolve <id>` queries Solana RPC and only
+marks a submitted row failed when the signature has an on-chain error or its
+Jupiter validity window is provably expired. Confirmed or still-unknown
+transactions cannot be dismissed through this command.
+
 ---
 
 ## Analytics and reporting
+
+For the owner/operator go-live checklist, see
+[`docs/go-live-runbook.md`](go-live-runbook.md).
 
 ### During `run`
 
@@ -266,13 +319,16 @@ When `mode: live`, the `run` command queries wallet SPL token balances (`getToke
 | Command | Purpose |
 |---|---|
 | `run` | Main loop. `mode: live` enables on-chain swaps. `--exit-interval-seconds` (default 10 in live). |
-| `live-readiness` | Audit live prerequisites without reading wallet contents or placing trades. |
+| `live-readiness` | Audit live prerequisites, confirmation/impact policy, and sizing without reading wallet contents or placing trades. |
+| `wallet-balances` | Read live wallet SOL/USDC/USDT route-input balances and SOL fee reserve status without placing trades. |
 | `recover-positions` | Resolve wallet/SQLite discrepancies. `--dry-run`, `--yes`. |
+| `journal` | List submitted or confirmed live executions that still require reconciliation. |
+| `journal-resolve` | Resolve an RPC-proven failed or expired submitted execution. |
 | `report` | Persisted scores, open positions, closed trades, events. |
 | `stats` | Trade analytics: expectancy, win rate, P&L by strategy / reason / score bucket / source. |
 | `strategies` | Compact per-strategy performance summary. |
 | `outcomes` | Counterfactual MFE/MAE by score bucket. |
-| `tune` | Outcome data → specific threshold recommendations with confidence. `--apply` (`--yes`). |
+| `tune` | Outcome data → threshold recommendations plus risk-signal calibration notes. `--apply` (`--yes`) only writes concrete config thresholds. |
 | `pump-watch` | Bounded PumpPortal listener. |
 | `pump-process` | Process pending events into scored candidates. |
 | `manage-exits` | One-shot exit pass. |
@@ -314,7 +370,7 @@ outcome_done, created_at
 ```
 id, chain, address, symbol, strategy_id, token_json, score,
 entry_price_usd, quantity, opened_at, high_water_mark_usd, last_mark_usd,
-entry_tx_signature  ← live mode only
+entry_tx_signature, entry_network_fee_lamports, entry_network_fee_usd  ← live mode only
 ```
 
 **`closed_trades`**
@@ -322,12 +378,15 @@ entry_tx_signature  ← live mode only
 id, position_id, chain, address, symbol, strategy_id, token_json, score, source,
 entry_price_usd, exit_price_usd, quantity, reason, exit_price_source,
 pnl_usd, pnl_pct, opened_at, closed_at,
-exit_tx_signature  ← live mode only
+exit_tx_signature, entry_network_fee_lamports, exit_network_fee_lamports,
+entry_network_fee_usd, exit_network_fee_usd  ← live mode only
 ```
 
 **`token_volume_snapshots`** — per-token 5m volume history for acceleration signal
 
 **`pumpportal_events`** — raw WebSocket events with processing status
+
+**`live_execution_journal`** — live swap intent, signature, state, and audit history
 
 ---
 
@@ -344,7 +403,9 @@ chains:
     minLiquidityUsd: 10000
     minVolume5mUsd: 5000
     maxSlippageBps: 500
+    maxPriceImpactBps: 500              # optional; defaults to maxSlippageBps
     priorityFeeLamports: auto               # live mode: lamports per tx, or 'auto' (Jupiter dynamic)
+    confirmationCommitment: confirmed       # 'confirmed' for lower latency, 'finalized' for stronger finality
 
 paper:                                      # controls position sizing in both paper and live modes
   startingBalanceUsd: 1000
@@ -406,12 +467,16 @@ src/
   execution/broker.ts                 ExecutionBroker interface (paper/live seam)
   execution/brokerFactory.ts          createExecutionBroker factory
   execution/liveBroker.ts             LiveBroker — on-chain Jupiter swap execution
+  execution/liveExecutionJournal.ts   Persistent execution journal types/reporting
   execution/liveDeps.ts               Production deps: keypair, sign/send, confirm, decimals
   execution/jupiterSwap.ts            Jupiter quote + swap transaction API
+  execution/solanaConfirmation.ts     Block-height-aware confirmation policy
+  execution/solanaTransactionFill.ts  Confirmed transaction balance-delta fill parser
   execution/liveReadiness.ts          live-readiness audit logic
   execution/tokenActivityWatcher.ts   Solana RPC logsSubscribe WebSocket watcher
   execution/walletReconciler.ts       On-chain vs SQLite position reconciliation
   execution/positionRecovery.ts       Pure recovery transforms for recover-positions
+  execution/solanaTransactionHistory.ts Recent wallet buy lookup for orphan recovery
 
   paper/paperBroker.ts                PaperBroker (implements ExecutionBroker)
   paper/restoreBroker.ts              SQLite → PaperBroker state restoration
@@ -452,7 +517,7 @@ src/
 
 ```bash
 npm install
-npm test              # 32 test files, 240 tests
+npm test              # 38 test files, 290 tests
 npm run typecheck     # must be clean before committing
 npm run bot -- --help # show all commands
 ```
@@ -460,8 +525,13 @@ npm run bot -- --help # show all commands
 **Before running live:**
 ```bash
 npm run bot -- live-readiness   # audit all prerequisites
+npm run bot -- wallet-balances  # verify route-input inventory and SOL fee reserve
 npm run bot -- recover-positions --dry-run  # verify wallet/SQLite sync
 ```
+
+Live opens enforce the configured SOL fee reserve before quote/sign/submit and
+skip SOL-funded buy routes that would spend below it. This prevents avoidable
+entry failures without blocking exits or recovery.
 
 **Never commit:** `wallet/`, `.env`, `data/`, `logs/`, `node_modules/`
 **Never log:** private keys, seed phrases, API keys

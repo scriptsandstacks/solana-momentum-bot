@@ -10,22 +10,7 @@ const validConfig = {
       minLiquidityUsd: 10000,
       minVolume5mUsd: 5000,
       maxSlippageBps: 500,
-    },
-    base: {
-      enabled: false,
-      walletFile: './wallet/chain-ethereum.txt',
-      rpcUrlEnv: 'BASE_RPC_URL',
-      minLiquidityUsd: 15000,
-      minVolume5mUsd: 7500,
-      maxSlippageBps: 500,
-    },
-    ethereum: {
-      enabled: false,
-      walletFile: './wallet/chain-ethereum.txt',
-      rpcUrlEnv: 'ETHEREUM_RPC_URL',
-      minLiquidityUsd: 50000,
-      minVolume5mUsd: 20000,
-      maxSlippageBps: 300,
+      confirmationCommitment: 'confirmed',
     },
   },
   paper: {
@@ -46,15 +31,56 @@ const validConfig = {
 };
 
 describe('config loading', () => {
-  it('parses the multi-chain paper trading config', () => {
+  it('parses the Solana paper trading config', () => {
     const config = parseConfig(validConfig);
 
     expect(config.mode).toBe('paper');
     expect(config.chains.solana.enabled).toBe(true);
-    expect(config.chains.base.enabled).toBe(false);
-    expect(config.chains.ethereum.enabled).toBe(false);
+    expect(config.chains.solana.confirmationCommitment).toBe('confirmed');
     expect(config.paper.positionSizeUsd).toBe(25);
     expect(config.strategies.freshLaunchMomentum.minScoreToEnter).toBeUndefined();
+  });
+
+  it('accepts finalized live confirmation commitment', () => {
+    const config = parseConfig({
+      ...validConfig,
+      chains: {
+        solana: {
+          ...validConfig.chains.solana,
+          confirmationCommitment: 'finalized',
+        },
+      },
+    });
+
+    expect(config.chains.solana.confirmationCommitment).toBe('finalized');
+  });
+
+  it('accepts an explicit live max price impact cap', () => {
+    const config = parseConfig({
+      ...validConfig,
+      chains: {
+        solana: {
+          ...validConfig.chains.solana,
+          maxPriceImpactBps: 250,
+        },
+      },
+    });
+
+    expect(config.chains.solana.maxPriceImpactBps).toBe(250);
+  });
+
+  it('accepts an explicit SOL fee reserve target', () => {
+    const config = parseConfig({
+      ...validConfig,
+      chains: {
+        solana: {
+          ...validConfig.chains.solana,
+          minSolFeeReserveLamports: 10_000_000,
+        },
+      },
+    });
+
+    expect(config.chains.solana.minSolFeeReserveLamports).toBe(10_000_000);
   });
 
   it('accepts live mode in config (CLI guards against running it)', () => {
@@ -70,13 +96,11 @@ describe('config loading', () => {
   });
 
   it('accepts a paper-mode config without walletFile', () => {
-    const { solana, base, ethereum } = validConfig.chains;
+    const { solana } = validConfig.chains;
     const config = parseConfig({
       ...validConfig,
       chains: {
         solana: { ...solana, walletFile: undefined },
-        base: { ...base, walletFile: undefined },
-        ethereum: { ...ethereum, walletFile: undefined },
       },
     });
 

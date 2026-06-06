@@ -82,6 +82,57 @@ describe('computeTradeAnalytics', () => {
     expect(analytics.overall.winRatePct).toBe(0);
     expect(renderAnalyticsReport(analytics)).toContain('No closed trades yet');
   });
+
+  it('returns zero execution quality stats when no live fee data is present', () => {
+    const analytics = computeTradeAnalytics([trade({ pnlUsd: 10 }), trade({ pnlUsd: -5 })]);
+    const eq = analytics.executionQuality;
+    expect(eq.liveTrades).toBe(0);
+    expect(eq.totalNetworkFeesUsd).toBe(0);
+    expect(renderAnalyticsReport(analytics)).toContain('no live trades with fee data');
+  });
+
+  it('computes gross vs net pnl and fee drag from live trade fee fields', () => {
+    // entry 1.0 USDC, exit 1.5 USDC, qty 100 → gross = +$50, fees = $0.01+$0.01 = $0.02, net = $49.98
+    const liveTrade = trade({
+      entryPriceUsd: 1.0,
+      exitPriceUsd: 1.5,
+      quantity: 100,
+      entryNetworkFeeUsd: 0.01,
+      exitNetworkFeeUsd: 0.01,
+      pnlUsd: 49.98,
+    });
+    const analytics = computeTradeAnalytics([liveTrade]);
+    const eq = analytics.executionQuality;
+
+    expect(eq.liveTrades).toBe(1);
+    expect(eq.totalNetworkFeesUsd).toBeCloseTo(0.02);
+    expect(eq.avgNetworkFeePerTradeUsd).toBeCloseTo(0.02);
+    expect(eq.totalGrossPnlUsd).toBeCloseTo(50);
+    expect(eq.totalNetPnlUsd).toBeCloseTo(49.98);
+    // fee drag = net - gross = -0.02
+    const report = renderAnalyticsReport(analytics);
+    expect(report).toContain('Execution quality (live trades only)');
+    expect(report).toContain('live trades with fee data: 1');
+    expect(report).toContain('fee drag on total pnl');
+  });
+
+  it('ignores paper trades (no fee fields) when computing execution quality', () => {
+    const paperTrade = trade({ pnlUsd: 20 }); // no fee fields
+    const liveTrade = trade({
+      entryPriceUsd: 0.5,
+      exitPriceUsd: 0.6,
+      quantity: 200,
+      entryNetworkFeeUsd: 0.005,
+      exitNetworkFeeUsd: 0.005,
+      pnlUsd: 19.99,
+    });
+    const analytics = computeTradeAnalytics([paperTrade, liveTrade]);
+    expect(analytics.overall.trades).toBe(2);
+    expect(analytics.executionQuality.liveTrades).toBe(1);
+    // Gross = (0.6 - 0.5) * 200 = $20; fees = $0.01
+    expect(analytics.executionQuality.totalGrossPnlUsd).toBeCloseTo(20);
+    expect(analytics.executionQuality.totalNetworkFeesUsd).toBeCloseTo(0.01);
+  });
 });
 
 function outcome(overrides: Partial<OutcomeRow>): OutcomeRow {

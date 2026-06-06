@@ -29,6 +29,8 @@ describe('renderStorageReport', () => {
         quantity: 2500,
         score: 82,
         openedAt: '2026-01-01T00:00:00Z',
+        entryTxSignature: 'sig-entry-1',
+        entryNetworkFeeUsd: 0.002,
       }],
       closedTrades: [{
         positionId: 'paper-0',
@@ -44,6 +46,9 @@ describe('renderStorageReport', () => {
         pnlPct: 50,
         openedAt: '2026-01-01T00:00:00Z',
         closedAt: '2026-01-01T00:05:00Z',
+        exitTxSignature: 'sig-exit-1',
+        entryNetworkFeeUsd: 0.002,
+        exitNetworkFeeUsd: 0.004,
       }],
       pumpPortalEvents: [{
         id: 1,
@@ -64,6 +69,10 @@ describe('renderStorageReport', () => {
     expect(report).toContain('route=USDC');
     expect(report).toContain('Open positions: 1');
     expect(report).toContain('Closed trades: 1');
+    expect(report).toContain('entryTx=sig-entry-1');
+    expect(report).toContain('exitTx=sig-exit-1');
+    expect(report).toContain('entryFee=$0.0020');
+    expect(report).toContain('networkFees=$0.0060');
     expect(report).toContain('PumpPortal events: 1');
     expect(report).toContain('new_token MPUMP mint=mint-1 status=processed note=score=82');
     expect(report).toContain('PnL: $12.50');

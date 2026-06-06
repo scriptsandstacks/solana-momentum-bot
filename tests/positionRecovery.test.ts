@@ -7,6 +7,7 @@ import {
   RECOVERY_STRATEGY_ID,
 } from '../src/execution/positionRecovery.js';
 import type { PaperPosition, TokenCandidate } from '../src/types/domain.js';
+import { SOL_MINT, USDC_MINT } from '../src/execution/solanaTransactionHistory.js';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -146,6 +147,47 @@ describe('buildOrphanedRecovery', () => {
     expect(r.position.highWaterMarkUsd).toBe(candidate.priceUsd);
     expect(r.position.lastMarkUsd).toBe(candidate.priceUsd);
   });
+
+  it('uses transaction history for entry basis and audit metadata when available', () => {
+    const candidate = makeToken('mint-orphan', 'LOST');
+    const r = buildOrphanedRecovery(holding, candidate, 'live-99', CLOSED_AT, {
+      buy: {
+        signature: 'sig-buy',
+        inputMint: USDC_MINT,
+        inputAmount: 25_000_000n,
+        outputAmount: 20_000_000_000n,
+        networkFeeLamports: 5_000,
+        blockTime: 1_767_261_600,
+      },
+      entryPriceUsd: 0.00125,
+      entryNetworkFeeUsd: 0.00075,
+    });
+
+    expect(r.entryPriceSource).toBe('transaction_history');
+    expect(r.position.entryPriceUsd).toBe(0.00125);
+    expect(r.position.entryTxSignature).toBe('sig-buy');
+    expect(r.position.entryNetworkFeeLamports).toBe(5_000);
+    expect(r.position.entryNetworkFeeUsd).toBe(0.00075);
+    expect(r.position.openedAt).toEqual(new Date(1_767_261_600_000));
+  });
+
+  it('labels SOL-funded transaction history basis as approximate', () => {
+    const candidate = makeToken('mint-orphan', 'LOST');
+    const r = buildOrphanedRecovery(holding, candidate, 'live-99', CLOSED_AT, {
+      buy: {
+        signature: 'sig-buy',
+        inputMint: SOL_MINT,
+        inputAmount: 125_000_000n,
+        outputAmount: 20_000_000_000n,
+        networkFeeLamports: 5_000,
+      },
+      entryPriceUsd: 0.00125,
+      entryPriceSource: 'transaction_history_approx',
+    });
+
+    expect(r.entryPriceSource).toBe('transaction_history_approx');
+    expect(renderRecoveryPlan([], [r])).toContain('SOL/USD approximate');
+  });
 });
 
 // ─── renderRecoveryPlan ───────────────────────────────────────────────────────
@@ -175,6 +217,25 @@ describe('renderRecoveryPlan', () => {
     expect(output).toContain('ORPHANED');
     expect(output).toContain('live-50');
     expect(output).toContain('approximate');
+  });
+
+  it('shows transaction-history basis when available', () => {
+    const holding = { mint: 'mint-x', uiAmount: 5_000 };
+    const candidate = makeToken('mint-x', 'XYZ');
+    const r = buildOrphanedRecovery(holding, candidate, 'live-50', CLOSED_AT, {
+      buy: {
+        signature: 'sig-buy',
+        inputMint: USDC_MINT,
+        inputAmount: 5_000_000n,
+        outputAmount: 5_000_000_000n,
+        networkFeeLamports: 5_000,
+      },
+      entryPriceUsd: 0.001,
+    });
+    const output = renderRecoveryPlan([], [r]);
+
+    expect(output).toContain('from tx=sig-buy');
+    expect(output).not.toContain('approximate');
   });
 
   it('marks skipped orphans when price unavailable', () => {

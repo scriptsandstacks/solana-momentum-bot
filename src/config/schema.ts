@@ -11,10 +11,19 @@ const chainConfigSchema = z.object({
   minLiquidityUsd: z.number().positive(),
   minVolume5mUsd: z.number().nonnegative(),
   maxSlippageBps: z.number().int().min(1).max(10_000),
+  // Maximum actual-size Jupiter quote price impact allowed before signing a
+  // live buy. Defaults in code to maxSlippageBps when omitted.
+  maxPriceImpactBps: z.number().int().min(1).max(10_000).optional(),
+  // Minimum SOL balance reserved for live network fees and account/rent edge
+  // cases. This is an operator readiness check, not a trading-mode gate.
+  minSolFeeReserveLamports: z.number().int().nonnegative().optional(),
   // Lamports to add as a Solana priority fee per transaction in live mode.
   // 'auto' lets Jupiter set a dynamic fee based on current network congestion.
   // Omit to use no priority fee (not recommended during high congestion periods).
   priorityFeeLamports: z.union([z.number().int().nonnegative(), z.literal('auto')]).optional(),
+  // Commitment required before a live swap is treated as confirmed. `confirmed`
+  // is faster; `finalized` reduces reorg risk at the cost of extra latency.
+  confirmationCommitment: z.enum(['confirmed', 'finalized']).default('confirmed'),
 });
 
 const exitRulesSchema = z.object({
@@ -50,8 +59,6 @@ export const botConfigSchema = z.object({
   mode: z.enum(['paper', 'live']),
   chains: z.object({
     solana: chainConfigSchema,
-    base: chainConfigSchema,
-    ethereum: chainConfigSchema,
   }),
   paper: z.object({
     startingBalanceUsd: z.number().positive(),
@@ -87,14 +94,24 @@ export const botConfigSchema = z.object({
   retention: z
     .object({
       scoredCandidateDays: z.number().positive(),
+      // Raw PumpPortal event blobs (1–5 KB each). Events are only needed until
+      // they are processed into scored candidates — 7 days is generous.
+      pumpPortalEventDays: z.number().positive().default(7),
+      // Token volume snapshots used for the 30-minute volume acceleration
+      // z-score signal. Nothing older than 1 day is ever queried.
+      volumeSnapshotDays: z.number().positive().default(1),
     })
-    .default({ scoredCandidateDays: 30 }),
+    .default({ scoredCandidateDays: 30, pumpPortalEventDays: 7, volumeSnapshotDays: 1 }),
   // Controls whether trade open/close/cycle events are formatted as human-readable
   // summary lines during `run` (separate from the raw [run:process] logs).
   // Omitting the section defaults to console=true so the run loop is legible.
   notifications: z
     .object({
       console: z.boolean().default(true),
+      // Env var name holding a Discord webhook URL. When set, trade opens,
+      // closes, and daily-loss-limit hits are posted as Discord embeds.
+      // Example: export DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+      discordWebhookUrlEnv: z.string().min(1).optional(),
     })
     .default({ console: true }),
 });

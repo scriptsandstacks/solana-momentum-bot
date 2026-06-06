@@ -7,12 +7,14 @@ import { renderReport } from '../bot/report.js';
 import { runPaperCycle } from '../bot/paperCycle.js';
 import { renderStorageReport } from '../bot/storageReport.js';
 import { computeTradeAnalytics, renderAnalyticsReport, computeOutcomeAnalytics, renderOutcomeAnalytics } from '../bot/analytics.js';
+import { renderSnapshot } from '../bot/snapshot.js';
 import { trackCandidateOutcomes } from '../bot/trackOutcomes.js';
 import { runPumpWatch } from '../bot/pumpWatch.js';
 import { processPumpPortalEvents } from '../bot/pumpProcess.js';
 import { processExits } from '../bot/exitPositions.js';
 import { runBotLoop } from '../bot/runLoop.js';
 import { consoleReporter } from '../bot/reporter.js';
+import { discordReporter } from '../bot/discordReporter.js';
 import {
   applyTuneConfigUpdates,
   computeStrategyTuneRecommendations,
@@ -29,9 +31,9 @@ import { PaperBroker } from '../paper/paperBroker.js';
 import { scoreTokenCandidate } from '../scoring/scoreToken.js';
 import { SqliteStore } from '../storage/sqliteStore.js';
 import { buildStrategies, strategyThresholdMap } from '../strategies/buildStrategies.js';
-import { evaluateLiveReadiness, renderLiveReadinessReport } from '../execution/liveReadiness.js';
+import { DEFAULT_MIN_SOL_FEE_RESERVE_LAMPORTS, evaluateLiveReadiness, renderLiveReadinessReport } from '../execution/liveReadiness.js';
 import { LiveBroker } from '../execution/liveBroker.js';
-import { loadSolanaKeypair, createLiveBrokerDeps, queryWalletCashUsd } from '../execution/liveDeps.js';
+import { loadSolanaKeypair, createLiveBrokerDeps, queryWalletCashInventory, queryWalletCashUsd } from '../execution/liveDeps.js';
 import { TokenActivityWatcher, rpcUrlToWs } from '../execution/tokenActivityWatcher.js';
 import { reconcileWalletPositions, renderReconciliationReport } from '../execution/walletReconciler.js';
 import {
@@ -41,6 +43,15 @@ import {
   renderRecoverySummary,
   RECOVERY_STRATEGY_ID,
 } from '../execution/positionRecovery.js';
+import {
+  findMostRecentWalletBuy,
+  recoveredBuyEntryPriceUsd,
+  SOL_MINT,
+} from '../execution/solanaTransactionHistory.js';
+import {
+  inspectSubmittedLiveExecution,
+  renderIncompleteLiveExecutions,
+} from '../execution/liveExecutionJournal.js';
 import { fetchPumpPortalMarketCandidates } from '../bot/pumpCandidates.js';
 import type { ExitRules } from '../bot/exitPositions.js';
 import type { TradingStrategy } from '../strategies/types.js';
@@ -63,6 +74,21 @@ function paperBrokerOptions(config: BotConfig): PaperBrokerOptions {
   };
 }
 
+function solanaRpcRequest(rpcUrl: string): (method: string, params: unknown[]) => Promise<unknown> {
+  return async (method, params) => {
+    const res = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) throw new Error(`Solana RPC ${method} failed: ${res.status} ${res.statusText}`);
+    const json = await res.json() as { result?: unknown; error?: { message: string } };
+    if (json.error) throw new Error(`Solana RPC ${method}: ${json.error.message}`);
+    return json.result;
+  };
+}
+
 async function buildLiveBrokerIfNeeded(
   config: BotConfig,
   store: { loadOpenPositions(): any; getRealizedPnlUsd(): number; getRealizedPnlUsdSince(s: string): number; getNextPositionSeq(): number },
@@ -78,18 +104,11 @@ async function buildLiveBrokerIfNeeded(
   const deps = createLiveBrokerDeps(keypair, {
     rpcUrl,
     maxSlippageBps: solana.maxSlippageBps,
+    confirmationCommitment: solana.confirmationCommitment,
     priorityFeeLamports: solana.priorityFeeLamports ?? 'auto',
   });
 
-  const initialCashUsd = await queryWalletCashUsd(keypair.publicKey.toBase58(), deps, async (method, params) => {
-    const res = await fetch(rpcUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-    });
-    const json = await res.json() as { result?: unknown };
-    return json.result;
-  });
+  const initialCashUsd = await queryWalletCashUsd(keypair.publicKey.toBase58(), deps, solanaRpcRequest(rpcUrl));
 
   const brokerOptions = {
     solana,
@@ -122,11 +141,11 @@ function buildExitResolver(strategies: TradingStrategy[], globalExits: ExitRules
 const program = new Command();
 
 program
-  .name('hermes-paper-bot')
-  .description('Solana-first, multi-chain-ready paper trading bot')
+  .name('solana-trade-engine')
+  .description('Solana memecoin trading bot with paper and live execution')
   .option('-c, --config <path>', 'config file path', 'config.yaml');
 
-program.command('scan').description('Scan enabled chains and print scored candidates').action(async () => {
+program.command('scan').description('Scan Solana and print scored candidates').action(async () => {
   const config = loadConfigFromFile(program.opts().config);
   const store = new SqliteStore();
   const candidates = config.chains.solana.enabled ? await scanSolanaCandidates(config.chains.solana) : [];
@@ -193,6 +212,97 @@ program
     }
   });
 
+program
+  .command('wallet-balances')
+  .description('Read live wallet route-input balances without placing trades')
+  .action(async () => {
+    const config = loadConfigFromFile(program.opts().config);
+    const solana = config.chains.solana;
+    if (!solana.walletFile) throw new Error('chains.solana.walletFile must be set to inspect wallet balances.');
+    const rpcUrl = solana.rpcUrlEnv ? process.env[solana.rpcUrlEnv] : undefined;
+    if (!rpcUrl) throw new Error(`Solana RPC URL env var "${solana.rpcUrlEnv ?? 'rpcUrlEnv'}" is not set or not configured.`);
+
+    const keypair = loadSolanaKeypair(solana.walletFile);
+    const deps = createLiveBrokerDeps(keypair, {
+      rpcUrl,
+      maxSlippageBps: solana.maxSlippageBps,
+      confirmationCommitment: solana.confirmationCommitment,
+      priorityFeeLamports: solana.priorityFeeLamports ?? 'auto',
+    });
+    const inventory = await queryWalletCashInventory(keypair.publicKey.toBase58(), deps, solanaRpcRequest(rpcUrl));
+    const minReserve = BigInt(solana.minSolFeeReserveLamports ?? DEFAULT_MIN_SOL_FEE_RESERVE_LAMPORTS);
+    const reserveStatus = inventory.solLamports >= minReserve ? 'OK' : 'LOW';
+
+    process.stdout.write([
+      'Live Wallet Balances',
+      `Wallet: ${inventory.publicKey}`,
+      `SOL: ${inventory.sol.toFixed(6)} ($${inventory.solUsd.toFixed(2)} at $${inventory.solPriceUsd.toFixed(2)}/SOL)`,
+      `USDC: ${inventory.usdc.toFixed(2)}`,
+      `USDT: ${inventory.usdt.toFixed(2)}`,
+      `Total route-input value: $${inventory.totalUsd.toFixed(2)}`,
+      `SOL fee reserve: ${reserveStatus} (${inventory.solLamports.toString()} / ${minReserve.toString()} lamports)`,
+      '',
+    ].join('\n'));
+  });
+
+program
+  .command('journal')
+  .description('List submitted or confirmed live executions that still require reconciliation')
+  .action(() => {
+    const store = new SqliteStore();
+    try {
+      const report = renderIncompleteLiveExecutions(store.listIncompleteLiveExecutions());
+      process.stdout.write(report ? `${report}\n` : 'No incomplete live executions.\n');
+    } finally {
+      store.close();
+    }
+  });
+
+program
+  .command('journal-resolve')
+  .description('Resolve an RPC-proven failed or expired submitted live execution')
+  .argument('<id>', 'live execution journal id')
+  .option('--yes', 'resolve without interactive confirmation', false)
+  .action(async (id: string, options: { yes: boolean }) => {
+    const config = loadConfigFromFile(program.opts().config);
+    const solana = config.chains.solana;
+    const rpcUrl = solana.rpcUrlEnv ? process.env[solana.rpcUrlEnv] : undefined;
+    if (!rpcUrl) {
+      throw new Error(`Solana RPC URL env var "${solana.rpcUrlEnv ?? 'rpcUrlEnv'}" is not set.`);
+    }
+
+    const store = new SqliteStore();
+    try {
+      const entry = store.getLiveExecutionJournalEntry(id);
+      if (!entry) throw new Error(`No live execution journal entry found for "${id}".`);
+
+      const resolution = await inspectSubmittedLiveExecution({ entry, rpcUrl });
+      process.stdout.write(`${resolution.reason}\n`);
+      if (!resolution.resolvable) return;
+
+      if (!options.yes) {
+        if (!process.stdin.isTTY) {
+          throw new Error('Non-interactive shell — re-run with --yes to resolve this journal entry.');
+        }
+        const rl = createInterface({ input, output });
+        try {
+          const answer = await rl.question(`Mark journal entry "${id}" failed? Type "yes" to continue: `);
+          if (answer.trim().toLowerCase() !== 'yes') {
+            process.stdout.write('No changes applied.\n');
+            return;
+          }
+        } finally {
+          rl.close();
+        }
+      }
+
+      store.recordLiveExecutionFailed(id, resolution.reason);
+      process.stdout.write(`Resolved journal entry "${id}" as failed.\n`);
+    } finally {
+      store.close();
+    }
+  });
+
 program.command('paper').description('Run one paper-trading scan cycle').action(async () => {
   const config = loadConfigFromFile(program.opts().config);
   const store = new SqliteStore();
@@ -230,7 +340,7 @@ program.command('report').description('Print persisted scan, position, and trade
 
 program
   .command('stats')
-  .description('Aggregate paper-trade performance: expectancy, win rate, and PnL by reason / score / source / strategy')
+  .description('Aggregate trade performance: expectancy, win rate, and PnL by reason / score / source / strategy')
   .action(() => {
     const store = new SqliteStore();
     const analytics = computeTradeAnalytics(store.loadClosedTradeStats());
@@ -392,7 +502,10 @@ program
     const store = new SqliteStore();
     try {
       const openPositions = store.loadOpenPositions();
+      const incompleteExecutions = store.listIncompleteLiveExecutions();
       process.stdout.write(`Querying on-chain balances for wallet ${walletPublicKey}...\n`);
+      const journalReport = renderIncompleteLiveExecutions(incompleteExecutions);
+      if (journalReport) process.stdout.write(`${journalReport}\n`);
 
       const reconciliation = await reconcileWalletPositions({ walletPublicKey, openPositions, rpcUrl });
 
@@ -412,7 +525,12 @@ program
       // ── build recovery plan ─────────────────────────────────────────────
       const staleRecoveries = reconciliation.stale.map((s) => {
         const pos = openPositions.find((p) => p.id === s.positionId)!;
-        return buildStaleRecovery(pos);
+        const recovery = buildStaleRecovery(pos);
+        const journalClose = incompleteExecutions.find(
+          (entry) => entry.side === 'close' && entry.positionId === s.positionId && entry.signature,
+        );
+        if (journalClose?.signature) recovery.trade.exitTxSignature = journalClose.signature;
+        return recovery;
       });
 
       // Fetch market prices for orphaned holdings.
@@ -421,13 +539,47 @@ program
         ? await fetchPumpPortalMarketCandidates(orphanedMints)
         : [];
       const candidateByMint = new Map(marketCandidates.map((c) => [c.address, c]));
+      const recoveryDeps = createLiveBrokerDeps(keypair, {
+        rpcUrl,
+        maxSlippageBps: solana.maxSlippageBps,
+        confirmationCommitment: solana.confirmationCommitment,
+        priorityFeeLamports: solana.priorityFeeLamports ?? 'auto',
+      });
 
       let nextSeq = store.getNextPositionSeq();
-      const orphanedRecoveries = reconciliation.orphaned.map((h) => {
+      const orphanedRecoveries = await Promise.all(reconciliation.orphaned.map(async (h) => {
         const candidate = candidateByMint.get(h.mint);
         const positionId = `live-${nextSeq++}`;
+        try {
+          const buy = await findMostRecentWalletBuy({
+            walletPublicKey,
+            outputMint: h.mint,
+            rpcUrl,
+          });
+          if (buy) {
+            const decimals = await recoveryDeps.getTokenDecimals(h.mint);
+            const solPriceUsd = buy.inputMint === SOL_MINT ? await recoveryDeps.getSolPriceUsd() : undefined;
+            const entryPriceUsd = recoveredBuyEntryPriceUsd(buy, decimals, solPriceUsd);
+            if (entryPriceUsd !== undefined) {
+              let entryNetworkFeeUsd: number | undefined;
+              try {
+                entryNetworkFeeUsd = (buy.networkFeeLamports / 1e9) * await recoveryDeps.getSolPriceUsd();
+              } catch {
+                // Raw lamports are still preserved when SOL/USD is unavailable.
+              }
+              return buildOrphanedRecovery(h, candidate, positionId, new Date(), {
+                buy,
+                entryPriceUsd,
+                entryPriceSource: buy.inputMint === SOL_MINT ? 'transaction_history_approx' : 'transaction_history',
+                entryNetworkFeeUsd,
+              });
+            }
+          }
+        } catch {
+          // Recovery remains useful when history is unavailable or pruned.
+        }
         return buildOrphanedRecovery(h, candidate, positionId);
-      });
+      }));
 
       // ── show plan ───────────────────────────────────────────────────────
       const plan = renderRecoveryPlan(staleRecoveries, orphanedRecoveries);
@@ -500,28 +652,47 @@ program
 
 program
   .command('prune')
-  .description('Delete old scored candidates that never led to a position (trades are always kept)')
-  .option('--days <days>', 'retention window in days; defaults to config retention.scoredCandidateDays')
+  .description('Delete old data to reclaim disk: scored candidates, volume snapshots, and processed PumpPortal events')
+  .option('--days <days>', 'scored-candidate retention in days; defaults to config retention.scoredCandidateDays')
   .option('--dry-run', 'report what would be deleted without deleting', false)
   .option('--no-vacuum', 'skip reclaiming disk with VACUUM after deleting')
   .action(async (options: { days?: string; dryRun: boolean; vacuum: boolean }) => {
     const config = loadConfigFromFile(program.opts().config);
-    const days = options.days === undefined ? config.retention.scoredCandidateDays : Number(options.days);
-    if (!Number.isFinite(days) || days <= 0) {
+    const candidateDays = options.days === undefined ? config.retention.scoredCandidateDays : Number(options.days);
+    if (!Number.isFinite(candidateDays) || candidateDays <= 0) {
       throw new Error('--days must be a positive number');
     }
-    const cutoffIso = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const now = Date.now();
+    const candidateCutoff = new Date(now - candidateDays * 864e5).toISOString();
+    const eventCutoff = new Date(now - config.retention.pumpPortalEventDays * 864e5).toISOString();
+    const snapshotCutoff = new Date(now - config.retention.volumeSnapshotDays * 864e5).toISOString();
+
     const store = new SqliteStore();
     try {
-      const prunable = store.countPrunableScoredCandidates(cutoffIso);
       if (options.dryRun) {
-        process.stdout.write(`Dry run: ${prunable} scored candidate(s) older than ${days}d (before ${cutoffIso}) would be deleted.\n`);
+        const prunable = store.countPrunableScoredCandidates(candidateCutoff);
+        process.stdout.write([
+          `Dry run (no changes written):`,
+          `  scored candidates  : ${prunable} rows older than ${candidateDays}d`,
+          `  pumpportal events  : rows older than ${config.retention.pumpPortalEventDays}d (processed only)`,
+          `  volume snapshots   : rows older than ${config.retention.volumeSnapshotDays}d`,
+        ].join('\n') + '\n');
         return;
       }
-      const deleted = store.pruneScoredCandidates(cutoffIso);
-      if (deleted > 0 && options.vacuum) store.vacuum();
-      const reclaimed = deleted > 0 && options.vacuum ? ' (disk reclaimed)' : '';
-      process.stdout.write(`Pruned ${deleted} scored candidate(s) older than ${days}d.${reclaimed}\n`);
+
+      const candidates = store.pruneScoredCandidates(candidateCutoff);
+      const events = store.prunePumpPortalEvents(eventCutoff);
+      const snapshots = store.pruneTokenVolumeSnapshots(snapshotCutoff);
+      const total = candidates + events + snapshots;
+
+      if (total > 0 && options.vacuum) store.vacuum();
+      const reclaimed = total > 0 && options.vacuum ? ' (disk reclaimed with VACUUM)' : '';
+      process.stdout.write([
+        `Prune complete${reclaimed}:`,
+        `  scored candidates  : ${candidates} deleted (>${candidateDays}d)`,
+        `  pumpportal events  : ${events} deleted (>${config.retention.pumpPortalEventDays}d, processed only)`,
+        `  volume snapshots   : ${snapshots} deleted (>${config.retention.volumeSnapshotDays}d)`,
+      ].join('\n') + '\n');
     } finally {
       store.close();
     }
@@ -596,7 +767,7 @@ program
 
 program
   .command('run')
-  .description('Continuously watch PumpPortal and process pending events into paper candidates')
+  .description('Continuously watch PumpPortal, process candidates, and manage paper or live positions')
   .option('--api-key <key>', 'PumpPortal API key; defaults to PUMPPORTAL_API_KEY')
   .option('--process-interval-seconds <seconds>', 'seconds between PumpPortal processing passes', '30')
   .option('--exit-interval-seconds <seconds>', 'seconds between exit-only passes in live mode (default: 10 in live, disabled in paper)')
@@ -625,7 +796,26 @@ program
 
     const strategies = buildStrategies(config);
     const log = (message: string) => process.stdout.write(`${message}\n`);
-    const reporter = config.notifications.console ? consoleReporter(log) : undefined;
+
+    const reporters: import('../bot/reporter.js').Reporter[] = [];
+    if (config.notifications.console) reporters.push(consoleReporter(log));
+
+    const discordWebhookEnv = config.notifications.discordWebhookUrlEnv;
+    const discordWebhookUrl = discordWebhookEnv ? process.env[discordWebhookEnv] : undefined;
+    if (discordWebhookUrl) {
+      reporters.push(discordReporter(discordWebhookUrl, log));
+      log(`[discord] reporter active (${discordWebhookEnv})`);
+    }
+
+    // Fan out to all active reporters. Methods are all optional so undefined is safe.
+    const reporter = reporters.length === 0 ? undefined : {
+      onPositionOpened: (e: Parameters<NonNullable<typeof reporters[0]['onPositionOpened']>>[0]) =>
+        reporters.forEach((r) => r.onPositionOpened?.(e)),
+      onPositionClosed: (e: Parameters<NonNullable<typeof reporters[0]['onPositionClosed']>>[0]) =>
+        reporters.forEach((r) => r.onPositionClosed?.(e)),
+      onCycleSummary: (s: Parameters<NonNullable<typeof reporters[0]['onCycleSummary']>>[0]) =>
+        reporters.forEach((r) => r.onCycleSummary?.(s)),
+    };
 
     const stopController = new AbortController();
     const stop = () => stopController.abort();
@@ -637,6 +827,12 @@ program
       const liveBroker = await buildLiveBrokerIfNeeded(config, store);
       if (liveBroker) {
         log(`[run] mode=live wallet=${config.chains.solana.walletFile} cash=$${liveBroker.getCashUsd().toFixed(2)} positions=${liveBroker.getOpenPositions().length}`);
+        const incompleteExecutions = store.listIncompleteLiveExecutions();
+        const journalReport = renderIncompleteLiveExecutions(incompleteExecutions);
+        if (journalReport) {
+          for (const line of journalReport.split('\n')) log(line);
+          throw new Error('Incomplete live executions must be reconciled before starting the run loop. Use recover-positions and verify the journal entries.');
+        }
 
         // Cross-check on-chain SPL balances against SQLite open_positions so any
         // crash-recovery gaps are surfaced before the run loop starts.
@@ -652,6 +848,15 @@ program
           });
           const report = renderReconciliationReport(reconciliation);
           if (report) log(report);
+          if (reconciliation.stale.length > 0) {
+            const quarantined = liveBroker.quarantinePositions(
+              reconciliation.stale.map((position) => position.positionId),
+            );
+            log(
+              `[reconcile] QUARANTINED ${quarantined} stale live position(s); ` +
+              'automated exits and new entries are blocked until recover-positions resolves them',
+            );
+          }
         }
       }
 
@@ -680,6 +885,11 @@ program
         exits: config.exits,
         resolveExits: buildExitResolver(strategies, config.exits),
         analyticsIntervalPasses,
+        retention: {
+          scoredCandidateDays: config.retention.scoredCandidateDays,
+          pumpPortalEventDays: config.retention.pumpPortalEventDays,
+          volumeSnapshotDays: config.retention.volumeSnapshotDays,
+        },
         stopSignal: stopController.signal,
         onLog: log,
         reporter,
@@ -708,6 +918,99 @@ program
     } finally {
       process.off('SIGINT', stop);
       process.off('SIGTERM', stop);
+      store.close();
+    }
+  });
+
+program
+  .command('snapshot')
+  .description('Read-only operator snapshot: readiness, wallet balances, open positions, recent trades, journal, and analytics')
+  .option('--trades <n>', 'number of recent closed trades to show', '5')
+  .action(async (options: { trades: string }) => {
+    const tradeLimit = Math.max(1, Number(options.trades) || 5);
+    const config = loadConfigFromFile(program.opts().config);
+    const store = new SqliteStore();
+    const generatedAt = new Date().toISOString();
+
+    try {
+      // ── live readiness (static; no wallet read) ──────────────────────────
+      const walletFile = config.chains.solana.walletFile;
+      const walletFileExists = walletFile ? fs.existsSync(path.resolve(process.cwd(), walletFile)) : false;
+      const readiness = evaluateLiveReadiness({
+        config,
+        env: process.env,
+        walletFileExists,
+        closedTrades: store.loadClosedTradeStats().length,
+        trackedOutcomes: store.loadScoredOutcomeStats().length,
+        liveBrokerAvailable: true,
+        liveExecutionImplemented: true,
+      });
+
+      // ── wallet balances (live only; skipped if RPC not configured) ────────
+      let walletBalances;
+      let walletError: string | undefined;
+      const rpcUrl = config.chains.solana.rpcUrlEnv ? process.env[config.chains.solana.rpcUrlEnv] : undefined;
+      if (walletFile && rpcUrl) {
+        try {
+          const keypair = loadSolanaKeypair(walletFile);
+          const deps = createLiveBrokerDeps(keypair, {
+            rpcUrl,
+            maxSlippageBps: config.chains.solana.maxSlippageBps,
+            confirmationCommitment: config.chains.solana.confirmationCommitment,
+            priorityFeeLamports: config.chains.solana.priorityFeeLamports ?? 'auto',
+          });
+          const inventory = await queryWalletCashInventory(
+            keypair.publicKey.toBase58(),
+            deps,
+            solanaRpcRequest(rpcUrl),
+          );
+          const minReserve = BigInt(
+            config.chains.solana.minSolFeeReserveLamports ?? DEFAULT_MIN_SOL_FEE_RESERVE_LAMPORTS,
+          );
+          walletBalances = {
+            publicKey: inventory.publicKey,
+            sol: inventory.sol,
+            solUsd: inventory.solUsd,
+            solPriceUsd: inventory.solPriceUsd,
+            usdc: inventory.usdc,
+            usdt: inventory.usdt,
+            totalUsd: inventory.totalUsd,
+            solLamports: inventory.solLamports,
+            reserveStatus: (inventory.solLamports >= minReserve ? 'OK' : 'LOW') as 'OK' | 'LOW',
+            minReserveLamports: minReserve,
+          };
+        } catch (err) {
+          walletError = `Wallet balance fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+
+      // ── journal ───────────────────────────────────────────────────────────
+      const incomplete = store.listIncompleteLiveExecutions();
+      const journalText = renderIncompleteLiveExecutions(incomplete);
+      const journalSummary = journalText ? journalText.trim() : 'No incomplete live executions.';
+
+      // ── positions and trades ──────────────────────────────────────────────
+      const openPositions = store.listOpenPositions();
+      const recentTrades = store.listClosedTrades(tradeLimit);
+
+      // ── analytics ────────────────────────────────────────────────────────
+      const analytics = computeTradeAnalytics(store.loadClosedTradeStats());
+
+      process.stdout.write(
+        renderSnapshot({
+          mode: config.mode,
+          generatedAt,
+          readiness,
+          walletBalances,
+          walletError,
+          openPositions,
+          recentTrades,
+          journalBlockers: incomplete.length,
+          journalSummary,
+          analytics,
+        }),
+      );
+    } finally {
       store.close();
     }
   });

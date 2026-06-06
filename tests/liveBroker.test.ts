@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { LiveBroker, type LiveBrokerDeps, type LiveBrokerOptions } from '../src/execution/liveBroker.js';
 import type { TokenCandidate } from '../src/types/domain.js';
+import type { LiveExecutionJournalStore } from '../src/execution/liveExecutionJournal.js';
 
 // ─── fixtures ───────────────────────────────────────────────────────────────
 
@@ -15,6 +16,7 @@ const defaultOptions: LiveBrokerOptions = {
     minLiquidityUsd: 10_000,
     minVolume5mUsd: 5_000,
     maxSlippageBps: 500,
+    confirmationCommitment: 'confirmed',
   },
   positionSizeUsd: 25,
   maxOpenPositions: 3,
@@ -46,14 +48,20 @@ function makeCandidate(overrides: Partial<TokenCandidate> = {}): TokenCandidate 
 }
 
 // Build quote-like object Jupiter would return for an ExactIn USDC→token swap
-function makeQuote(inAmount: string, outAmount: string, inputMint = USDC_MINT, outputMint = 'token-mint-abc123') {
+function makeQuote(
+  inAmount: string,
+  outAmount: string,
+  inputMint = USDC_MINT,
+  outputMint = 'token-mint-abc123',
+  priceImpactPct = '0.005',
+) {
   return {
     inputMint,
     inAmount,
     outputMint,
     outAmount,
     slippageBps: 500,
-    priceImpactPct: '0.5',
+    priceImpactPct,
     otherAmountThreshold: outAmount,
     swapMode: 'ExactIn',
     routePlan: [],
@@ -69,12 +77,17 @@ function makeDeps(overrides: Partial<LiveBrokerDeps> = {}): LiveBrokerDeps {
   return {
     getPublicKey: () => 'wallet-pubkey-1111',
     getSolPriceUsd: async () => 150,
+    getWalletBalance: async (mint) => mint === SOL_MINT ? 5_000_000n : mint === USDC_MINT ? 1_000_000_000_000n : 0n,
     getTokenDecimals: async (mint) => (mint === USDC_MINT ? 6 : 6),
     getJupiterQuote: async ({ outputMint }) =>
       outputMint === 'token-mint-abc123' ? (buyQuote as any) : (sellQuote as any),
     getSwapTransaction: async () => ({ swapTransaction: Buffer.from('fake-tx').toString('base64') }),
     signAndSendTransaction: async () => 'sig-abc123',
     confirmTransaction: async () => {},
+    getConfirmedSwapFill: async ({ outputMint }) =>
+      outputMint === 'token-mint-abc123'
+        ? { inputAmount: 25_000_000n, outputAmount: 25_000_000_000n, networkFeeLamports: 5_000 }
+        : { inputAmount: 25_000_000_000n, outputAmount: 24_875_000n, networkFeeLamports: 5_000 },
     ...overrides,
   };
 }
@@ -83,6 +96,7 @@ function makeBroker(
   opts: Partial<LiveBrokerOptions> = {},
   deps: Partial<LiveBrokerDeps> = {},
   initialCashUsd = 500,
+  journal?: LiveExecutionJournalStore,
 ): LiveBroker {
   return new LiveBroker({ ...defaultOptions, ...opts }, makeDeps(deps), {
     openPositions: [],
@@ -90,7 +104,28 @@ function makeBroker(
     dailyRealizedPnlUsd: 0,
     nextPositionSeq: 1,
     initialCashUsd,
-  });
+  }, journal);
+}
+
+function makeJournal(): LiveExecutionJournalStore & {
+  prepared: any[];
+  submitted: any[];
+  confirmed: string[];
+  failed: any[];
+} {
+  const journal = {
+    prepared: [] as any[],
+    submitted: [] as any[],
+    confirmed: [] as string[],
+    failed: [] as any[],
+    recordLiveExecutionPrepared(entry: any) { journal.prepared.push(entry); },
+    recordLiveExecutionSubmitted(id: string, signature: string, lastValidBlockHeight?: number) {
+      journal.submitted.push({ id, signature, lastValidBlockHeight });
+    },
+    recordLiveExecutionConfirmed(id: string) { journal.confirmed.push(id); },
+    recordLiveExecutionFailed(id: string, error: string) { journal.failed.push({ id, error }); },
+  };
+  return journal;
 }
 
 // ─── tests ───────────────────────────────────────────────────────────────────
@@ -114,6 +149,14 @@ describe('LiveBroker.canOpenPosition', () => {
   it('blocks when max open positions is reached', () => {
     const broker = makeBroker({ maxOpenPositions: 0 });
     expect(broker.canOpenPosition()).toMatchObject({ ok: false, reason: expect.stringContaining('max open positions') });
+  });
+
+  it('blocks new entries while a stale live position is quarantined', async () => {
+    const broker = makeBroker();
+    const position = await broker.openPosition(makeCandidate(), 80);
+
+    expect(broker.quarantinePositions([position.id])).toBe(1);
+    expect(broker.canOpenPosition()).toMatchObject({ ok: false, reason: expect.stringContaining('recover-positions') });
   });
 
   it('blocks when cash is insufficient', () => {
@@ -153,7 +196,45 @@ describe('LiveBroker.openPosition', () => {
 
     expect(getJupiterQuote).toHaveBeenCalledOnce();
     expect(signAndSendTransaction).toHaveBeenCalledWith(expect.any(String));
-    expect(confirmTransaction).toHaveBeenCalledWith('sig-open-1');
+    expect(confirmTransaction).toHaveBeenCalledWith('sig-open-1', undefined);
+  });
+
+  it('journals open execution through confirmation', async () => {
+    const journal = makeJournal();
+    const broker = makeBroker({}, {}, 500, journal);
+
+    const position = await broker.openPosition(makeCandidate(), 80);
+
+    expect(journal.prepared).toHaveLength(1);
+    expect(journal.prepared[0]).toMatchObject({ side: 'open', positionId: position.id, mint: 'token-mint-abc123' });
+    expect(journal.submitted[0]).toMatchObject({ signature: 'sig-abc123' });
+    expect(journal.confirmed).toEqual([journal.prepared[0].id]);
+    expect(journal.failed).toHaveLength(0);
+  });
+
+  it('leaves a confirmed journal entry incomplete when fill parsing fails', async () => {
+    const journal = makeJournal();
+    const broker = makeBroker({}, {
+      getConfirmedSwapFill: async () => { throw new Error('receipt unavailable'); },
+    }, 500, journal);
+
+    await expect(broker.openPosition(makeCandidate(), 80)).rejects.toThrow('receipt unavailable');
+
+    expect(journal.confirmed).toEqual([journal.prepared[0].id]);
+    expect(journal.failed).toHaveLength(0);
+  });
+
+  it('leaves a submitted journal entry incomplete when confirmation is uncertain', async () => {
+    const journal = makeJournal();
+    const broker = makeBroker({}, {
+      confirmTransaction: async () => { throw new Error('RPC timeout'); },
+    }, 500, journal);
+
+    await expect(broker.openPosition(makeCandidate(), 80)).rejects.toThrow('RPC timeout');
+
+    expect(journal.submitted).toHaveLength(1);
+    expect(journal.confirmed).toHaveLength(0);
+    expect(journal.failed).toHaveLength(0);
   });
 
   it('uses SOL pricing when routeInputMint is SOL', async () => {
@@ -166,7 +247,11 @@ describe('LiveBroker.openPosition', () => {
       return makeQuote('25000000000', '24875000', 'token-mint-abc123', USDC_MINT) as any;
     });
 
-    const broker = makeBroker({}, { getSolPriceUsd, getJupiterQuote });
+    const broker = makeBroker({}, {
+      getSolPriceUsd,
+      getJupiterQuote,
+      getWalletBalance: async (mint) => mint === SOL_MINT ? 1_000_000_000_000n : 0n,
+    });
     const candidate = makeCandidate({ routeInputMint: SOL_MINT, routeInputSymbol: 'SOL' });
     const position = await broker.openPosition(candidate, 80);
 
@@ -177,10 +262,142 @@ describe('LiveBroker.openPosition', () => {
     expect(quoteCall[0].amount).toBeCloseTo(125_000_000, -3);
   });
 
+  it('refuses to submit when no supported route input can fund the position', async () => {
+    const signAndSendTransaction = vi.fn(async () => 'should-not-submit');
+    const broker = makeBroker({}, {
+      getWalletBalance: async () => 10_000_000n,
+      signAndSendTransaction,
+    });
+
+    await expect(broker.openPosition(makeCandidate(), 80)).rejects.toThrow('no funded Jupiter buy route');
+    expect(signAndSendTransaction).not.toHaveBeenCalled();
+  });
+
+  it('refuses to submit new opens when SOL fee reserve is below the configured floor', async () => {
+    const getJupiterQuote = vi.fn(makeDeps().getJupiterQuote);
+    const signAndSendTransaction = vi.fn(async () => 'should-not-submit');
+    const broker = makeBroker({ solana: { ...defaultOptions.solana, minSolFeeReserveLamports: 5_000_000 } }, {
+      getWalletBalance: async (mint) => mint === SOL_MINT ? 4_999_999n : mint === USDC_MINT ? 1_000_000_000_000n : 0n,
+      getJupiterQuote,
+      signAndSendTransaction,
+    });
+
+    await expect(broker.openPosition(makeCandidate(), 80)).rejects.toThrow('SOL fee reserve below configured minimum');
+    expect(getJupiterQuote).not.toHaveBeenCalled();
+    expect(signAndSendTransaction).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a funded route input when the discovery-time route is unfunded', async () => {
+    const getJupiterQuote = vi.fn(makeDeps().getJupiterQuote);
+    const broker = makeBroker({}, {
+      getWalletBalance: async (mint) => mint === SOL_MINT ? 5_000_000n : mint === USDC_MINT ? 1_000_000_000_000n : 0n,
+      getJupiterQuote,
+    });
+    const candidate = makeCandidate({ routeInputMint: SOL_MINT, routeInputSymbol: 'SOL' });
+
+    await broker.openPosition(candidate, 80);
+
+    expect(getJupiterQuote).toHaveBeenCalledOnce();
+    expect(getJupiterQuote.mock.calls[0][0].inputMint).toBe(USDC_MINT);
+  });
+
+  it('does not spend SOL below the fee reserve when selecting a buy route', async () => {
+    const getJupiterQuote = vi.fn(makeDeps().getJupiterQuote);
+    const broker = makeBroker({ solana: { ...defaultOptions.solana, minSolFeeReserveLamports: 100_000_000 } }, {
+      getWalletBalance: async (mint) => {
+        if (mint === SOL_MINT) return 200_000_000n; // below 25 USD SOL spend + 0.1 SOL reserve
+        if (mint === USDC_MINT) return 1_000_000_000_000n;
+        return 0n;
+      },
+      getSolPriceUsd: async () => 200,
+      getJupiterQuote,
+    });
+    const candidate = makeCandidate({ routeInputMint: SOL_MINT, routeInputSymbol: 'SOL' });
+
+    await broker.openPosition(candidate, 80);
+
+    expect(getJupiterQuote).toHaveBeenCalledOnce();
+    expect(getJupiterQuote.mock.calls[0][0].inputMint).toBe(USDC_MINT);
+  });
+
+  it('refuses to submit when actual-size quote price impact exceeds the live cap', async () => {
+    const signAndSendTransaction = vi.fn(async () => 'should-not-submit');
+    const broker = makeBroker({ solana: { ...defaultOptions.solana, maxPriceImpactBps: 250 } }, {
+      getJupiterQuote: async ({ outputMint }) =>
+        outputMint === 'token-mint-abc123'
+          ? (makeQuote('25000000', '25000000000', USDC_MINT, 'token-mint-abc123', '0.04') as any)
+          : (makeQuote('25000000000', '24875000', 'token-mint-abc123', USDC_MINT) as any),
+      signAndSendTransaction,
+    });
+
+    await expect(broker.openPosition(makeCandidate(), 80)).rejects.toThrow('exceeds max price impact');
+    expect(signAndSendTransaction).not.toHaveBeenCalled();
+  });
+
   it('attaches entry tx signature to the returned position', async () => {
     const broker = makeBroker({}, { signAndSendTransaction: async () => 'sig-entry-xyz' });
     const position = await broker.openPosition(makeCandidate(), 80);
     expect(position.entryTxSignature).toBe('sig-entry-xyz');
+  });
+
+  it('passes Jupiter lastValidBlockHeight into confirmation', async () => {
+    const confirmTransaction = vi.fn(async () => {});
+    const broker = makeBroker({}, {
+      getSwapTransaction: async () => ({
+        swapTransaction: Buffer.from('fake-tx').toString('base64'),
+        lastValidBlockHeight: 12345,
+      }),
+      confirmTransaction,
+    });
+
+    await broker.openPosition(makeCandidate(), 80);
+
+    expect(confirmTransaction).toHaveBeenCalledWith('sig-abc123', 12345);
+  });
+
+  it('uses the confirmed balance deltas instead of the quoted output', async () => {
+    const broker = makeBroker({}, {
+      getConfirmedSwapFill: async () => ({
+        inputAmount: 25_000_000n,
+        outputAmount: 20_000_000_000n,
+        networkFeeLamports: 5_000,
+      }),
+    });
+
+    const position = await broker.openPosition(makeCandidate(), 80);
+
+    expect(position.quantity).toBe(20_000);
+    expect(position.entryPriceUsd).toBeCloseTo(0.00125);
+  });
+
+  it('persists the entry network fee and deducts it from cash', async () => {
+    const broker = makeBroker({}, {
+      getSolPriceUsd: async () => 200,
+      getConfirmedSwapFill: async () => ({
+        inputAmount: 25_000_000n,
+        outputAmount: 25_000_000_000n,
+        networkFeeLamports: 10_000,
+      }),
+    });
+
+    const position = await broker.openPosition(makeCandidate(), 80);
+
+    expect(position.entryNetworkFeeUsd).toBeCloseTo(0.002);
+    expect(position.entryNetworkFeeLamports).toBe(10_000);
+    expect(broker.getCashUsd()).toBeCloseTo(474.998);
+  });
+
+  it('still records a confirmed position when the network fee cannot be valued', async () => {
+    const getSolPriceUsd = vi.fn()
+      .mockResolvedValueOnce(150)
+      .mockRejectedValueOnce(new Error('price unavailable'));
+    const broker = makeBroker({}, { getSolPriceUsd });
+
+    const position = await broker.openPosition(makeCandidate(), 80);
+
+    expect(position.entryNetworkFeeUsd).toBeUndefined();
+    expect(position.entryNetworkFeeLamports).toBe(5_000);
+    expect(broker.getOpenPositions()).toHaveLength(1);
   });
 
   it('deducts position cost from cash', async () => {
@@ -225,7 +442,22 @@ describe('LiveBroker.closePosition', () => {
     expect(trade.closedAt).toBeInstanceOf(Date);
 
     expect(signAndSendTransaction).toHaveBeenCalledTimes(2); // buy + sell
-    expect(confirmTransaction).toHaveBeenCalledWith('sig-close-1');
+    expect(confirmTransaction).toHaveBeenCalledWith('sig-close-1', undefined);
+  });
+
+  it('journals close execution through confirmation', async () => {
+    const journal = makeJournal();
+    const broker = makeBroker({}, {}, 500, journal);
+    const position = await broker.openPosition(makeCandidate(), 80);
+    journal.prepared.length = 0;
+    journal.submitted.length = 0;
+    journal.confirmed.length = 0;
+
+    await broker.closePosition(position.id, 0.001, 'manual');
+
+    expect(journal.prepared[0]).toMatchObject({ side: 'close', positionId: position.id, mint: 'token-mint-abc123' });
+    expect(journal.submitted[0]).toMatchObject({ signature: 'sig-abc123' });
+    expect(journal.confirmed).toEqual([journal.prepared[0].id]);
   });
 
   it('attaches exit tx signature to the returned trade', async () => {
@@ -233,6 +465,52 @@ describe('LiveBroker.closePosition', () => {
     const position = await broker.openPosition(makeCandidate(), 80);
     const trade = await broker.closePosition(position.id, 0.001, 'stop_loss');
     expect(trade.exitTxSignature).toBe('sig-sell-abc');
+  });
+
+  it('uses confirmed USDC proceeds instead of the quoted output', async () => {
+    const getConfirmedSwapFill = vi.fn()
+      .mockResolvedValueOnce({
+        inputAmount: 25_000_000n,
+        outputAmount: 25_000_000_000n,
+        networkFeeLamports: 5_000,
+      })
+      .mockResolvedValueOnce({
+        inputAmount: 25_000_000_000n,
+        outputAmount: 20_000_000n,
+        networkFeeLamports: 5_000,
+      });
+    const broker = makeBroker({}, { getConfirmedSwapFill });
+
+    const position = await broker.openPosition(makeCandidate(), 80);
+    const trade = await broker.closePosition(position.id, 0.001, 'stop_loss');
+
+    expect(trade.exitPriceUsd).toBeCloseTo(0.0008);
+    expect(trade.pnlUsd).toBeCloseTo(-5);
+  });
+
+  it('includes entry and exit Solana network fees in realized PnL', async () => {
+    const getConfirmedSwapFill = vi.fn()
+      .mockResolvedValueOnce({
+        inputAmount: 25_000_000n,
+        outputAmount: 25_000_000_000n,
+        networkFeeLamports: 10_000,
+      })
+      .mockResolvedValueOnce({
+        inputAmount: 25_000_000_000n,
+        outputAmount: 25_000_000n,
+        networkFeeLamports: 20_000,
+      });
+    const broker = makeBroker({}, { getSolPriceUsd: async () => 200, getConfirmedSwapFill });
+
+    const position = await broker.openPosition(makeCandidate(), 80);
+    const trade = await broker.closePosition(position.id, 0.001, 'manual');
+
+    expect(trade.entryNetworkFeeUsd).toBeCloseTo(0.002);
+    expect(trade.exitNetworkFeeUsd).toBeCloseTo(0.004);
+    expect(trade.entryNetworkFeeLamports).toBe(10_000);
+    expect(trade.exitNetworkFeeLamports).toBe(20_000);
+    expect(trade.pnlUsd).toBeCloseTo(-0.006);
+    expect(trade.pnlPct).toBeCloseTo((-0.006 / 25.002) * 100);
   });
 
   it('records trade in getClosedTrades()', async () => {
@@ -308,6 +586,7 @@ describe('LiveBroker state restoration', () => {
       openedAt: new Date('2026-01-01'),
       highWaterMarkUsd: 0.0012,
       lastMarkUsd: 0.0011,
+      entryNetworkFeeUsd: 0.002,
     };
 
     const broker = new LiveBroker(
@@ -327,5 +606,29 @@ describe('LiveBroker state restoration', () => {
     expect(broker.getOpenPositions()[0].id).toBe('live-99');
     expect(broker.getCashUsd()).toBe(475);
     expect(broker.getRealizedPnlUsd()).toBe(-5);
+    expect(broker.getOpenPositions()[0].entryNetworkFeeUsd).toBe(0.002);
+  });
+
+  it('excludes quarantined positions from automated position management without deleting them', () => {
+    const existingPosition = {
+      id: 'live-99',
+      token: makeCandidate(),
+      score: 85,
+      entryPriceUsd: 0.001,
+      quantity: 25_000,
+      openedAt: new Date('2026-01-01'),
+      highWaterMarkUsd: 0.0012,
+      lastMarkUsd: 0.0011,
+    };
+    const broker = new LiveBroker(defaultOptions, makeDeps(), {
+      openPositions: [existingPosition],
+      nextPositionSeq: 100,
+      initialCashUsd: 475,
+    });
+
+    expect(broker.quarantinePositions(['live-99', 'missing-position'])).toBe(1);
+    expect(broker.quarantinePositions(['live-99'])).toBe(0);
+    expect(broker.getOpenPositions()).toHaveLength(0);
+    expect(broker.canOpenPosition()).toMatchObject({ ok: false, reason: expect.stringContaining('stale live position') });
   });
 });

@@ -4,6 +4,10 @@ import type { ExecutionBroker } from './broker.js';
 import type { BrokerStateStore } from '../paper/restoreBroker.js';
 import { startOfUtcDayIso } from '../paper/restoreBroker.js';
 import type { JupiterQuoteResponse } from './jupiterSwap.js';
+import type { ConfirmedSwapFill } from './solanaTransactionFill.js';
+import type { LiveExecutionJournalStore } from './liveExecutionJournal.js';
+import { DEFAULT_MIN_SOL_FEE_RESERVE_LAMPORTS } from './liveReadiness.js';
+import { randomUUID } from 'node:crypto';
 
 // ─── injectable dependencies ────────────────────────────────────────────────
 // Every network call the LiveBroker makes is injected so unit tests can run
@@ -23,14 +27,23 @@ export interface LiveBrokerDeps {
     quoteResponse: JupiterQuoteResponse;
     userPublicKey: string;
     wrapAndUnwrapSol: boolean;
-  }) => Promise<{ swapTransaction: string }>;
+  }) => Promise<{ swapTransaction: string; lastValidBlockHeight?: number }>;
 
   // Sign the base64 transaction with the loaded keypair and submit it.
   // Returns the transaction signature string.
   signAndSendTransaction: (transactionBase64: string) => Promise<string>;
 
   // Poll until the given signature is confirmed on-chain, or throw on failure.
-  confirmTransaction: (signature: string) => Promise<void>;
+  confirmTransaction: (signature: string, lastValidBlockHeight?: number) => Promise<void>;
+
+  // Read the confirmed transaction and return the wallet's actual swap balance
+  // deltas. Quote amounts are estimates and must not drive live accounting.
+  getConfirmedSwapFill: (params: {
+    signature: string;
+    owner: string;
+    inputMint: string;
+    outputMint: string;
+  }) => Promise<ConfirmedSwapFill>;
 
   // Return the SPL token decimal precision for a given mint address.
   // Implementations should cache; this may be called multiple times per trade.
@@ -38,6 +51,9 @@ export interface LiveBrokerDeps {
 
   // Return the current SOL/USD price. Used to size SOL-routed buys.
   getSolPriceUsd: () => Promise<number>;
+
+  // Return the wallet's spendable base-unit balance for a route input mint.
+  getWalletBalance: (mint: string) => Promise<bigint>;
 
   // Return the Base58 public key of the trading wallet.
   getPublicKey: () => string;
@@ -67,6 +83,12 @@ export interface LiveBrokerState {
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const USDT_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY2Sr6MGt9RktwD';
+const ROUTE_INPUTS = [
+  { mint: SOL_MINT },
+  { mint: USDC_MINT },
+  { mint: USDT_MINT },
+] as const;
 
 function utcDayKey(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -81,6 +103,7 @@ export class LiveBroker implements ExecutionBroker {
   private realizedPnlUsd: number;
   private readonly dailyPnlByDay = new Map<string, number>();
   private readonly openPositions = new Map<string, PaperPosition>();
+  private readonly quarantinedPositionIds = new Set<string>();
   private readonly closedTrades: PaperTrade[] = [];
   private nextId: number;
 
@@ -91,6 +114,7 @@ export class LiveBroker implements ExecutionBroker {
     // required deps are absent — the production path uses LiveBroker.restore().
     private readonly deps: Partial<LiveBrokerDeps> = {},
     state?: Partial<LiveBrokerState>,
+    private readonly journal?: LiveExecutionJournalStore,
   ) {
     this.cashUsd = state?.initialCashUsd ?? 0;
     this.realizedPnlUsd = state?.realizedPnlUsd ?? 0;
@@ -116,6 +140,7 @@ export class LiveBroker implements ExecutionBroker {
     now = new Date(),
   ): LiveBroker {
     const sinceIso = startOfUtcDayIso(now);
+    const journal = isLiveExecutionJournalStore(store) ? store : undefined;
     return new LiveBroker(options, deps, {
       openPositions: store.loadOpenPositions(),
       realizedPnlUsd: store.getRealizedPnlUsd(),
@@ -123,12 +148,19 @@ export class LiveBroker implements ExecutionBroker {
       dailyRealizedPnlAt: now,
       nextPositionSeq: store.getNextPositionSeq(),
       initialCashUsd,
-    });
+    }, journal);
   }
 
   canOpenPosition(now = new Date(), requiredSizeUsd?: number): { ok: boolean; reason?: string } {
     if (!this.options.solana.walletFile) {
       return { ok: false, reason: 'chains.solana.walletFile is not configured' };
+    }
+
+    if (this.quarantinedPositionIds.size > 0) {
+      return {
+        ok: false,
+        reason: `${this.quarantinedPositionIds.size} stale live position(s) require recover-positions`,
+      };
     }
 
     if (this.openPositions.size >= this.options.maxOpenPositions) {
@@ -163,56 +195,90 @@ export class LiveBroker implements ExecutionBroker {
     const sizeUsd = positionSizeUsd ?? this.options.positionSizeUsd;
     const maxSlippage = this.options.solana.maxSlippageBps;
 
-    const { getJupiterQuote, getSwapTransaction, signAndSendTransaction, confirmTransaction, getTokenDecimals, getSolPriceUsd, getPublicKey } = this.deps;
-    if (!getJupiterQuote || !getSwapTransaction || !signAndSendTransaction || !confirmTransaction || !getTokenDecimals || !getSolPriceUsd || !getPublicKey) {
+    const { getJupiterQuote, getSwapTransaction, signAndSendTransaction, confirmTransaction, getConfirmedSwapFill, getTokenDecimals, getSolPriceUsd, getWalletBalance, getPublicKey } = this.deps;
+    if (!getJupiterQuote || !getSwapTransaction || !signAndSendTransaction || !confirmTransaction || !getConfirmedSwapFill || !getTokenDecimals || !getSolPriceUsd || !getWalletBalance || !getPublicKey) {
       throw new Error('LiveBroker: execution deps are not configured — use LiveBroker.restore() with createLiveBrokerDeps()');
     }
-
-    // Determine input mint and amount from the pre-computed best route.
-    const inputMint = candidate.routeInputMint ?? SOL_MINT;
-    const inputAmountBaseUnits = await this.resolveInputAmount(inputMint, sizeUsd, getSolPriceUsd);
-
-    // Fresh quote sized exactly to the position.
-    const quote = await getJupiterQuote({
-      inputMint,
-      outputMint: candidate.address,
-      amount: inputAmountBaseUnits,
-      slippageBps: maxSlippage,
-    });
-    if (!quote) throw new Error(`No Jupiter buy route for ${candidate.symbol} (${candidate.address})`);
-
-    // Build → sign → submit → confirm.
-    const { swapTransaction } = await getSwapTransaction({
-      quoteResponse: quote,
-      userPublicKey: getPublicKey(),
-      wrapAndUnwrapSol: true,
-    });
-    const signature = await signAndSendTransaction(swapTransaction);
-    await confirmTransaction(signature);
-
-    // Compute fill from confirmed quote amounts.
-    const decimals = await getTokenDecimals(candidate.address);
-    const tokensReceived = Number(BigInt(quote.outAmount)) / Math.pow(10, decimals);
-    // Use actual USD spent (inAmount) for the entry price basis.
-    const actualSpentUsd = await this.resolveSpentUsd(inputMint, Number(BigInt(quote.inAmount)), getSolPriceUsd);
-    const effectiveEntryPriceUsd = actualSpentUsd / tokensReceived;
+    await this.assertSolFeeReserveForOpen(getWalletBalance);
 
     const id = `live-${this.nextId++}`;
-    const position: PaperPosition = {
-      id,
-      token: candidate,
-      score,
-      entryPriceUsd: effectiveEntryPriceUsd,
-      quantity: tokensReceived,
-      openedAt,
-      highWaterMarkUsd: candidate.priceUsd,
-      lastMarkUsd: candidate.priceUsd,
-      entryTxSignature: signature,
-    };
+    // Discovery-time route probes are small and wallet-agnostic. Re-quote the
+    // actual position size across funded inputs so live execution uses the best
+    // route the wallet can really pay for.
+    const { inputMint, inputAmountBaseUnits, quote } = await this.selectFundedBuyRoute(
+      candidate,
+      sizeUsd,
+      maxSlippage,
+      getWalletBalance,
+      getSolPriceUsd,
+      getJupiterQuote,
+    );
+    const journalId = `open:${id}:${randomUUID()}`;
+    this.journal?.recordLiveExecutionPrepared({
+      id: journalId,
+      side: 'open',
+      positionId: id,
+      mint: candidate.address,
+      symbol: candidate.symbol,
+      inputMint,
+      outputMint: candidate.address,
+      inputAmountBaseUnits: String(inputAmountBaseUnits),
+    });
 
-    this.cashUsd -= actualSpentUsd;
-    this.openPositions.set(id, position);
-    return position;
+    let submitted = false;
+    let confirmed = false;
+    try {
+      // Build → sign → submit → confirm.
+      const { swapTransaction, lastValidBlockHeight } = await getSwapTransaction({
+        quoteResponse: quote,
+        userPublicKey: getPublicKey(),
+        wrapAndUnwrapSol: true,
+      });
+      const signature = await signAndSendTransaction(swapTransaction);
+      this.journal?.recordLiveExecutionSubmitted(journalId, signature, lastValidBlockHeight);
+      submitted = true;
+      await confirmTransaction(signature, lastValidBlockHeight);
+      this.journal?.recordLiveExecutionConfirmed(journalId);
+      confirmed = true;
+
+      const owner = getPublicKey();
+      const fill = await getConfirmedSwapFill({
+        signature,
+        owner,
+        inputMint,
+        outputMint: candidate.address,
+      });
+
+      // Compute the entry basis from confirmed wallet balance deltas.
+      const decimals = await getTokenDecimals(candidate.address);
+      const tokensReceived = Number(fill.outputAmount) / Math.pow(10, decimals);
+      const actualSpentUsd = await this.resolveSpentUsd(inputMint, Number(fill.inputAmount), getSolPriceUsd);
+      const entryNetworkFeeUsd = await this.resolveNetworkFeeUsd(fill.networkFeeLamports, getSolPriceUsd);
+      const effectiveEntryPriceUsd = actualSpentUsd / tokensReceived;
+
+      const position: PaperPosition = {
+        id,
+        token: candidate,
+        score,
+        entryPriceUsd: effectiveEntryPriceUsd,
+        quantity: tokensReceived,
+        openedAt,
+        highWaterMarkUsd: candidate.priceUsd,
+        lastMarkUsd: candidate.priceUsd,
+        entryTxSignature: signature,
+        entryNetworkFeeUsd,
+        entryNetworkFeeLamports: fill.networkFeeLamports,
+      };
+
+      this.cashUsd -= actualSpentUsd + (entryNetworkFeeUsd ?? 0);
+      this.openPositions.set(id, position);
+      return position;
+    } catch (error) {
+      if (!submitted && !confirmed) {
+        this.journal?.recordLiveExecutionFailed(journalId, error instanceof Error ? error.message : String(error));
+      }
+      throw error;
+    }
   }
 
   recordMark(positionId: string, priceUsd: number): PaperPosition {
@@ -238,62 +304,101 @@ export class LiveBroker implements ExecutionBroker {
 
     const maxSlippage = this.options.solana.maxSlippageBps;
 
-    const { getJupiterQuote, getSwapTransaction, signAndSendTransaction, confirmTransaction, getTokenDecimals, getPublicKey } = this.deps;
-    if (!getJupiterQuote || !getSwapTransaction || !signAndSendTransaction || !confirmTransaction || !getTokenDecimals || !getPublicKey) {
+    const { getJupiterQuote, getSwapTransaction, signAndSendTransaction, confirmTransaction, getConfirmedSwapFill, getTokenDecimals, getSolPriceUsd, getPublicKey } = this.deps;
+    if (!getJupiterQuote || !getSwapTransaction || !signAndSendTransaction || !confirmTransaction || !getConfirmedSwapFill || !getTokenDecimals || !getSolPriceUsd || !getPublicKey) {
       throw new Error('LiveBroker: execution deps are not configured — use LiveBroker.restore() with createLiveBrokerDeps()');
     }
 
     // Sell the entire tracked token quantity to USDC.
     const decimals = await getTokenDecimals(position.token.address);
     const tokenAmountBaseUnits = Math.round(position.quantity * Math.pow(10, decimals));
-
-    const quote = await getJupiterQuote({
+    const journalId = `close:${positionId}:${randomUUID()}`;
+    this.journal?.recordLiveExecutionPrepared({
+      id: journalId,
+      side: 'close',
+      positionId,
+      mint: position.token.address,
+      symbol: position.token.symbol,
       inputMint: position.token.address,
       outputMint: USDC_MINT,
-      amount: tokenAmountBaseUnits,
-      slippageBps: maxSlippage,
+      inputAmountBaseUnits: String(tokenAmountBaseUnits),
     });
-    if (!quote) throw new Error(`No Jupiter sell route for ${position.token.symbol} (${position.token.address})`);
 
-    const { swapTransaction } = await getSwapTransaction({
-      quoteResponse: quote,
-      userPublicKey: getPublicKey(),
-      wrapAndUnwrapSol: true,
-    });
-    const signature = await signAndSendTransaction(swapTransaction);
-    await confirmTransaction(signature);
+    let submitted = false;
+    let confirmed = false;
+    try {
+      const quote = await getJupiterQuote({
+        inputMint: position.token.address,
+        outputMint: USDC_MINT,
+        amount: tokenAmountBaseUnits,
+        slippageBps: maxSlippage,
+      });
+      if (!quote) throw new Error(`No Jupiter sell route for ${position.token.symbol} (${position.token.address})`);
 
-    // Compute P&L from the actual on-chain fill (USDC received).
-    const usdcReceived = Number(BigInt(quote.outAmount)) / 1e6;
-    const netExitPriceUsd = usdcReceived / position.quantity;
-    const entryValueUsd = position.entryPriceUsd * position.quantity;
-    const pnlUsd = usdcReceived - entryValueUsd;
-    const pnlPct = (pnlUsd / entryValueUsd) * 100;
+      const { swapTransaction, lastValidBlockHeight } = await getSwapTransaction({
+        quoteResponse: quote,
+        userPublicKey: getPublicKey(),
+        wrapAndUnwrapSol: true,
+      });
+      const signature = await signAndSendTransaction(swapTransaction);
+      this.journal?.recordLiveExecutionSubmitted(journalId, signature, lastValidBlockHeight);
+      submitted = true;
+      await confirmTransaction(signature, lastValidBlockHeight);
+      this.journal?.recordLiveExecutionConfirmed(journalId);
+      confirmed = true;
 
-    const trade: PaperTrade = {
-      positionId,
-      token: position.token,
-      score: position.score,
-      entryPriceUsd: position.entryPriceUsd,
-      exitPriceUsd: netExitPriceUsd,
-      quantity: position.quantity,
-      openedAt: position.openedAt,
-      closedAt,
-      reason,
-      exitPriceSource: 'fresh',
-      pnlUsd,
-      pnlPct,
-      exitTxSignature: signature,
-    };
+      const fill = await getConfirmedSwapFill({
+        signature,
+        owner: getPublicKey(),
+        inputMint: position.token.address,
+        outputMint: USDC_MINT,
+      });
 
-    this.openPositions.delete(positionId);
-    this.closedTrades.push(trade);
-    this.cashUsd += usdcReceived;
-    this.realizedPnlUsd += pnlUsd;
-    const dayKey = utcDayKey(closedAt);
-    this.dailyPnlByDay.set(dayKey, (this.dailyPnlByDay.get(dayKey) ?? 0) + pnlUsd);
+      // Compute P&L from confirmed USDC wallet balance deltas.
+      const usdcReceived = Number(fill.outputAmount) / 1e6;
+      const exitNetworkFeeUsd = await this.resolveNetworkFeeUsd(fill.networkFeeLamports, getSolPriceUsd);
+      const entryNetworkFeeUsd = position.entryNetworkFeeUsd ?? 0;
+      const valuedExitNetworkFeeUsd = exitNetworkFeeUsd ?? 0;
+      const netExitPriceUsd = usdcReceived / position.quantity;
+      const entryValueUsd = position.entryPriceUsd * position.quantity;
+      const totalEntryCostUsd = entryValueUsd + entryNetworkFeeUsd;
+      const pnlUsd = usdcReceived - valuedExitNetworkFeeUsd - totalEntryCostUsd;
+      const pnlPct = (pnlUsd / totalEntryCostUsd) * 100;
 
-    return trade;
+      const trade: PaperTrade = {
+        positionId,
+        token: position.token,
+        score: position.score,
+        entryPriceUsd: position.entryPriceUsd,
+        exitPriceUsd: netExitPriceUsd,
+        quantity: position.quantity,
+        openedAt: position.openedAt,
+        closedAt,
+        reason,
+        exitPriceSource: 'fresh',
+        pnlUsd,
+        pnlPct,
+        exitTxSignature: signature,
+        entryNetworkFeeUsd,
+        exitNetworkFeeUsd,
+        entryNetworkFeeLamports: position.entryNetworkFeeLamports,
+        exitNetworkFeeLamports: fill.networkFeeLamports,
+      };
+
+      this.openPositions.delete(positionId);
+      this.closedTrades.push(trade);
+      this.cashUsd += usdcReceived - valuedExitNetworkFeeUsd;
+      this.realizedPnlUsd += pnlUsd;
+      const dayKey = utcDayKey(closedAt);
+      this.dailyPnlByDay.set(dayKey, (this.dailyPnlByDay.get(dayKey) ?? 0) + pnlUsd);
+
+      return trade;
+    } catch (error) {
+      if (!submitted && !confirmed) {
+        this.journal?.recordLiveExecutionFailed(journalId, error instanceof Error ? error.message : String(error));
+      }
+      throw error;
+    }
   }
 
   // Return the Base58 public key of the trading wallet, or undefined when deps
@@ -315,7 +420,21 @@ export class LiveBroker implements ExecutionBroker {
   }
 
   getOpenPositions(): PaperPosition[] {
-    return [...this.openPositions.values()];
+    return [...this.openPositions.values()].filter((position) => !this.quarantinedPositionIds.has(position.id));
+  }
+
+  // Stop automated exit attempts for positions that startup reconciliation
+  // proved do not have a meaningful matching wallet balance. The position stays
+  // in SQLite and in broker accounting until recover-positions resolves it.
+  quarantinePositions(positionIds: string[]): number {
+    let added = 0;
+    for (const positionId of positionIds) {
+      if (this.openPositions.has(positionId) && !this.quarantinedPositionIds.has(positionId)) {
+        this.quarantinedPositionIds.add(positionId);
+        added += 1;
+      }
+    }
+    return added;
   }
 
   getClosedTrades(): PaperTrade[] {
@@ -323,6 +442,101 @@ export class LiveBroker implements ExecutionBroker {
   }
 
   // ─── private helpers ───────────────────────────────────────────────────────
+
+  private async selectFundedBuyRoute(
+    candidate: TokenCandidate,
+    sizeUsd: number,
+    maxSlippageBps: number,
+    getWalletBalance: LiveBrokerDeps['getWalletBalance'],
+    getSolPriceUsd: LiveBrokerDeps['getSolPriceUsd'],
+    getJupiterQuote: LiveBrokerDeps['getJupiterQuote'],
+  ): Promise<{
+    inputMint: string;
+    inputAmountBaseUnits: number;
+    quote: JupiterQuoteResponse;
+  }> {
+    const preferredMint = candidate.routeInputMint;
+    const routes = [...ROUTE_INPUTS].sort((a, b) => {
+      if (a.mint === preferredMint) return -1;
+      if (b.mint === preferredMint) return 1;
+      return 0;
+    });
+    const fundedQuotes: Array<{
+      inputMint: string;
+      inputAmountBaseUnits: number;
+      quote: JupiterQuoteResponse;
+      outputAmount: bigint;
+    }> = [];
+    let hasFundedInput = false;
+    let rejectedForPriceImpact = false;
+
+    for (const route of routes) {
+      const walletBalance = await getWalletBalance(route.mint);
+      if (walletBalance <= 0n) continue;
+      const inputAmountBaseUnits = await this.resolveInputAmount(route.mint, sizeUsd, getSolPriceUsd);
+      if (walletBalance < BigInt(inputAmountBaseUnits)) continue;
+      if (route.mint === SOL_MINT && walletBalance - BigInt(inputAmountBaseUnits) < this.minSolFeeReserveLamports()) continue;
+      hasFundedInput = true;
+
+      const quote = await getJupiterQuote({
+        inputMint: route.mint,
+        outputMint: candidate.address,
+        amount: inputAmountBaseUnits,
+        slippageBps: maxSlippageBps,
+      });
+      if (!quote) continue;
+      const priceImpactBps = quotePriceImpactBps(quote);
+      const maxPriceImpactBps = this.options.solana.maxPriceImpactBps ?? maxSlippageBps;
+      if (priceImpactBps === undefined || priceImpactBps > maxPriceImpactBps) {
+        rejectedForPriceImpact = true;
+        continue;
+      }
+
+      try {
+        fundedQuotes.push({
+          inputMint: route.mint,
+          inputAmountBaseUnits,
+          quote,
+          outputAmount: BigInt(quote.outAmount),
+        });
+      } catch {
+        // Ignore malformed quote amounts and keep checking funded alternatives.
+      }
+    }
+
+    fundedQuotes.sort((a, b) => a.outputAmount > b.outputAmount ? -1 : a.outputAmount < b.outputAmount ? 1 : 0);
+    const best = fundedQuotes[0];
+    if (!best) {
+      if (rejectedForPriceImpact) {
+        const maxPriceImpactBps = this.options.solana.maxPriceImpactBps ?? maxSlippageBps;
+        throw new Error(
+          `Cannot open position: actual-size Jupiter buy route exceeds max price impact (${maxPriceImpactBps} bps) ` +
+          `for ${candidate.symbol} (${candidate.address})`,
+        );
+      }
+      if (hasFundedInput) {
+        throw new Error(`No Jupiter buy route for ${candidate.symbol} (${candidate.address})`);
+      }
+      throw new Error(`Cannot open position: no funded Jupiter buy route for ${candidate.symbol} (${candidate.address})`);
+    }
+    return best;
+  }
+
+  private async assertSolFeeReserveForOpen(getWalletBalance: LiveBrokerDeps['getWalletBalance']): Promise<void> {
+    const reserve = this.minSolFeeReserveLamports();
+    if (reserve === 0n) return;
+    const solBalance = await getWalletBalance(SOL_MINT);
+    if (solBalance < reserve) {
+      throw new Error(
+        `Cannot open position: SOL fee reserve below configured minimum ` +
+        `(${solBalance.toString()} / ${reserve.toString()} lamports)`,
+      );
+    }
+  }
+
+  private minSolFeeReserveLamports(): bigint {
+    return BigInt(this.options.solana.minSolFeeReserveLamports ?? DEFAULT_MIN_SOL_FEE_RESERVE_LAMPORTS);
+  }
 
   // Convert a USD position size to the base-unit amount of the input mint.
   private async resolveInputAmount(
@@ -352,4 +566,35 @@ export class LiveBroker implements ExecutionBroker {
     }
     return baseUnits / 1e6;
   }
+
+  private async resolveNetworkFeeUsd(
+    feeLamports: number,
+    getSolPriceUsd: () => Promise<number>,
+  ): Promise<number | undefined> {
+    if (feeLamports <= 0) return 0;
+    try {
+      return (feeLamports / 1e9) * await getSolPriceUsd();
+    } catch {
+      // The swap is already confirmed at this point. Do not create an orphaned
+      // live position merely because the small SOL fee could not be valued.
+      return undefined;
+    }
+  }
+}
+
+function quotePriceImpactBps(quote: JupiterQuoteResponse): number | undefined {
+  const priceImpactPct = Number(quote.priceImpactPct);
+  if (!Number.isFinite(priceImpactPct) || priceImpactPct < 0) return undefined;
+  return Math.round(priceImpactPct * 10_000);
+}
+
+function isLiveExecutionJournalStore(store: unknown): store is LiveExecutionJournalStore {
+  return (
+    typeof store === 'object' &&
+    store !== null &&
+    typeof (store as LiveExecutionJournalStore).recordLiveExecutionPrepared === 'function' &&
+    typeof (store as LiveExecutionJournalStore).recordLiveExecutionSubmitted === 'function' &&
+    typeof (store as LiveExecutionJournalStore).recordLiveExecutionConfirmed === 'function' &&
+    typeof (store as LiveExecutionJournalStore).recordLiveExecutionFailed === 'function'
+  );
 }

@@ -63,6 +63,10 @@ export interface PaperPosition {
   // Solana transaction signature for the entry swap. Populated only in live mode;
   // undefined in paper mode. Useful for on-chain verification and audit logs.
   entryTxSignature?: string;
+  // USD value of the Solana network fee paid for the entry transaction.
+  // Persisted on open positions so restarts preserve the true live cost basis.
+  entryNetworkFeeUsd?: number;
+  entryNetworkFeeLamports?: number;
 }
 
 export interface PaperTrade {
@@ -86,4 +90,9 @@ export interface PaperTrade {
   pnlPct: number;
   // Solana transaction signature for the exit swap. Populated only in live mode.
   exitTxSignature?: string;
+  // Solana network fees valued in USD at execution time. Undefined in paper mode.
+  entryNetworkFeeUsd?: number;
+  exitNetworkFeeUsd?: number;
+  entryNetworkFeeLamports?: number;
+  exitNetworkFeeLamports?: number;
 }

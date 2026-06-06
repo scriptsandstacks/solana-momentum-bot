@@ -12,26 +12,18 @@ chains:
     minLiquidityUsd: 10000
     minVolume5mUsd: 5000
     maxSlippageBps: 500
+    # Max actual-size quote price impact allowed before signing a live buy.
+    # Omit to use maxSlippageBps as the impact ceiling.
+    maxPriceImpactBps: 500
+    # Minimum SOL reserved for live network fees and account/rent edge cases.
+    minSolFeeReserveLamports: 5000000
     # Priority fee added to every live trade transaction (lamports).
     # 'auto' lets Jupiter set a dynamic fee based on current network congestion.
     # Increase during high-traffic periods if transactions are not landing.
     priorityFeeLamports: auto
-
-  base:
-    enabled: false
-    walletFile: ./wallet/chain-ethereum.txt
-    rpcUrlEnv: BASE_RPC_URL
-    minLiquidityUsd: 15000
-    minVolume5mUsd: 7500
-    maxSlippageBps: 500
-
-  ethereum:
-    enabled: false
-    walletFile: ./wallet/chain-ethereum.txt
-    rpcUrlEnv: ETHEREUM_RPC_URL
-    minLiquidityUsd: 50000
-    minVolume5mUsd: 20000
-    maxSlippageBps: 300
+    # Required commitment before a live swap is treated as confirmed.
+    # confirmed = lower latency; finalized = stronger reorg protection.
+    confirmationCommitment: confirmed
 
 paper:
   startingBalanceUsd: 1000
@@ -79,8 +71,23 @@ strategies:
       maxHoldMinutes: 25
       takeProfitPct: 200
 
-# Data retention. `prune` deletes scored candidates older than this that never
-# led to a position (trades are always kept). Also the counterfactual window for
-# the `outcomes` report.
+# Data retention. The run loop auto-prunes once per UTC day; `prune` can also
+# be run manually. Trades are always kept regardless of these settings.
 retention:
+  # Scored candidates that never led to a position. Also the counterfactual
+  # window for the `outcomes` report — lower values shorten that window.
   scoredCandidateDays: 30
+  # Raw PumpPortal event blobs (~1–5 KB each). Processed events are safe to
+  # delete after a short window; pending events are never pruned automatically.
+  pumpPortalEventDays: 7
+  # Token volume snapshots used for the 30-minute volume acceleration z-score.
+  # Nothing older than 1 day is ever queried, so 1 day is the effective minimum.
+  volumeSnapshotDays: 1
+
+# Notifications. console=true logs trade events to stdout.
+# Set discordWebhookUrlEnv to the name of an env var holding your Discord
+# webhook URL to receive trade open/close alerts in a Discord channel.
+# Example: export DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/<id>/<token>
+notifications:
+  console: true
+  discordWebhookUrlEnv: DISCORD_WEBHOOK_URL

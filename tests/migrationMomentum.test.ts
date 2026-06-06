@@ -112,7 +112,7 @@ describe('processPumpPortalEvents — strategy routing', () => {
         saveScoredCandidate: (c, s) => scored.push({ candidate: c, score: s }),
         saveOpenPosition: () => undefined,
       },
-      solanaConfig: { enabled: true, minLiquidityUsd: 5_000, minVolume5mUsd: 1_000, maxSlippageBps: 500 },
+      solanaConfig: { enabled: true, minLiquidityUsd: 5_000, minVolume5mUsd: 1_000, maxSlippageBps: 500, confirmationCommitment: 'confirmed' },
       paper: { startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 10 },
       minimumScoreToEnter: 70,
       strategies: [freshLaunchMomentumStrategy, migrationMomentumStrategy],

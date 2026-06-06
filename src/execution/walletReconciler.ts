@@ -213,7 +213,7 @@ export function renderReconciliationReport(result: ReconciliationResult): string
       `[reconcile] STALE     positionId=${s.positionId} mint=${s.mint} symbol=${s.symbol} ` +
       `expected=${s.expectedQuantity.toFixed(4)} on-chain=${s.actualUiAmount.toFixed(4)} ` +
       `— position in SQLite but no matching on-chain balance. ` +
-      `Exit pass will fail; remove from open_positions or verify manually.`,
+      `Live run will quarantine it until recover-positions resolves it.`,
     );
   }
 

@@ -1,10 +1,10 @@
 {
   "name": "crypto-bot",
   "version": "0.1.0",
-  "description": "Multi-chain-ready crypto paper trading bot; Solana-first MVP.",
+  "description": "Automated Solana memecoin trading bot with paper and live execution.",
   "type": "module",
   "bin": {
-    "hermes-paper-bot": "./dist/src/cli/index.js"
+    "solana-trade-engine": "./dist/src/cli/index.js"
   },
   "scripts": {
     "bot": "tsx src/cli/index.ts",
@@ -17,8 +17,7 @@
     "crypto",
     "paper-trading",
     "solana",
-    "base",
-    "ethereum"
+    "jupiter"
   ],
   "author": "",
   "license": "UNLICENSED",

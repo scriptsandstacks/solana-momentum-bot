@@ -12,22 +12,8 @@ const config: BotConfig = {
       minLiquidityUsd: 10_000,
       minVolume5mUsd: 5_000,
       maxSlippageBps: 500,
-    },
-    base: {
-      enabled: false,
-      walletFile: './wallet/chain-ethereum.txt',
-      rpcUrlEnv: 'BASE_RPC_URL',
-      minLiquidityUsd: 15_000,
-      minVolume5mUsd: 7_500,
-      maxSlippageBps: 500,
-    },
-    ethereum: {
-      enabled: false,
-      walletFile: './wallet/chain-ethereum.txt',
-      rpcUrlEnv: 'ETHEREUM_RPC_URL',
-      minLiquidityUsd: 50_000,
-      minVolume5mUsd: 20_000,
-      maxSlippageBps: 300,
+      minSolFeeReserveLamports: 5_000_000,
+      confirmationCommitment: 'confirmed',
     },
   },
   paper: {
@@ -56,6 +42,8 @@ const config: BotConfig = {
   },
   retention: {
     scoredCandidateDays: 30,
+    pumpPortalEventDays: 7,
+    volumeSnapshotDays: 1,
   },
   notifications: {
     console: true,
@@ -113,5 +101,74 @@ describe('evaluateLiveReadiness', () => {
     expect(report.ready).toBe(true);
     expect(report.block).toBe(0);
     expect(report.checks.find((check) => check.label === 'Paper trade sample')).toMatchObject({ status: 'warn' });
+    expect(report.checks.find((check) => check.label === 'Confirmation commitment')).toMatchObject({ status: 'warn' });
+    expect(report.checks.find((check) => check.label === 'Live price impact cap')).toMatchObject({ status: 'pass' });
+    expect(report.checks.find((check) => check.label === 'SOL fee reserve')).toMatchObject({ status: 'pass' });
+  });
+
+  it('passes the confirmation commitment check when finalized is configured', () => {
+    const report = evaluateLiveReadiness({
+      config: {
+        ...config,
+        chains: {
+          solana: {
+            ...config.chains.solana,
+            confirmationCommitment: 'finalized',
+          },
+        },
+      },
+      env: { SOLANA_RPC_URL: 'https://rpc.example' },
+      walletFileExists: true,
+      closedTrades: 60,
+      trackedOutcomes: 120,
+      liveBrokerAvailable: true,
+      liveExecutionImplemented: true,
+    });
+
+    expect(report.checks.find((check) => check.label === 'Confirmation commitment')).toMatchObject({ status: 'pass' });
+  });
+
+  it('warns when live price impact cap is loose', () => {
+    const report = evaluateLiveReadiness({
+      config: {
+        ...config,
+        chains: {
+          solana: {
+            ...config.chains.solana,
+            maxPriceImpactBps: 1_500,
+          },
+        },
+      },
+      env: { SOLANA_RPC_URL: 'https://rpc.example' },
+      walletFileExists: true,
+      closedTrades: 60,
+      trackedOutcomes: 120,
+      liveBrokerAvailable: true,
+      liveExecutionImplemented: true,
+    });
+
+    expect(report.checks.find((check) => check.label === 'Live price impact cap')).toMatchObject({ status: 'warn' });
+  });
+
+  it('warns when the configured SOL fee reserve is too low', () => {
+    const report = evaluateLiveReadiness({
+      config: {
+        ...config,
+        chains: {
+          solana: {
+            ...config.chains.solana,
+            minSolFeeReserveLamports: 1_000,
+          },
+        },
+      },
+      env: { SOLANA_RPC_URL: 'https://rpc.example' },
+      walletFileExists: true,
+      closedTrades: 60,
+      trackedOutcomes: 120,
+      liveBrokerAvailable: true,
+      liveExecutionImplemented: true,
+    });
+
+    expect(report.checks.find((check) => check.label === 'SOL fee reserve')).toMatchObject({ status: 'warn' });
   });
 });

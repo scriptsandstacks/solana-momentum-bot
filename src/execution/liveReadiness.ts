@@ -1,6 +1,7 @@
 import type { BotConfig } from '../config/schema.js';
 
 export type LiveReadinessStatus = 'pass' | 'warn' | 'block';
+export const DEFAULT_MIN_SOL_FEE_RESERVE_LAMPORTS = 5_000_000;
 
 export interface LiveReadinessCheck {
   status: LiveReadinessStatus;
@@ -89,6 +90,26 @@ export function evaluateLiveReadiness(input: LiveReadinessInput): LiveReadinessR
     input.config.fees.applyRouteSlippage && input.config.fees.swapFeeBps > 0
       ? pass('Paper cost model', 'Paper fills include route slippage and nonzero swap fees.')
       : warn('Paper cost model', 'Paper fills should model route slippage and nonzero fees before live calibration.'),
+  );
+
+  const maxPriceImpactBps = solana.maxPriceImpactBps ?? solana.maxSlippageBps;
+  checks.push(
+    maxPriceImpactBps <= 1_000
+      ? pass('Live price impact cap', `Actual-size live buys reject Jupiter quotes above ${maxPriceImpactBps} bps price impact.`)
+      : warn('Live price impact cap', `Actual-size live buys allow up to ${maxPriceImpactBps} bps price impact; consider tightening before live trading.`),
+  );
+
+  const minSolFeeReserveLamports = solana.minSolFeeReserveLamports ?? DEFAULT_MIN_SOL_FEE_RESERVE_LAMPORTS;
+  checks.push(
+    minSolFeeReserveLamports >= DEFAULT_MIN_SOL_FEE_RESERVE_LAMPORTS
+      ? pass('SOL fee reserve', `Operator SOL reserve target is ${(minSolFeeReserveLamports / 1e9).toFixed(4)} SOL for network fees and account/rent edge cases.`)
+      : warn('SOL fee reserve', `Operator SOL reserve target is ${(minSolFeeReserveLamports / 1e9).toFixed(4)} SOL; consider at least ${(DEFAULT_MIN_SOL_FEE_RESERVE_LAMPORTS / 1e9).toFixed(4)} SOL.`),
+  );
+
+  checks.push(
+    solana.confirmationCommitment === 'finalized'
+      ? pass('Confirmation commitment', 'Live swaps wait for finalized commitment before accounting them as confirmed.')
+      : warn('Confirmation commitment', 'Live swaps use confirmed commitment for lower latency; finalized reduces reorg risk if the owner prefers slower confirmation.'),
   );
 
   checks.push(

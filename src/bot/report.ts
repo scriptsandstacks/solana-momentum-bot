@@ -14,7 +14,7 @@ interface ReportInput {
 
 export function renderReport(input: ReportInput): string {
   const lines = [
-    'Hermes Paper Bot Report',
+    'Solana Trade Engine Report',
     `Candidates: ${input.candidates.length}`,
     `Cash: $${input.cashUsd.toFixed(2)}`,
     `Open positions: ${input.openPositions}`,
