@@ -92,6 +92,21 @@ Recent live-readiness work adds:
 No known medium-priority live-execution plumbing gaps remain. Remaining work is
 mostly calibration and operator preference tuning.
 
+### Recommended Next Steps
+
+- Review this branch for live-operator correctness: `wallet-balances`, SOL fee
+  reserve config, reserve enforcement before live opens, and the go-live runbook.
+- Consider a lite read-only local dashboard after this branch merges. Keep the
+  first version operator-focused: readiness status, wallet balances, open
+  positions, recent trades, journal blockers, reconciliation status, and basic
+  analytics. Do not add browser-based wallet key handling, manual trading
+  buttons, or destructive recovery actions in the first dashboard pass.
+- If continuing engineering work instead of dashboard work, the next practical
+  improvement is to separate strategy performance from execution quality in
+  reports: signal outcome stats versus live fill/slippage/fee behavior.
+- Keep paper/live switching seamless. Paper mode is useful for calibration, but
+  should not become a required gate before live trading.
+
 ### Data Calibration
 
 - Use `tune` risk-signal notes to validate volume acceleration, holder concentration, and authority penalties from observed MFE/MAE.
