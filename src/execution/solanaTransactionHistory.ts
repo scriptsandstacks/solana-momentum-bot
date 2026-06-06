@@ -76,12 +76,17 @@ export async function findMostRecentWalletBuy(
 export function recoveredBuyEntryPriceUsd(
   buy: RecoveredWalletBuy,
   outputDecimals: number,
+  solPriceUsd?: number,
 ): number | undefined {
   const outputQuantity = Number(buy.outputAmount) / Math.pow(10, outputDecimals);
   if (!Number.isFinite(outputQuantity) || outputQuantity <= 0) return undefined;
 
   if (buy.inputMint === USDC_MINT || buy.inputMint === USDT_MINT) {
     const inputUsd = Number(buy.inputAmount) / 1e6;
+    return inputUsd / outputQuantity;
+  }
+  if (buy.inputMint === SOL_MINT && solPriceUsd !== undefined && Number.isFinite(solPriceUsd) && solPriceUsd > 0) {
+    const inputUsd = (Number(buy.inputAmount) / 1e9) * solPriceUsd;
     return inputUsd / outputQuantity;
   }
   return undefined;

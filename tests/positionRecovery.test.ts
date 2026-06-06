@@ -7,7 +7,7 @@ import {
   RECOVERY_STRATEGY_ID,
 } from '../src/execution/positionRecovery.js';
 import type { PaperPosition, TokenCandidate } from '../src/types/domain.js';
-import { USDC_MINT } from '../src/execution/solanaTransactionHistory.js';
+import { SOL_MINT, USDC_MINT } from '../src/execution/solanaTransactionHistory.js';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -169,6 +169,24 @@ describe('buildOrphanedRecovery', () => {
     expect(r.position.entryNetworkFeeLamports).toBe(5_000);
     expect(r.position.entryNetworkFeeUsd).toBe(0.00075);
     expect(r.position.openedAt).toEqual(new Date(1_767_261_600_000));
+  });
+
+  it('labels SOL-funded transaction history basis as approximate', () => {
+    const candidate = makeToken('mint-orphan', 'LOST');
+    const r = buildOrphanedRecovery(holding, candidate, 'live-99', CLOSED_AT, {
+      buy: {
+        signature: 'sig-buy',
+        inputMint: SOL_MINT,
+        inputAmount: 125_000_000n,
+        outputAmount: 20_000_000_000n,
+        networkFeeLamports: 5_000,
+      },
+      entryPriceUsd: 0.00125,
+      entryPriceSource: 'transaction_history_approx',
+    });
+
+    expect(r.entryPriceSource).toBe('transaction_history_approx');
+    expect(renderRecoveryPlan([], [r])).toContain('SOL/USD approximate');
   });
 });
 

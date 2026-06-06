@@ -12,7 +12,7 @@ Technical reference for the Hermes trading bot. Covers architecture, data flow, 
 | Live trading (Solana) | Implemented — Jupiter swap execution, keypair signing, on-chain confirmation |
 | Supported chain | Solana only |
 | Persistence | SQLite (auto-migrating schema) |
-| Test coverage | 38 files, 283 tests |
+| Test coverage | 38 files, 285 tests |
 
 ---
 
@@ -263,8 +263,11 @@ are excluded from automated exit attempts and block new entries until
 For orphaned holdings, `recover-positions` scans recent successful wallet
 transactions and parses confirmed balance deltas. USDC/USDT-funded buys recover
 the original transaction signature, block time, token fill, network fee, and
-exact USD entry basis. If history is unavailable, pruned, or SOL-funded, recovery
-falls back to the current market price and labels the basis as approximate.
+exact USD entry basis. SOL-funded buys recover the original transaction
+signature, block time, token fill, network fee, and an approximate USD basis from
+the recovered SOL input amount and current SOL/USD. If history is unavailable or
+pruned, recovery falls back to the current token market price and labels the
+basis as approximate.
 
 ## Live execution journal
 
@@ -509,7 +512,7 @@ src/
 
 ```bash
 npm install
-npm test              # 38 test files, 283 tests
+npm test              # 38 test files, 285 tests
 npm run typecheck     # must be clean before committing
 npm run bot -- --help # show all commands
 ```

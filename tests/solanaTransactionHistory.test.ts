@@ -98,7 +98,7 @@ describe('recoveredBuyEntryPriceUsd', () => {
     expect(entry).toBeCloseTo(0.00125);
   });
 
-  it('does not invent a USD entry price for SOL-funded buys', () => {
+  it('does not invent a USD entry price for SOL-funded buys without a SOL price', () => {
     const entry = recoveredBuyEntryPriceUsd({
       signature: 'sig-buy',
       inputMint: SOL_MINT,
@@ -108,5 +108,17 @@ describe('recoveredBuyEntryPriceUsd', () => {
     }, 6);
 
     expect(entry).toBeUndefined();
+  });
+
+  it('computes approximate SOL-funded entry price when SOL/USD is supplied', () => {
+    const entry = recoveredBuyEntryPriceUsd({
+      signature: 'sig-buy',
+      inputMint: SOL_MINT,
+      inputAmount: 125_000_000n,
+      outputAmount: 20_000_000_000n,
+      networkFeeLamports: 5_000,
+    }, 6, 200);
+
+    expect(entry).toBeCloseTo(0.00125);
   });
 });

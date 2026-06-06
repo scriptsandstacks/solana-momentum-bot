@@ -114,8 +114,10 @@ resolved.
 When recovering an untracked token holding, the bot searches recent wallet
 transactions for the original buy. Stablecoin-funded buys can recover the exact
 USD entry basis and transaction signature. If the transaction history is
-unavailable or the buy was funded with SOL, the recovery plan clearly labels the
-current-price entry basis as approximate.
+unavailable, the recovery plan clearly labels the current-price entry basis as
+approximate. SOL-funded buys use the recovered SOL amount and current SOL/USD,
+and are also labeled approximate because historical SOL/USD is not encoded in
+the transaction.
 
 Every live swap is also written to a persistent execution journal before it is
 submitted. If the process stops after submission or confirmation but before the

@@ -44,6 +44,7 @@ import {
 import {
   findMostRecentWalletBuy,
   recoveredBuyEntryPriceUsd,
+  SOL_MINT,
 } from '../execution/solanaTransactionHistory.js';
 import {
   inspectSubmittedLiveExecution,
@@ -515,7 +516,8 @@ program
           });
           if (buy) {
             const decimals = await recoveryDeps.getTokenDecimals(h.mint);
-            const entryPriceUsd = recoveredBuyEntryPriceUsd(buy, decimals);
+            const solPriceUsd = buy.inputMint === SOL_MINT ? await recoveryDeps.getSolPriceUsd() : undefined;
+            const entryPriceUsd = recoveredBuyEntryPriceUsd(buy, decimals, solPriceUsd);
             if (entryPriceUsd !== undefined) {
               let entryNetworkFeeUsd: number | undefined;
               try {
@@ -526,6 +528,7 @@ program
               return buildOrphanedRecovery(h, candidate, positionId, new Date(), {
                 buy,
                 entryPriceUsd,
+                entryPriceSource: buy.inputMint === SOL_MINT ? 'transaction_history_approx' : 'transaction_history',
                 entryNetworkFeeUsd,
               });
             }
