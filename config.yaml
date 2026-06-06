@@ -3,12 +3,23 @@ mode: paper
 chains:
   solana:
     enabled: true
+    # Path to your Solana keypair file (Solana CLI JSON format — 64-byte array).
+    # Can be an absolute path anywhere on the machine; does not need to be
+    # inside the project directory. Only read in live mode.
     walletFile: ./wallet/chain-solana.txt
+    # Name of the env var holding your Solana RPC URL (Helius, QuickNode, etc.).
+    # Required for live trading and for on-chain risk signals in paper mode
+    # (mint authority revocation, holder concentration, top-5 holder %).
+    # Example: export SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<key>
+    rpcUrlEnv: SOLANA_RPC_URL
     minLiquidityUsd: 10000
     minVolume5mUsd: 5000
     maxSlippageBps: 500
     maxPriceImpactBps: 500
     minSolFeeReserveLamports: 5000000
+    # Dynamic priority fee — lets Jupiter set the fee based on current network
+    # congestion. Switch to a fixed number (lamports) during low-traffic periods.
+    priorityFeeLamports: auto
     confirmationCommitment: confirmed
 
 paper:
