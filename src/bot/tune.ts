@@ -138,6 +138,8 @@ export function computeTuneRecommendations(
     }
   }
 
+  addRiskSignalCalibrationRecommendations(analytics, recommendations);
+
   // --- No data for a meaningful recommendation ---
   if (recommendations.length === 0 && total >= MIN_BUCKET_SAMPLE) {
     recommendations.push({
@@ -150,6 +152,66 @@ export function computeTuneRecommendations(
   }
 
   return { sampleSize: total, recommendations };
+}
+
+function addRiskSignalCalibrationRecommendations(
+  analytics: OutcomeAnalytics,
+  recommendations: TuningRecommendation[],
+): void {
+  const volumeHot = findBucket(analytics.byVolumeAcceleration, 'z >=2');
+  if (isReliable(volumeHot) && volumeHot.hitSlRatePct > volumeHot.reachedTpRatePct) {
+    recommendations.push({
+      parameter: 'risk.volumeAcceleration5mZ',
+      currentValue: 'z >=2 boost',
+      suggestion: 'Review volume-acceleration boost',
+      rationale: `High acceleration bucket ${volumeHot.label} (n=${volumeHot.candidates}) is hitting stop-loss more often than take-profit (SL=${volumeHot.hitSlRatePct.toFixed(0)}% vs TP=${volumeHot.reachedTpRatePct.toFixed(0)}%). The boost may be rewarding late or exhausted moves.`,
+      confidence: volumeHot.candidates >= 20 ? 'high' : 'medium',
+    });
+  }
+
+  const volumeDecel = findBucket(analytics.byVolumeAcceleration, 'z <=-1.5');
+  if (isReliable(volumeDecel) && volumeDecel.reachedTpRatePct > volumeDecel.hitSlRatePct && volumeDecel.avgFinalPct > 0) {
+    recommendations.push({
+      parameter: 'risk.volumeAcceleration5mZ',
+      currentValue: 'z <=-1.5 penalty',
+      suggestion: 'Review volume-deceleration penalty',
+      rationale: `Deceleration bucket ${volumeDecel.label} (n=${volumeDecel.candidates}) still shows positive follow-through (final=${volumeDecel.avgFinalPct.toFixed(1)}%, TP=${volumeDecel.reachedTpRatePct.toFixed(0)}% vs SL=${volumeDecel.hitSlRatePct.toFixed(0)}%). The current penalty may be filtering recoverable setups.`,
+      confidence: 'medium',
+    });
+  }
+
+  const concentrated = findBucket(analytics.byHolderConcentration, 'top5 >=80%');
+  if (isReliable(concentrated) && concentrated.reachedTpRatePct > concentrated.hitSlRatePct && concentrated.avgFinalPct > 0) {
+    recommendations.push({
+      parameter: 'risk.top5HolderPct',
+      currentValue: '>=80% heavy penalty',
+      suggestion: 'Review holder-concentration penalty',
+      rationale: `High holder concentration bucket ${concentrated.label} (n=${concentrated.candidates}) is not underperforming (final=${concentrated.avgFinalPct.toFixed(1)}%, TP=${concentrated.reachedTpRatePct.toFixed(0)}% vs SL=${concentrated.hitSlRatePct.toFixed(0)}%). The penalty may be too strict for this sample.`,
+      confidence: 'medium',
+    });
+  }
+
+  const midConcentration = findBucket(analytics.byHolderConcentration, 'top5 50-79%');
+  if (isReliable(midConcentration) && midConcentration.hitSlRatePct > midConcentration.reachedTpRatePct && midConcentration.avgFinalPct < 0) {
+    recommendations.push({
+      parameter: 'risk.top5HolderPct',
+      currentValue: '50-79% neutral',
+      suggestion: 'Consider treating mid holder concentration as risk',
+      rationale: `Mid concentration bucket ${midConcentration.label} (n=${midConcentration.candidates}) is underperforming (final=${midConcentration.avgFinalPct.toFixed(1)}%, SL=${midConcentration.hitSlRatePct.toFixed(0)}% vs TP=${midConcentration.reachedTpRatePct.toFixed(0)}%). A softer penalty below 80% may be warranted.`,
+      confidence: 'medium',
+    });
+  }
+
+  const authorityHeld = analytics.byAuthority.find((bucket) => bucket.label.includes('held'));
+  if (isReliable(authorityHeld) && authorityHeld.hitSlRatePct > authorityHeld.reachedTpRatePct && authorityHeld.avgFinalPct < 0) {
+    recommendations.push({
+      parameter: 'risk.authority',
+      currentValue: 'held authority penalties',
+      suggestion: 'Keep authority-held penalties strict',
+      rationale: `Authority-held bucket ${authorityHeld.label} (n=${authorityHeld.candidates}) is underperforming (final=${authorityHeld.avgFinalPct.toFixed(1)}%, SL=${authorityHeld.hitSlRatePct.toFixed(0)}% vs TP=${authorityHeld.reachedTpRatePct.toFixed(0)}%). Current rug-risk penalties are supported by this sample.`,
+      confidence: authorityHeld.candidates >= 20 ? 'high' : 'medium',
+    });
+  }
 }
 
 export function renderTuneReport(
@@ -280,6 +342,14 @@ export function applyTuneConfigUpdates(configText: string, updates: TuneConfigUp
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+function findBucket(buckets: OutcomeBucket[], label: string): OutcomeBucket | undefined {
+  return buckets.find((bucket) => bucket.label === label);
+}
+
+function isReliable(bucket: OutcomeBucket | undefined): bucket is OutcomeBucket {
+  return bucket !== undefined && bucket.candidates >= MIN_BUCKET_SAMPLE;
+}
 
 function parameterToConfigPath(parameter: string): string[] | undefined {
   const strategyMatch = /^strategies\.([^.]+)\.(minScoreToEnter|exits\.(stopLossPct|takeProfitPct))$/.exec(parameter);

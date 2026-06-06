@@ -165,8 +165,9 @@ The counterfactual view — all scored candidates whether traded or not. Shows a
 Reads outcome data and produces specific, confidence-rated recommendations:
 - "Raise the entry threshold from 75 to 80 — the 75-79 bucket hits stop-loss 53% of the time. [HIGH confidence]"
 - "Take-profit ceiling of 50% is too low — best bucket averages +87% MFE. Raise to 200–300 and rely on trailing stop. [HIGH confidence]"
+- Risk-signal notes when volume acceleration, holder concentration, or authority-status buckets contradict current assumptions.
 
-`tune --apply` writes concrete numeric recommendations directly to `config.yaml`.
+`tune --apply` writes concrete numeric threshold recommendations directly to `config.yaml`; risk-signal notes stay advisory.
 
 ### `live-readiness`
 Before switching to live mode, this command audits every prerequisite — wallet file presence, RPC URL, position sizing, slippage config — without reading private keys or placing any trades.

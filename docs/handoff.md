@@ -7,7 +7,7 @@
 ## Current Health
 
 ```text
-npm test          -> 38 files, 285 tests passing
+npm test          -> 38 files, 287 tests passing
 npm run typecheck -> clean
 git diff --check  -> clean
 ```
@@ -81,8 +81,7 @@ mostly calibration and operator preference tuning.
 
 ### Data Calibration
 
-- Tune volume acceleration thresholds from `outcomes`.
-- Validate holder concentration and authority penalties from observed MFE/MAE.
+- Use `tune` risk-signal notes to validate volume acceleration, holder concentration, and authority penalties from observed MFE/MAE.
 - Evaluate strategy thresholds independently after enough trades accumulate.
 
 ## Safe Continuation

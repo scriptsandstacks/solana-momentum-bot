@@ -102,6 +102,45 @@ describe('computeTuneRecommendations', () => {
     const entryRec = result.recommendations.find((r) => r.parameter === 'scoring.minimumScoreToEnter' && r.suggestion.includes('Raise'));
     expect(entryRec).toBeUndefined();
   });
+
+  it('flags volume-acceleration buckets that underperform', () => {
+    const overheated = repeat(
+      outcome({
+        score: 82,
+        volumeAcceleration5mZ: 2.5,
+        outcomeHighUsd: 0.011,
+        outcomeLowUsd: 0.007,
+        outcomeLastUsd: 0.008,
+        outcomeFirstStopLossAt: '2026-01-01T00:03:00Z',
+      }),
+      15,
+    );
+    const analytics = computeOutcomeAnalytics(overheated, thresholds);
+    const result = computeTuneRecommendations(analytics, thresholds, currentEntry);
+
+    const rec = result.recommendations.find((r) => r.parameter === 'risk.volumeAcceleration5mZ');
+    expect(rec?.suggestion).toContain('Review volume-acceleration boost');
+  });
+
+  it('flags holder-concentration buckets that contradict current risk assumptions', () => {
+    const concentratedWinners = repeat(
+      outcome({
+        score: 82,
+        top5HolderPct: 85,
+        outcomeHighUsd: 0.018,
+        outcomeLowUsd: 0.009,
+        outcomeLastUsd: 0.015,
+        outcomeFirstTakeProfitAt: '2026-01-01T00:04:00Z',
+      }),
+      15,
+    );
+    const analytics = computeOutcomeAnalytics(concentratedWinners, thresholds);
+    const result = computeTuneRecommendations(analytics, thresholds, currentEntry);
+
+    const rec = result.recommendations.find((r) => r.parameter === 'risk.top5HolderPct');
+    expect(rec?.suggestion).toContain('Review holder-concentration penalty');
+    expect(deriveTuneConfigUpdates([rec!])).toHaveLength(0);
+  });
 });
 
 describe('renderTuneReport', () => {

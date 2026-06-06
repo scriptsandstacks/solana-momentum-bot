@@ -12,7 +12,7 @@ Technical reference for the Hermes trading bot. Covers architecture, data flow, 
 | Live trading (Solana) | Implemented — Jupiter swap execution, keypair signing, on-chain confirmation |
 | Supported chain | Solana only |
 | Persistence | SQLite (auto-migrating schema) |
-| Test coverage | 38 files, 285 tests |
+| Test coverage | 38 files, 287 tests |
 
 ---
 
@@ -324,7 +324,7 @@ transactions cannot be dismissed through this command.
 | `stats` | Trade analytics: expectancy, win rate, P&L by strategy / reason / score bucket / source. |
 | `strategies` | Compact per-strategy performance summary. |
 | `outcomes` | Counterfactual MFE/MAE by score bucket. |
-| `tune` | Outcome data → specific threshold recommendations with confidence. `--apply` (`--yes`). |
+| `tune` | Outcome data → threshold recommendations plus risk-signal calibration notes. `--apply` (`--yes`) only writes concrete config thresholds. |
 | `pump-watch` | Bounded PumpPortal listener. |
 | `pump-process` | Process pending events into scored candidates. |
 | `manage-exits` | One-shot exit pass. |
@@ -512,7 +512,7 @@ src/
 
 ```bash
 npm install
-npm test              # 38 test files, 285 tests
+npm test              # 38 test files, 287 tests
 npm run typecheck     # must be clean before committing
 npm run bot -- --help # show all commands
 ```
