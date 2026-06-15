@@ -164,6 +164,116 @@ describe('processPumpPortalEvents', () => {
     });
   });
 
+  it('retries strong candidates while waiting for a sell route to appear', async () => {
+    const scored: Array<{ candidate: TokenCandidate; score: OpportunityScore }> = [];
+    const opened: PaperPosition[] = [];
+    const statuses: Array<{ id: number; status: string; note?: string }> = [];
+
+    const result = await processPumpPortalEvents({
+      store: {
+        listPendingPumpPortalEvents: () => [
+          {
+            id: 10,
+            eventType: 'new_token',
+            tokenMint: 'mint-wait-sell',
+            rawJson: '{}',
+            receivedAt: '2026-01-01T00:00:00Z',
+            processingAttempts: 2,
+          },
+        ],
+        markPumpPortalEventProcessed: (id, status, note) => statuses.push({ id, status, note }),
+        saveScoredCandidate: (candidate, score) => scored.push({ candidate, score }),
+        saveOpenPosition: (position) => opened.push(position),
+      },
+      solanaConfig: {
+        enabled: true,
+        minLiquidityUsd: 10_000,
+        minVolume5mUsd: 5_000,
+        maxSlippageBps: 500,
+        confirmationCommitment: 'confirmed',
+      },
+      paper: {
+        startingBalanceUsd: 1000,
+        positionSizeUsd: 25,
+        maxOpenPositions: 3,
+      },
+      minimumScoreToEnter: 75,
+      maxPendingAttempts: 5,
+      fetchCandidates: async () => [strongCandidate('mint-wait-sell')],
+      checkRoute: async () => ({
+        routeAvailable: true,
+        estimatedSlippageBps: 100,
+        routeInputMint: 'u',
+        routeInputSymbol: 'USDC',
+        sellRouteAvailable: false,
+      }),
+      checkAuthority: null,
+      checkHolderConcentration: null,
+    });
+
+    expect(result).toMatchObject({ eventsRead: 1, scored: 1, skipped: 1, openedPositions: 0 });
+    expect(scored[0].score.total).toBeLessThan(75);
+    expect(opened).toHaveLength(0);
+    expect(statuses[0]).toMatchObject({
+      id: 10,
+      status: 'pending',
+      note: 'strategy=freshLaunchMomentum score=50 recommendation=watch waiting for sell route',
+    });
+  });
+
+  it('skips strong candidates after the sell-route retry cap is reached', async () => {
+    const statuses: Array<{ id: number; status: string; note?: string }> = [];
+
+    const result = await processPumpPortalEvents({
+      store: {
+        listPendingPumpPortalEvents: () => [
+          {
+            id: 12,
+            eventType: 'new_token',
+            tokenMint: 'mint-no-sell',
+            rawJson: '{}',
+            receivedAt: '2026-01-01T00:00:00Z',
+            processingAttempts: 5,
+          },
+        ],
+        markPumpPortalEventProcessed: (id, status, note) => statuses.push({ id, status, note }),
+        saveScoredCandidate: () => undefined,
+        saveOpenPosition: () => undefined,
+      },
+      solanaConfig: {
+        enabled: true,
+        minLiquidityUsd: 10_000,
+        minVolume5mUsd: 5_000,
+        maxSlippageBps: 500,
+        confirmationCommitment: 'confirmed',
+      },
+      paper: {
+        startingBalanceUsd: 1000,
+        positionSizeUsd: 25,
+        maxOpenPositions: 3,
+      },
+      minimumScoreToEnter: 75,
+      maxPendingAttempts: 5,
+      fetchCandidates: async () => [strongCandidate('mint-no-sell')],
+      checkRoute: async () => ({
+        routeAvailable: true,
+        estimatedSlippageBps: 100,
+        routeInputMint: 'u',
+        routeInputSymbol: 'USDC',
+        sellRouteAvailable: false,
+      }),
+      checkAuthority: null,
+      checkHolderConcentration: null,
+    });
+
+    expect(result).toMatchObject({ eventsRead: 1, scored: 1, skipped: 1, openedPositions: 0 });
+    expect(statuses[0]).toMatchObject({
+      id: 12,
+      status: 'skipped',
+      note: 'strategy=freshLaunchMomentum score=50 recommendation=watch no sell route after 5 retries',
+    });
+  });
+
   it('attaches mint/freeze authority flags to the scored candidate when checkAuthority is provided', async () => {
     const scored: Array<{ candidate: TokenCandidate; score: OpportunityScore }> = [];
 
