@@ -30,6 +30,7 @@ interface PumpPortalEventRow {
 // API budget on every interval tick.
 const DEFAULT_MAX_PENDING_ATTEMPTS = 5;
 const VOLUME_ACCELERATION_WINDOW_MINUTES = 30;
+const NO_SELL_ROUTE_PENALTY_POINTS = 50;
 
 interface PumpProcessStore {
   listPendingPumpPortalEvents(limit?: number): PumpPortalEventRow[];
@@ -200,6 +201,30 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
       // (which is kept in options for the retry pass compatibility).
       const entryThreshold = strategy.config.minScoreToEnter;
       let note = `strategy=${strategy.id} score=${score.total} recommendation=${score.recommendation}`;
+      const maxAttempts = options.maxPendingAttempts ?? DEFAULT_MAX_PENDING_ATTEMPTS;
+      const previousAttempts = event.processingAttempts ?? 0;
+      const wouldQualifyWithoutSellRoutePenalty =
+        enriched.sellRouteAvailable === false &&
+        score.total + NO_SELL_ROUTE_PENALTY_POINTS >= entryThreshold;
+
+      if (wouldQualifyWithoutSellRoutePenalty) {
+        if (previousAttempts >= maxAttempts) {
+          options.store.markPumpPortalEventProcessed(
+            event.id,
+            'skipped',
+            `${note} no sell route after ${maxAttempts} retries`,
+          );
+        } else {
+          options.store.markPumpPortalEventProcessed(
+            event.id,
+            'pending',
+            `${note} waiting for sell route`,
+          );
+        }
+        result.skipped += 1;
+        continue;
+      }
+
       if (score.total >= entryThreshold && score.recommendation === 'paper_trade') {
         // Size the position by the strategy's conviction tier before capacity check
         // so we know how much cash is required.
