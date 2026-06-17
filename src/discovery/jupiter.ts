@@ -94,6 +94,29 @@ export async function quoteJupiterSellImpactBps(
 
 type BuyRoute = Omit<JupiterRouteCheck, 'sellRouteAvailable'>;
 
+async function hasJupiterSellRoute(
+  tokenMint: string,
+  outputMint: string,
+  deps: JupiterDeps,
+): Promise<boolean> {
+  const { baseUrl, fetchJson } = resolveQuoteEndpoint(deps);
+  const params = new URLSearchParams({
+    inputMint: tokenMint,
+    outputMint,
+    // Tiny ExactIn probe. This only needs to prove a route exists; it avoids
+    // token decimal lookups and supports Pump.fun AMMs that cannot quote ExactOut.
+    amount: '1000',
+    slippageBps: '500',
+  });
+
+  try {
+    const quote = await fetchJson(`${baseUrl}?${params.toString()}`);
+    return Boolean(quote?.outAmount);
+  } catch {
+    return false;
+  }
+}
+
 export async function checkJupiterRoute(outputMint: string, deps: JupiterDeps = {}): Promise<JupiterRouteCheck> {
   const { baseUrl, fetchJson } = resolveQuoteEndpoint(deps);
   const availableRoutes: BuyRoute[] = [];
@@ -124,10 +147,10 @@ export async function checkJupiterRoute(outputMint: string, deps: JupiterDeps = 
   availableRoutes.sort((a, b) => a.estimatedSlippageBps - b.estimatedSlippageBps);
   const best: BuyRoute = availableRoutes[0] ?? { routeAvailable: false, estimatedSlippageBps: 10_000 };
 
-  // Probe the sell direction: a token we can buy but cannot sell is a honeypot.
-  // Uses a small fixed $5 ExactOut probe so no token decimals are needed.
-  const sellImpact = await quoteJupiterSellImpactBps(outputMint, 5, deps);
-  return { ...best, sellRouteAvailable: sellImpact !== undefined };
+  // Probe the sell direction back to the selected entry mint. Pump.fun AMM
+  // routes often sell cleanly to SOL even when Jupiter cannot route token->USDC.
+  const sellOutputMint = best.routeInputMint ?? USDC_MINT;
+  return { ...best, sellRouteAvailable: best.routeAvailable && await hasJupiterSellRoute(outputMint, sellOutputMint, deps) };
 }
 
 async function defaultFetchJson(url: string, apiKey?: string): Promise<any> {

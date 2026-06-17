@@ -488,6 +488,44 @@ describe('LiveBroker.closePosition', () => {
     expect(trade.pnlUsd).toBeCloseTo(-5);
   });
 
+  it('closes SOL-routed positions back to SOL and values proceeds in USD', async () => {
+    const getJupiterQuote = vi.fn(async ({ inputMint, outputMint }: any) => {
+      if (outputMint === 'token-mint-abc123') {
+        return makeQuote('125000000', '25000000000', SOL_MINT, 'token-mint-abc123') as any;
+      }
+      return makeQuote('25000000000', '130000000', 'token-mint-abc123', SOL_MINT) as any;
+    });
+    const getConfirmedSwapFill = vi.fn()
+      .mockResolvedValueOnce({
+        inputAmount: 125_000_000n,
+        outputAmount: 25_000_000_000n,
+        networkFeeLamports: 5_000,
+      })
+      .mockResolvedValueOnce({
+        inputAmount: 25_000_000_000n,
+        outputAmount: 130_000_000n,
+        networkFeeLamports: 5_000,
+      });
+    const broker = makeBroker({}, {
+      getSolPriceUsd: async () => 200,
+      getWalletBalance: async (mint) => mint === SOL_MINT ? 1_000_000_000_000n : 0n,
+      getJupiterQuote,
+      getConfirmedSwapFill,
+    });
+
+    const position = await broker.openPosition(makeCandidate({ routeInputMint: SOL_MINT, routeInputSymbol: 'SOL' }), 80);
+    const trade = await broker.closePosition(position.id, 0.001, 'manual');
+
+    expect(position.token.routeInputMint).toBe(SOL_MINT);
+    expect(getJupiterQuote.mock.calls.at(-1)?.[0]).toMatchObject({
+      inputMint: 'token-mint-abc123',
+      outputMint: SOL_MINT,
+    });
+    // 0.13 SOL at $200/SOL = $26 proceeds before network fee.
+    expect(trade.exitPriceUsd).toBeCloseTo(26 / position.quantity);
+    expect(trade.pnlUsd).toBeCloseTo(26 - 0.001 - 25.001);
+  });
+
   it('includes entry and exit Solana network fees in realized PnL', async () => {
     const getConfirmedSwapFill = vi.fn()
       .mockResolvedValueOnce({
