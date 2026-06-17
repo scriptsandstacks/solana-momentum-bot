@@ -185,7 +185,10 @@ program
     } else {
       process.stdout.write('No buy route available (token may be unswappable, illiquid, or the quote API is unreachable).\n');
     }
-    process.stdout.write(`Sell route (token→USDC): ${route.sellRouteAvailable ? 'available' : 'UNAVAILABLE — possible honeypot'}\n`);
+    process.stdout.write(
+      `Sell route (token→${route.routeInputSymbol ?? 'route input'}): ` +
+      `${route.sellRouteAvailable ? 'available' : 'UNAVAILABLE — possible honeypot'}\n`,
+    );
   });
 
 program

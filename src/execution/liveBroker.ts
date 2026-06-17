@@ -90,6 +90,13 @@ const ROUTE_INPUTS = [
   { mint: USDT_MINT },
 ] as const;
 
+function routeInputSymbol(mint: string): string | undefined {
+  if (mint === SOL_MINT) return 'SOL';
+  if (mint === USDC_MINT) return 'USDC';
+  if (mint === USDT_MINT) return 'USDT';
+  return undefined;
+}
+
 function utcDayKey(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
@@ -258,7 +265,11 @@ export class LiveBroker implements ExecutionBroker {
 
       const position: PaperPosition = {
         id,
-        token: candidate,
+        token: {
+          ...candidate,
+          routeInputMint: inputMint,
+          routeInputSymbol: routeInputSymbol(inputMint) ?? candidate.routeInputSymbol,
+        },
         score,
         entryPriceUsd: effectiveEntryPriceUsd,
         quantity: tokensReceived,
@@ -309,7 +320,9 @@ export class LiveBroker implements ExecutionBroker {
       throw new Error('LiveBroker: execution deps are not configured — use LiveBroker.restore() with createLiveBrokerDeps()');
     }
 
-    // Sell the entire tracked token quantity to USDC.
+    // Sell the entire tracked token quantity back to the route input used for entry.
+    // Pump.fun AMM routes often exit to SOL even when token->USDC is unavailable.
+    const outputMint = position.token.routeInputMint ?? USDC_MINT;
     const decimals = await getTokenDecimals(position.token.address);
     const tokenAmountBaseUnits = Math.round(position.quantity * Math.pow(10, decimals));
     const journalId = `close:${positionId}:${randomUUID()}`;
@@ -320,7 +333,7 @@ export class LiveBroker implements ExecutionBroker {
       mint: position.token.address,
       symbol: position.token.symbol,
       inputMint: position.token.address,
-      outputMint: USDC_MINT,
+      outputMint,
       inputAmountBaseUnits: String(tokenAmountBaseUnits),
     });
 
@@ -329,7 +342,7 @@ export class LiveBroker implements ExecutionBroker {
     try {
       const quote = await getJupiterQuote({
         inputMint: position.token.address,
-        outputMint: USDC_MINT,
+        outputMint,
         amount: tokenAmountBaseUnits,
         slippageBps: maxSlippage,
       });
@@ -351,18 +364,18 @@ export class LiveBroker implements ExecutionBroker {
         signature,
         owner: getPublicKey(),
         inputMint: position.token.address,
-        outputMint: USDC_MINT,
+        outputMint,
       });
 
-      // Compute P&L from confirmed USDC wallet balance deltas.
-      const usdcReceived = Number(fill.outputAmount) / 1e6;
+      // Compute P&L from confirmed wallet balance deltas valued in USD.
+      const proceedsUsd = await this.resolveSpentUsd(outputMint, Number(fill.outputAmount), getSolPriceUsd);
       const exitNetworkFeeUsd = await this.resolveNetworkFeeUsd(fill.networkFeeLamports, getSolPriceUsd);
       const entryNetworkFeeUsd = position.entryNetworkFeeUsd ?? 0;
       const valuedExitNetworkFeeUsd = exitNetworkFeeUsd ?? 0;
-      const netExitPriceUsd = usdcReceived / position.quantity;
+      const netExitPriceUsd = proceedsUsd / position.quantity;
       const entryValueUsd = position.entryPriceUsd * position.quantity;
       const totalEntryCostUsd = entryValueUsd + entryNetworkFeeUsd;
-      const pnlUsd = usdcReceived - valuedExitNetworkFeeUsd - totalEntryCostUsd;
+      const pnlUsd = proceedsUsd - valuedExitNetworkFeeUsd - totalEntryCostUsd;
       const pnlPct = (pnlUsd / totalEntryCostUsd) * 100;
 
       const trade: PaperTrade = {
@@ -387,7 +400,7 @@ export class LiveBroker implements ExecutionBroker {
 
       this.openPositions.delete(positionId);
       this.closedTrades.push(trade);
-      this.cashUsd += usdcReceived - valuedExitNetworkFeeUsd;
+      this.cashUsd += proceedsUsd - valuedExitNetworkFeeUsd;
       this.realizedPnlUsd += pnlUsd;
       const dayKey = utcDayKey(closedAt);
       this.dailyPnlByDay.set(dayKey, (this.dailyPnlByDay.get(dayKey) ?? 0) + pnlUsd);

@@ -20,11 +20,11 @@ describe('Jupiter route check', () => {
     expect(quote.sellRouteAvailable).toBe(true);
   });
 
-  it('reports sell route as unavailable when the sell probe returns no inAmount', async () => {
+  it('reports sell route as unavailable when the sell probe returns no outAmount', async () => {
     const quote = await checkJupiterRoute('token-abc', {
       fetchJson: async (url) => {
-        const mode = new URL(url).searchParams.get('swapMode');
-        if (mode === 'ExactOut') return {}; // sell probe fails: no inAmount
+        const parsed = new URL(url);
+        if (parsed.searchParams.get('inputMint') === 'token-abc') return {};
         return { outAmount: '950000', priceImpactPct: '0.012' };
       },
     });
@@ -38,8 +38,8 @@ describe('Jupiter route check', () => {
     const quote = await checkJupiterRoute('token-abc', {
       fetchJson: async (url) => {
         const parsed = new URL(url);
-        if (parsed.searchParams.get('swapMode') === 'ExactOut') {
-          return { inAmount: '1000', priceImpactPct: '0.01' }; // sell probe
+        if (parsed.searchParams.get('inputMint') === 'token-abc') {
+          return { outAmount: '1000', priceImpactPct: '0.01' }; // sell probe
         }
         const inputMint = parsed.searchParams.get('inputMint') ?? '';
         seenBuyInputMints.push(inputMint);
@@ -56,6 +56,27 @@ describe('Jupiter route check', () => {
     expect(quote.sellRouteAvailable).toBe(true);
   });
 
+  it('probes the sell route back to the selected buy input mint', async () => {
+    const seenSellOutputs: string[] = [];
+    const quote = await checkJupiterRoute('token-abc', {
+      fetchJson: async (url) => {
+        const parsed = new URL(url);
+        const inputMint = parsed.searchParams.get('inputMint') ?? '';
+        if (inputMint === 'token-abc') {
+          seenSellOutputs.push(parsed.searchParams.get('outputMint') ?? '');
+          return { outAmount: '1000', priceImpactPct: '0.01' };
+        }
+        if (inputMint.includes('So111')) return { outAmount: '1000', priceImpactPct: '0.03' };
+        if (inputMint === USDC_MINT) return { outAmount: '1000', priceImpactPct: '0.02' };
+        return { outAmount: '1000', priceImpactPct: '0.005' };
+      },
+    });
+
+    expect(quote.routeInputSymbol).toBe('USDT');
+    expect(seenSellOutputs).toEqual(['Es9vMFrzaCERmJfrF4H2FYD4KCoNkY2Sr6MGt9RktwD']);
+    expect(quote.sellRouteAvailable).toBe(true);
+  });
+
   it('defaults to the keyless lite-api host and never uses the deprecated v6 host', async () => {
     const savedKey = process.env.JUPITER_API_KEY;
     delete process.env.JUPITER_API_KEY;
@@ -64,8 +85,7 @@ describe('Jupiter route check', () => {
       await checkJupiterRoute('token-abc', {
         fetchJson: async (url) => {
           seenUrls.push(url);
-          // Return valid responses for both buy (outAmount) and sell probe (inAmount).
-          return { outAmount: '1000', inAmount: '1000', priceImpactPct: '0.01' };
+          return { outAmount: '1000', priceImpactPct: '0.01' };
         },
       });
     } finally {
@@ -88,7 +108,7 @@ describe('Jupiter route check', () => {
       apiKey: 'test-key',
       fetchJson: async (url) => {
         seenUrls.push(url);
-        return { outAmount: '1000', inAmount: '1000', priceImpactPct: '0.01' };
+        return { outAmount: '1000', priceImpactPct: '0.01' };
       },
     });
 
