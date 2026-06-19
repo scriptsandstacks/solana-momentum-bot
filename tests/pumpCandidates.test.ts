@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { fetchPumpPortalMarketCandidates } from '../src/bot/pumpCandidates.js';
 import type { TokenCandidate } from '../src/types/domain.js';
 
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
 function candidate(address: string, source: string, liquidityUsd: number): TokenCandidate {
   return {
     chain: 'solana',
@@ -77,5 +79,25 @@ describe('PumpPortal market candidate enrichment', () => {
     expect(merged.buys5m).toBe(90);
     expect(merged.sells5m).toBe(25);
     expect(merged.source).toBe('pumpportal+dexscreener+raydium');
+  });
+
+  it('does not fetch or return route input mints as trade candidates', async () => {
+    const seenDexMints: string[][] = [];
+    const seenRaydiumMints: string[][] = [];
+    const candidates = await fetchPumpPortalMarketCandidates(
+      ['mint-1', USDC_MINT],
+      async (mints) => {
+        seenDexMints.push(mints);
+        return [candidate('mint-1', 'pumpportal+dexscreener', 40_000), candidate(USDC_MINT, 'pumpportal+dexscreener', 4_000_000)];
+      },
+      async (mints) => {
+        seenRaydiumMints.push(mints);
+        return [];
+      },
+    );
+
+    expect(seenDexMints).toEqual([['mint-1']]);
+    expect(seenRaydiumMints).toEqual([['mint-1']]);
+    expect(candidates.map((item) => item.address)).toEqual(['mint-1']);
   });
 });

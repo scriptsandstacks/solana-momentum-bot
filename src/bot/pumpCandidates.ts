@@ -4,18 +4,26 @@ import type { TokenCandidate } from '../types/domain.js';
 
 type CandidateFetcher = (tokenMints: string[]) => Promise<TokenCandidate[]>;
 
+const ROUTE_INPUT_MINTS = new Set([
+  'So11111111111111111111111111111111111111112',
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY2Sr6MGt9RktwD',
+]);
+
 export async function fetchPumpPortalMarketCandidates(
   tokenMints: string[],
   fetchDexScreenerCandidates: CandidateFetcher = fetchDexScreenerSolanaTokenCandidates,
   fetchRaydiumCandidates: CandidateFetcher = fetchRaydiumSolanaTokenCandidates,
 ): Promise<TokenCandidate[]> {
+  const targetMints = tokenMints.filter((mint) => !ROUTE_INPUT_MINTS.has(mint));
   const [dexCandidates, raydiumCandidates] = await Promise.all([
-    fetchDexScreenerCandidates(tokenMints),
-    fetchRaydiumCandidates(tokenMints),
+    fetchDexScreenerCandidates(targetMints),
+    fetchRaydiumCandidates(targetMints),
   ]);
 
   const byMint = new Map<string, TokenCandidate[]>();
   for (const candidate of [...dexCandidates, ...raydiumCandidates]) {
+    if (ROUTE_INPUT_MINTS.has(candidate.address)) continue;
     const group = byMint.get(candidate.address) ?? [];
     group.push(candidate);
     byMint.set(candidate.address, group);
