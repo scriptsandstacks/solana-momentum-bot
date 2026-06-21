@@ -56,24 +56,32 @@ describe('Jupiter route check', () => {
     expect(quote.sellRouteAvailable).toBe(true);
   });
 
-  it('probes the sell route back to the selected buy input mint', async () => {
-    const seenSellOutputs: string[] = [];
+  it('probes the sell route back to the selected buy input mint using the buy output amount', async () => {
+    const seenSellProbes: Array<{ outputMint: string; amount: string }> = [];
     const quote = await checkJupiterRoute('token-abc', {
       fetchJson: async (url) => {
         const parsed = new URL(url);
         const inputMint = parsed.searchParams.get('inputMint') ?? '';
         if (inputMint === 'token-abc') {
-          seenSellOutputs.push(parsed.searchParams.get('outputMint') ?? '');
+          seenSellProbes.push({
+            outputMint: parsed.searchParams.get('outputMint') ?? '',
+            amount: parsed.searchParams.get('amount') ?? '',
+          });
           return { outAmount: '1000', priceImpactPct: '0.01' };
         }
         if (inputMint.includes('So111')) return { outAmount: '1000', priceImpactPct: '0.03' };
         if (inputMint === USDC_MINT) return { outAmount: '1000', priceImpactPct: '0.02' };
-        return { outAmount: '1000', priceImpactPct: '0.005' };
+        return { outAmount: '123456789', priceImpactPct: '0.005' };
       },
     });
 
     expect(quote.routeInputSymbol).toBe('USDT');
-    expect(seenSellOutputs).toEqual(['Es9vMFrzaCERmJfrF4H2FYD4KCoNkY2Sr6MGt9RktwD']);
+    expect(seenSellProbes).toEqual([
+      {
+        outputMint: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY2Sr6MGt9RktwD',
+        amount: '123456789',
+      },
+    ]);
     expect(quote.sellRouteAvailable).toBe(true);
   });
 

@@ -97,15 +97,16 @@ type BuyRoute = Omit<JupiterRouteCheck, 'sellRouteAvailable'>;
 async function hasJupiterSellRoute(
   tokenMint: string,
   outputMint: string,
+  amount: string,
   deps: JupiterDeps,
 ): Promise<boolean> {
   const { baseUrl, fetchJson } = resolveQuoteEndpoint(deps);
   const params = new URLSearchParams({
     inputMint: tokenMint,
     outputMint,
-    // Tiny ExactIn probe. This only needs to prove a route exists; it avoids
-    // token decimal lookups and supports Pump.fun AMMs that cannot quote ExactOut.
-    amount: '1000',
+    // Use the token amount returned by the selected buy quote. This proves the
+    // exact round trip can be quoted without needing token decimal metadata.
+    amount,
     slippageBps: '500',
   });
 
@@ -119,7 +120,7 @@ async function hasJupiterSellRoute(
 
 export async function checkJupiterRoute(outputMint: string, deps: JupiterDeps = {}): Promise<JupiterRouteCheck> {
   const { baseUrl, fetchJson } = resolveQuoteEndpoint(deps);
-  const availableRoutes: BuyRoute[] = [];
+  const availableRoutes: Array<BuyRoute & { sellProbeAmount: string }> = [];
 
   for (const input of ROUTE_INPUTS) {
     const params = new URLSearchParams({
@@ -138,6 +139,7 @@ export async function checkJupiterRoute(outputMint: string, deps: JupiterDeps = 
         estimatedSlippageBps: Math.max(0, Math.round(priceImpactPct * 10_000)),
         routeInputMint: input.mint,
         routeInputSymbol: input.symbol,
+        sellProbeAmount: String(quote.outAmount),
       });
     } catch {
       // Try the next route input.
@@ -145,12 +147,24 @@ export async function checkJupiterRoute(outputMint: string, deps: JupiterDeps = 
   }
 
   availableRoutes.sort((a, b) => a.estimatedSlippageBps - b.estimatedSlippageBps);
-  const best: BuyRoute = availableRoutes[0] ?? { routeAvailable: false, estimatedSlippageBps: 10_000 };
+  const best: BuyRoute & { sellProbeAmount?: string } =
+    availableRoutes[0] ?? { routeAvailable: false, estimatedSlippageBps: 10_000 };
 
   // Probe the sell direction back to the selected entry mint. Pump.fun AMM
   // routes often sell cleanly to SOL even when Jupiter cannot route token->USDC.
   const sellOutputMint = best.routeInputMint ?? USDC_MINT;
-  return { ...best, sellRouteAvailable: best.routeAvailable && await hasJupiterSellRoute(outputMint, sellOutputMint, deps) };
+  const publicBest: BuyRoute = {
+    routeAvailable: best.routeAvailable,
+    estimatedSlippageBps: best.estimatedSlippageBps,
+    routeInputMint: best.routeInputMint,
+    routeInputSymbol: best.routeInputSymbol,
+  };
+  return {
+    ...publicBest,
+    sellRouteAvailable: best.routeAvailable &&
+      best.sellProbeAmount !== undefined &&
+      await hasJupiterSellRoute(outputMint, sellOutputMint, best.sellProbeAmount, deps),
+  };
 }
 
 async function defaultFetchJson(url: string, apiKey?: string): Promise<any> {
