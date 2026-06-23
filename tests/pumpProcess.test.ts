@@ -173,6 +173,54 @@ describe('processPumpPortalEvents', () => {
     expect(statuses[0]).toMatchObject({ id: 7, status: 'pending', note: 'no DexScreener market data yet' });
   });
 
+  it('skips route input mints before market enrichment', async () => {
+    const statuses: Array<{ id: number; status: string; note?: string }> = [];
+    let fetchCalls = 0;
+
+    const result = await processPumpPortalEvents({
+      store: {
+        listPendingPumpPortalEvents: () => [
+          {
+            id: 8,
+            eventType: 'new_token',
+            tokenMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            symbol: 'USDC',
+            rawJson: '{}',
+            receivedAt: '2026-01-01T00:00:00Z',
+          },
+        ],
+        markPumpPortalEventProcessed: (id, status, note) => statuses.push({ id, status, note }),
+        saveScoredCandidate: () => undefined,
+        saveOpenPosition: () => undefined,
+      },
+      solanaConfig: {
+        enabled: true,
+        minLiquidityUsd: 10_000,
+        minVolume5mUsd: 5_000,
+        maxSlippageBps: 500,
+        confirmationCommitment: 'confirmed',
+      },
+      paper: {
+        startingBalanceUsd: 1000,
+        positionSizeUsd: 25,
+        maxOpenPositions: 3,
+      },
+      minimumScoreToEnter: 75,
+      fetchCandidates: async () => {
+        fetchCalls += 1;
+        return [];
+      },
+    });
+
+    expect(result).toMatchObject({ eventsRead: 1, scored: 0, skipped: 1 });
+    expect(fetchCalls).toBe(0);
+    expect(statuses[0]).toMatchObject({
+      id: 8,
+      status: 'skipped',
+      note: 'route input mint is not a trade candidate',
+    });
+  });
+
   it('marks events skipped after the retry cap is reached', async () => {
     const statuses: Array<{ id: number; status: string; note?: string }> = [];
 
