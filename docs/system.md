@@ -318,7 +318,7 @@ For the owner/operator go-live checklist, see
 
 | Command | Purpose |
 |---|---|
-| `run` | Main loop. `mode: live` enables on-chain swaps. `--exit-interval-seconds` defaults to 10 in paper and live so exits are not tied to candidate-processing throughput. |
+| `run` | Main loop. `mode: live` enables on-chain swaps. `--exit-interval-seconds` defaults to 10 in paper and live so exits are not tied to candidate-processing throughput. `--max-trade-event-age-minutes` defaults to 15 so stale backlog events can be scored but not traded. |
 | `live-readiness` | Audit live prerequisites, confirmation/impact policy, and sizing without reading wallet contents or placing trades. |
 | `wallet-balances` | Read live wallet SOL/USDC/USDT route-input balances and SOL fee reserve status without placing trades. |
 | `recover-positions` | Resolve wallet/SQLite discrepancies. `--dry-run`, `--yes`. |
@@ -342,6 +342,8 @@ For the owner/operator go-live checklist, see
 
 ### PumpPortal WebSocket
 Subscribes to `subscribeNewToken` and `subscribeMigration` free streams. Events are persisted immediately, processed asynchronously. Events with no market data remain `pending` and are retried up to 5 times.
+
+Pending processing uses a freshness-aware batch: roughly 70% newest pending events for current opportunities plus 30% oldest pending events for backlog cleanup. Events older than the configured max trade age are still scored for analytics/outcomes, but they cannot open new positions.
 
 ### Enrichment
 DexScreener (`/tokens/<mints>`) and Raydium pool endpoint queried in parallel per mint. Results merged: price/liquidity/pair from the deepest pool; volume/buy-sell counts/momentum from DexScreener. Retry-refreshed candidates get a fresh route check before opening.

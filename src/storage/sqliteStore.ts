@@ -915,6 +915,30 @@ export class SqliteStore {
       .all(limit) as PumpPortalEventRow[];
   }
 
+  listPendingPumpPortalEventsForTrading(limit = 50): PumpPortalEventRow[] {
+    const safeLimit = Math.max(1, Math.floor(limit));
+    const newestLimit = Math.max(1, Math.ceil(safeLimit * 0.7));
+    const oldestLimit = Math.max(0, safeLimit - newestLimit);
+    const select = `SELECT id, event_type as eventType, token_mint as tokenMint, symbol, name,
+                           signature, raw_json as rawJson, received_at as receivedAt,
+                           processing_status as processingStatus, processing_note as processingNote,
+                           processed_at as processedAt, processing_attempts as processingAttempts
+                    FROM pumpportal_events
+                    WHERE processing_status = 'pending' AND token_mint IS NOT NULL AND token_mint != ''`;
+    const newest = this.db
+      .prepare(`${select} ORDER BY id DESC LIMIT ?`)
+      .all(newestLimit) as PumpPortalEventRow[];
+    const oldest = oldestLimit > 0
+      ? this.db.prepare(`${select} ORDER BY id ASC LIMIT ?`).all(oldestLimit) as PumpPortalEventRow[]
+      : [];
+
+    const byId = new Map<number, PumpPortalEventRow>();
+    for (const row of [...newest, ...oldest]) {
+      if (!byId.has(row.id)) byId.set(row.id, row);
+    }
+    return [...byId.values()].slice(0, safeLimit);
+  }
+
   markPumpPortalEventProcessed(id: number, status: 'pending' | 'processed' | 'skipped' | 'failed', note?: string): void {
     // Bump processing_attempts whenever we defer the row back to 'pending' so
     // callers can cap retries on abandoned mints (no market data ever appears).

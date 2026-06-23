@@ -34,6 +34,7 @@ const NO_SELL_ROUTE_PENALTY_POINTS = 50;
 
 interface PumpProcessStore {
   listPendingPumpPortalEvents(limit?: number): PumpPortalEventRow[];
+  listPendingPumpPortalEventsForTrading?(limit?: number): PumpPortalEventRow[];
   markPumpPortalEventProcessed(id: number, status: 'pending' | 'processed' | 'skipped' | 'failed', note?: string): void;
   saveScoredCandidate(candidate: TokenCandidate, score: OpportunityScore): void;
   saveOpenPosition(position: PaperPosition): void;
@@ -51,6 +52,9 @@ interface PumpProcessOptions {
   strategies?: TradingStrategy[];
   limit?: number;
   maxPendingAttempts?: number;
+  // When set, scored candidates from older raw events are retained for analytics,
+  // but they cannot open new positions. Freshness matters for momentum entries.
+  maxTradeEventAgeMinutes?: number;
   fetchCandidates?: (tokenMints: string[]) => Promise<TokenCandidate[]>;
   checkRoute?: (outputMint: string) => Promise<JupiterRouteCheck>;
   // Injectable for testing; defaults to the real Solana RPC call.
@@ -75,7 +79,10 @@ export interface PumpProcessResult {
 }
 
 export async function processPumpPortalEvents(options: PumpProcessOptions): Promise<PumpProcessResult> {
-  const events = options.store.listPendingPumpPortalEvents(options.limit ?? 50);
+  const limit = options.limit ?? 50;
+  const events = options.store.listPendingPumpPortalEventsForTrading
+    ? options.store.listPendingPumpPortalEventsForTrading(limit)
+    : options.store.listPendingPumpPortalEvents(limit);
   const result: PumpProcessResult = {
     eventsRead: events.length,
     candidatesEnriched: 0,
@@ -201,6 +208,11 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
       // (which is kept in options for the retry pass compatibility).
       const entryThreshold = strategy.config.minScoreToEnter;
       let note = `strategy=${strategy.id} score=${score.total} recommendation=${score.recommendation}`;
+      const eventAgeMinutes = ageMinutesSince(event.receivedAt);
+      const staleForTrading =
+        options.maxTradeEventAgeMinutes !== undefined &&
+        eventAgeMinutes !== undefined &&
+        eventAgeMinutes > options.maxTradeEventAgeMinutes;
       const maxAttempts = options.maxPendingAttempts ?? DEFAULT_MAX_PENDING_ATTEMPTS;
       const previousAttempts = event.processingAttempts ?? 0;
       const wouldQualifyWithoutSellRoutePenalty =
@@ -225,7 +237,9 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
         continue;
       }
 
-      if (score.total >= entryThreshold && score.recommendation === 'paper_trade') {
+      if (staleForTrading) {
+        note += ` stale event age=${eventAgeMinutes!.toFixed(1)}m no trade`;
+      } else if (score.total >= entryThreshold && score.recommendation === 'paper_trade') {
         // Size the position by the strategy's conviction tier before capacity check
         // so we know how much cash is required.
         const positionSizeUsd = strategy.resolvePositionSizeUsd(score.total, options.paper.positionSizeUsd);
@@ -253,4 +267,10 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
   }
 
   return result;
+}
+
+function ageMinutesSince(iso: string): number | undefined {
+  const timestamp = Date.parse(iso);
+  if (!Number.isFinite(timestamp)) return undefined;
+  return (Date.now() - timestamp) / 60_000;
 }

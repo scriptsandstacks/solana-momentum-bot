@@ -270,6 +270,26 @@ describe('SqliteStore', () => {
     store.close();
   });
 
+  it('lists pending PumpPortal events for trading as newest first plus oldest cleanup', () => {
+    const store = createStore();
+    for (let i = 1; i <= 10; i += 1) {
+      store.savePumpPortalEvent({
+        source: 'pumpportal',
+        eventType: 'new_token',
+        tokenMint: `mint-${i}`,
+        symbol: `M${i}`,
+        raw: { txType: 'create', mint: `mint-${i}` },
+        receivedAt: `2026-01-01T00:00:${String(i).padStart(2, '0')}.000Z`,
+      });
+    }
+
+    const rows = store.listPendingPumpPortalEventsForTrading(5);
+
+    expect(rows.map((row) => row.id)).toEqual([10, 9, 8, 7, 1]);
+    expect(rows.map((row) => row.tokenMint)).toEqual(['mint-10', 'mint-9', 'mint-8', 'mint-7', 'mint-1']);
+    store.close();
+  });
+
   it('tracks incomplete live executions and marks them persisted with position writes', () => {
     const store = createStore();
     store.recordLiveExecutionPrepared({

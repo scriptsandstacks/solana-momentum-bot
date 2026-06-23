@@ -27,6 +27,17 @@ interface RunLoopStore {
     rawJson: string;
     receivedAt: string;
   }>;
+  listPendingPumpPortalEventsForTrading?(limit?: number): Array<{
+    id: number;
+    eventType: string;
+    tokenMint?: string;
+    symbol?: string;
+    name?: string;
+    signature?: string;
+    rawJson: string;
+    receivedAt: string;
+    processingAttempts?: number;
+  }>;
   markPumpPortalEventProcessed?(id: number, status: 'pending' | 'processed' | 'skipped' | 'failed', note?: string): void;
   saveScoredCandidate?(candidate: TokenCandidate, score: OpportunityScore): void;
   saveOpenPosition?(position: PaperPosition): void;
@@ -124,6 +135,7 @@ type ProcessPumpEvents = (options: {
   minimumScoreToEnter: number;
   strategies?: TradingStrategy[];
   limit?: number;
+  maxTradeEventAgeMinutes?: number;
   reporter?: Reporter;
   broker?: ExecutionBroker;
 }) => Promise<PumpProcessResult>;
@@ -134,6 +146,7 @@ interface RunBotLoopOptions {
   durationMs?: number;
   processIntervalMs: number;
   processLimit: number;
+  maxTradeEventAgeMinutes?: number;
   store: RunLoopStore;
   solanaConfig: ChainConfig;
   paper: PaperBrokerOptions;
@@ -316,6 +329,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
         minimumScoreToEnter: options.minimumScoreToEnter,
         strategies: options.strategies,
         limit: options.processLimit,
+        maxTradeEventAgeMinutes: options.maxTradeEventAgeMinutes,
         reporter: options.reporter,
         broker: options.broker,
       });

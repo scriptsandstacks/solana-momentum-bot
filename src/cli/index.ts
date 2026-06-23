@@ -775,11 +775,13 @@ program
   .option('--process-interval-seconds <seconds>', 'seconds between PumpPortal processing passes', '30')
   .option('--exit-interval-seconds <seconds>', 'seconds between exit-only passes (default: 10)')
   .option('--process-limit <limit>', 'maximum pending PumpPortal events per processing pass', '50')
+  .option('--max-trade-event-age-minutes <minutes>', 'do not open new positions from raw events older than this age; scored rows are still kept', '15')
   .option('--analytics-every <passes>', 'emit full analytics summary every N passes (0=off)', '10')
   .option('--seconds <seconds>', 'optional bounded runtime in seconds; omit to run until Ctrl-C')
-  .action(async (options: { apiKey?: string; processIntervalSeconds: string; exitIntervalSeconds?: string; processLimit: string; analyticsEvery: string; seconds?: string }) => {
+  .action(async (options: { apiKey?: string; processIntervalSeconds: string; exitIntervalSeconds?: string; processLimit: string; maxTradeEventAgeMinutes: string; analyticsEvery: string; seconds?: string }) => {
     const processIntervalSeconds = Number(options.processIntervalSeconds);
     const processLimit = Number(options.processLimit);
+    const maxTradeEventAgeMinutes = Number(options.maxTradeEventAgeMinutes);
     const analyticsIntervalPasses = Number(options.analyticsEvery);
     const seconds = options.seconds === undefined ? undefined : Number(options.seconds);
     if (!Number.isFinite(processIntervalSeconds) || processIntervalSeconds <= 0) {
@@ -787,6 +789,9 @@ program
     }
     if (!Number.isFinite(processLimit) || processLimit <= 0) {
       throw new Error('--process-limit must be a positive number');
+    }
+    if (!Number.isFinite(maxTradeEventAgeMinutes) || maxTradeEventAgeMinutes <= 0) {
+      throw new Error('--max-trade-event-age-minutes must be a positive number');
     }
     if (seconds !== undefined && (!Number.isFinite(seconds) || seconds <= 0)) {
       throw new Error('--seconds must be a positive number when provided');
@@ -879,6 +884,7 @@ program
         processIntervalMs: processIntervalSeconds * 1000,
         exitIntervalMs: exitIntervalSeconds !== undefined ? exitIntervalSeconds * 1000 : undefined,
         processLimit,
+        maxTradeEventAgeMinutes,
         store,
         solanaConfig: config.chains.solana,
         paper: paperBrokerOptions(config),
