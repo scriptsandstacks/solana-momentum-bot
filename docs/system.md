@@ -309,9 +309,9 @@ For the owner/operator go-live checklist, see
 | `[trade] CLOSED ...` | Reason, P&L ($, %), hold time (+ tx signature in live mode) |
 | `[cycle] ...` | Events processed, opened, closed, open count, cash |
 | `[analytics] ...` | Full stats output every N passes (`--analytics-every`, default 10) |
-| `[run:process] ...` | Raw enrichment / scoring counts |
-| `[run:exits] ...` | Raw exit counts, including `failed=` for live tx errors |
-| `[run:exits:fast] ...` | Fast interval or activity-triggered exit pass results |
+| `[run:process] ...` | Raw enrichment / scoring counts, including `ms=` pass duration |
+| `[run:exits] ...` | Raw exit counts, including `failed=` for live tx errors and `ms=` duration |
+| `[run:exits:fast] ...` | Fast interval or activity-triggered exit pass results, including `ms=` duration |
 | `[reconcile] ...` | Startup wallet reconciliation results |
 
 ### CLI commands

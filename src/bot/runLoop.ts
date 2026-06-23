@@ -257,6 +257,12 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
       options.store.savePumpPortalEvent(event);
       eventsSaved += 1;
       result.eventsSaved = eventsSaved;
+      recordRuntimeStatus({
+        status: 'running',
+        lastLoopAt: new Date().toISOString(),
+        lastIngestAt: event.receivedAt,
+        lastError: null,
+      });
       options.onLog?.(`[pumpportal] ${event.eventType} mint=${event.tokenMint ?? 'unknown'} symbol=${event.symbol ?? 'unknown'}`);
     },
     onError: (error) => options.onLog?.(`[pumpportal:error] ${error instanceof Error ? error.message : String(error)}`),
@@ -321,6 +327,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
   const processOnce = async () => {
     if (stopped) return;
     processInFlight = true;
+    const processStartedAt = Date.now();
     try {
       const processResult = await processPumpEvents({
         store: options.store,
@@ -333,6 +340,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
         reporter: options.reporter,
         broker: options.broker,
       });
+      const processMs = Date.now() - processStartedAt;
       result.processRuns += 1;
       result.eventsRead += processResult.eventsRead;
       result.candidatesEnriched += processResult.candidatesEnriched;
@@ -348,7 +356,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
         lastError: null,
       });
       options.onLog?.(
-        `[run:process] events=${processResult.eventsRead} enriched=${processResult.candidatesEnriched} scored=${processResult.scored} opened=${processResult.openedPositions} skipped=${processResult.skipped} failed=${processResult.failed}`,
+        `[run:process] events=${processResult.eventsRead} enriched=${processResult.candidatesEnriched} scored=${processResult.scored} opened=${processResult.openedPositions} skipped=${processResult.skipped} failed=${processResult.failed} ms=${processMs}`,
       );
 
       // After ingesting/opening, re-price open positions and apply exit rules so
@@ -374,7 +382,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
           result.retriedPositions += retryResult.openedPositions;
           if (retryResult.openedPositions > 0 || retryResult.skippedRefresh > 0) {
             options.onLog?.(
-              `[run:retry] candidates=${retryResult.candidates} opened=${retryResult.openedPositions} skippedRefresh=${retryResult.skippedRefresh}`,
+              `[run:retry] candidates=${retryResult.candidates} opened=${retryResult.openedPositions} skippedRefresh=${retryResult.skippedRefresh} ms=${Date.now() - processStartedAt}`,
             );
           }
         }
@@ -384,6 +392,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
       // so the score threshold can be tuned from real MFE/MAE data. Horizon
       // matches the trade hold window.
       if (options.exits && canTrackOutcomes(options.store)) {
+        const outcomeStartedAt = Date.now();
         const outcomeResult = await trackOutcomes({
           store: options.store,
           horizonMinutes: options.exits.maxHoldMinutes,
@@ -391,7 +400,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
         });
         result.outcomesUpdated += outcomeResult.updated;
         options.onLog?.(
-          `[run:outcomes] finalized=${outcomeResult.finalized} tracked=${outcomeResult.tracked} updated=${outcomeResult.updated} completed=${outcomeResult.completed} noPrice=${outcomeResult.missingPrice}`,
+          `[run:outcomes] finalized=${outcomeResult.finalized} tracked=${outcomeResult.tracked} updated=${outcomeResult.updated} completed=${outcomeResult.completed} noPrice=${outcomeResult.missingPrice} ms=${Date.now() - outcomeStartedAt}`,
         );
       }
 
@@ -473,6 +482,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
     if (!options.exits || !canProcessExits(options.store)) return;
     if (exitInFlight || stopped) return;
     exitInFlight = true;
+    const exitStartedAt = Date.now();
     try {
       const exitResult = await processExits({
         store: options.store,
@@ -494,7 +504,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
       if (source === 'main' || exitResult.closed > 0 || exitResult.repriced > 0 || exitResult.failed > 0) {
         const prefix = source === 'fast' ? '[run:exits:fast]' : '[run:exits]';
         options.onLog?.(
-          `${prefix} checked=${exitResult.positionsChecked} repriced=${exitResult.repriced} closed=${exitResult.closed} sl=${exitResult.stopLoss} tp=${exitResult.takeProfit} trail=${exitResult.trailingStop} timeout=${exitResult.timeout} noPrice=${exitResult.missingPrice} failed=${exitResult.failed}`,
+          `${prefix} checked=${exitResult.positionsChecked} repriced=${exitResult.repriced} closed=${exitResult.closed} sl=${exitResult.stopLoss} tp=${exitResult.takeProfit} trail=${exitResult.trailingStop} timeout=${exitResult.timeout} noPrice=${exitResult.missingPrice} failed=${exitResult.failed} ms=${Date.now() - exitStartedAt}`,
         );
       }
       syncTokenWatcher();
