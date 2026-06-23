@@ -31,6 +31,7 @@ describe('runBotLoop', () => {
     FakePumpClient.closes = 0;
     const saved: PumpPortalRawEvent[] = [];
     const processedLimits: number[] = [];
+    const pendingAttemptLimits: number[] = [];
     const logs: string[] = [];
     const runtimeUpdates: Array<{ lastIngestAt?: string; lastProcessPassAt?: string }> = [];
 
@@ -39,6 +40,7 @@ describe('runBotLoop', () => {
       durationMs: 25,
       processIntervalMs: 10,
       processLimit: 7,
+      maxPendingAttempts: 3,
       store: {
         savePumpPortalEvent: (event) => saved.push(event),
         recordBotRuntimeStatus: (update) => runtimeUpdates.push(update),
@@ -57,8 +59,9 @@ describe('runBotLoop', () => {
       },
       minimumScoreToEnter: 75,
       ClientCtor: FakePumpClient,
-      processPumpEvents: async ({ limit }) => {
+      processPumpEvents: async ({ limit, maxPendingAttempts }) => {
         processedLimits.push(limit ?? 0);
+        pendingAttemptLimits.push(maxPendingAttempts ?? -1);
         return { eventsRead: 1, candidatesEnriched: 1, scored: 1, openedPositions: 0, skipped: 0, failed: 0 };
       },
       onLog: (message) => logs.push(message),
@@ -67,6 +70,7 @@ describe('runBotLoop', () => {
     expect(saved).toHaveLength(1);
     expect(processedLimits.length).toBeGreaterThanOrEqual(2);
     expect(processedLimits.every((limit) => limit === 7)).toBe(true);
+    expect(pendingAttemptLimits.every((attempts) => attempts === 3)).toBe(true);
     expect(FakePumpClient.closes).toBe(1);
     expect(result.eventsSaved).toBe(1);
     expect(result.processRuns).toBe(processedLimits.length);

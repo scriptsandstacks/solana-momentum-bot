@@ -318,7 +318,7 @@ For the owner/operator go-live checklist, see
 
 | Command | Purpose |
 |---|---|
-| `run` | Main loop. `mode: live` enables on-chain swaps. `--exit-interval-seconds` defaults to 10 in paper and live so exits are not tied to candidate-processing throughput. `--max-trade-event-age-minutes` defaults to 15 so stale backlog events can be scored but not traded. |
+| `run` | Main loop. `mode: live` enables on-chain swaps. `--exit-interval-seconds` defaults to 10 in paper and live so exits are not tied to candidate-processing throughput. `--max-trade-event-age-minutes` defaults to 15 so stale backlog events can be scored but not traded. `--max-pending-attempts` controls no-market-data retry churn. |
 | `live-readiness` | Audit live prerequisites, confirmation/impact policy, and sizing without reading wallet contents or placing trades. |
 | `wallet-balances` | Read live wallet SOL/USDC/USDT route-input balances and SOL fee reserve status without placing trades. |
 | `recover-positions` | Resolve wallet/SQLite discrepancies. `--dry-run`, `--yes`. |

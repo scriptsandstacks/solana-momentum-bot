@@ -776,12 +776,14 @@ program
   .option('--exit-interval-seconds <seconds>', 'seconds between exit-only passes (default: 10)')
   .option('--process-limit <limit>', 'maximum pending PumpPortal events per processing pass', '50')
   .option('--max-trade-event-age-minutes <minutes>', 'do not open new positions from raw events older than this age; scored rows are still kept', '15')
+  .option('--max-pending-attempts <attempts>', 'retry count for pending events with no market data before skipping', '5')
   .option('--analytics-every <passes>', 'emit full analytics summary every N passes (0=off)', '10')
   .option('--seconds <seconds>', 'optional bounded runtime in seconds; omit to run until Ctrl-C')
-  .action(async (options: { apiKey?: string; processIntervalSeconds: string; exitIntervalSeconds?: string; processLimit: string; maxTradeEventAgeMinutes: string; analyticsEvery: string; seconds?: string }) => {
+  .action(async (options: { apiKey?: string; processIntervalSeconds: string; exitIntervalSeconds?: string; processLimit: string; maxTradeEventAgeMinutes: string; maxPendingAttempts: string; analyticsEvery: string; seconds?: string }) => {
     const processIntervalSeconds = Number(options.processIntervalSeconds);
     const processLimit = Number(options.processLimit);
     const maxTradeEventAgeMinutes = Number(options.maxTradeEventAgeMinutes);
+    const maxPendingAttempts = Number(options.maxPendingAttempts);
     const analyticsIntervalPasses = Number(options.analyticsEvery);
     const seconds = options.seconds === undefined ? undefined : Number(options.seconds);
     if (!Number.isFinite(processIntervalSeconds) || processIntervalSeconds <= 0) {
@@ -792,6 +794,9 @@ program
     }
     if (!Number.isFinite(maxTradeEventAgeMinutes) || maxTradeEventAgeMinutes <= 0) {
       throw new Error('--max-trade-event-age-minutes must be a positive number');
+    }
+    if (!Number.isInteger(maxPendingAttempts) || maxPendingAttempts < 0) {
+      throw new Error('--max-pending-attempts must be a non-negative integer');
     }
     if (seconds !== undefined && (!Number.isFinite(seconds) || seconds <= 0)) {
       throw new Error('--seconds must be a positive number when provided');
@@ -885,6 +890,7 @@ program
         exitIntervalMs: exitIntervalSeconds !== undefined ? exitIntervalSeconds * 1000 : undefined,
         processLimit,
         maxTradeEventAgeMinutes,
+        maxPendingAttempts,
         store,
         solanaConfig: config.chains.solana,
         paper: paperBrokerOptions(config),
