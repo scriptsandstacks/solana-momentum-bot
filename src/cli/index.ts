@@ -773,7 +773,7 @@ program
   .description('Continuously watch PumpPortal, process candidates, and manage paper or live positions')
   .option('--api-key <key>', 'PumpPortal API key; defaults to PUMPPORTAL_API_KEY')
   .option('--process-interval-seconds <seconds>', 'seconds between PumpPortal processing passes', '30')
-  .option('--exit-interval-seconds <seconds>', 'seconds between exit-only passes in live mode (default: 10 in live, disabled in paper)')
+  .option('--exit-interval-seconds <seconds>', 'seconds between exit-only passes (default: 10)')
   .option('--process-limit <limit>', 'maximum pending PumpPortal events per processing pass', '50')
   .option('--analytics-every <passes>', 'emit full analytics summary every N passes (0=off)', '10')
   .option('--seconds <seconds>', 'optional bounded runtime in seconds; omit to run until Ctrl-C')
@@ -863,10 +863,12 @@ program
         }
       }
 
-      // Resolve the exit-only interval: explicit flag > live-mode default (10s) > disabled.
+      // Resolve the exit-only interval: explicit flag > default 10s. Exits are
+      // independent of candidate processing in paper and live modes so a backed
+      // up event queue cannot delay stop-loss/trailing-stop checks.
       const exitIntervalSeconds = options.exitIntervalSeconds !== undefined
         ? Number(options.exitIntervalSeconds)
-        : liveBroker ? 10 : undefined;
+        : 10;
       if (exitIntervalSeconds !== undefined && (!Number.isFinite(exitIntervalSeconds) || exitIntervalSeconds <= 0)) {
         throw new Error('--exit-interval-seconds must be a positive number');
       }

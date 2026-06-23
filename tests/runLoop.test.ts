@@ -356,4 +356,58 @@ describe('runBotLoop', () => {
     expect(exitOnlyCalls.length).toBeGreaterThan(result.processRuns);
     expect(result).toBeDefined();
   });
+
+  it('keeps fast exits running while a candidate processing pass is blocked', async () => {
+    FakePumpClient.closes = 0;
+    let processCalls = 0;
+    let slowProcessStarted = false;
+    let fastExitsDuringSlow = 0;
+    let releaseSlowProcess: (() => void) | undefined;
+
+    const result = await runBotLoop({
+      apiKey: 'abc123',
+      durationMs: 80,
+      processIntervalMs: 20,
+      exitIntervalMs: 5,
+      processLimit: 5,
+      store: {
+        savePumpPortalEvent: () => {},
+        loadOpenPositions: () => [],
+        getRealizedPnlUsd: () => 0,
+        getRealizedPnlUsdSince: () => 0,
+        getNextPositionSeq: () => 1,
+        saveOpenPosition: () => {},
+        saveClosedTrade: () => {},
+      },
+      solanaConfig: { enabled: true, minLiquidityUsd: 10_000, minVolume5mUsd: 5_000, maxSlippageBps: 500, confirmationCommitment: 'confirmed' },
+      paper: { startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 3 },
+      minimumScoreToEnter: 75,
+      exits: { stopLossPct: 20, takeProfitPct: 300, trailingStopPct: 15, trailingArmPct: 30, maxHoldMinutes: 60 },
+      ClientCtor: FakePumpClient,
+      processPumpEvents: async () => {
+        processCalls += 1;
+        if (processCalls === 2) {
+          slowProcessStarted = true;
+          await new Promise<void>((resolve) => {
+            releaseSlowProcess = resolve;
+          });
+        }
+        return { eventsRead: 0, candidatesEnriched: 0, scored: 0, openedPositions: 0, skipped: 0, failed: 0 };
+      },
+      processExits: async () => {
+        if (slowProcessStarted) {
+          fastExitsDuringSlow += 1;
+          if (fastExitsDuringSlow >= 2) {
+            releaseSlowProcess?.();
+            releaseSlowProcess = undefined;
+          }
+        }
+        return { positionsChecked: 1, repriced: 1, missingPrice: 0, closed: 0, stopLoss: 0, takeProfit: 0, trailingStop: 0, timeout: 0, failed: 0 };
+      },
+    });
+
+    expect(slowProcessStarted).toBe(true);
+    expect(fastExitsDuringSlow).toBeGreaterThanOrEqual(2);
+    expect(result.processRuns).toBeGreaterThanOrEqual(2);
+  });
 });

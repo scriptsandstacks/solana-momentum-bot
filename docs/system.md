@@ -311,14 +311,14 @@ For the owner/operator go-live checklist, see
 | `[analytics] ...` | Full stats output every N passes (`--analytics-every`, default 10) |
 | `[run:process] ...` | Raw enrichment / scoring counts |
 | `[run:exits] ...` | Raw exit counts, including `failed=` for live tx errors |
-| `[run:exits:fast] ...` | Activity-triggered exit pass results |
+| `[run:exits:fast] ...` | Fast interval or activity-triggered exit pass results |
 | `[reconcile] ...` | Startup wallet reconciliation results |
 
 ### CLI commands
 
 | Command | Purpose |
 |---|---|
-| `run` | Main loop. `mode: live` enables on-chain swaps. `--exit-interval-seconds` (default 10 in live). |
+| `run` | Main loop. `mode: live` enables on-chain swaps. `--exit-interval-seconds` defaults to 10 in paper and live so exits are not tied to candidate-processing throughput. |
 | `live-readiness` | Audit live prerequisites, confirmation/impact policy, and sizing without reading wallet contents or placing trades. |
 | `wallet-balances` | Read live wallet SOL/USDC/USDT route-input balances and SOL fee reserve status without placing trades. |
 | `recover-positions` | Resolve wallet/SQLite discrepancies. `--dry-run`, `--yes`. |
@@ -385,6 +385,14 @@ entry_network_fee_usd, exit_network_fee_usd  ← live mode only
 **`token_volume_snapshots`** — per-token 5m volume history for acceleration signal
 
 **`pumpportal_events`** — raw WebSocket events with processing status
+
+**`bot_runtime_status`** — singleton `main` heartbeat row for UI/API health checks
+```
+id, status, last_loop_at, last_ingest_at, last_process_pass_at,
+last_exit_pass_at, latest_raw_event_at, latest_processed_event_at,
+latest_scored_candidate_at, latest_trade_at, pending_event_count,
+open_position_count, last_error, updated_at
+```
 
 **`live_execution_journal`** — live swap intent, signature, state, and audit history
 

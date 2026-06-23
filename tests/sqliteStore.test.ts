@@ -232,6 +232,44 @@ describe('SqliteStore', () => {
     store.close();
   });
 
+  it('records bot runtime status with pipeline health fields', () => {
+    const store = createStore();
+    const event: PumpPortalRawEvent = {
+      source: 'pumpportal',
+      eventType: 'new_token',
+      tokenMint: 'token-1',
+      symbol: 'MOCK',
+      raw: { txType: 'create', mint: 'token-1' },
+      receivedAt: '2026-01-01T00:00:00.000Z',
+    };
+
+    store.savePumpPortalEvent(event);
+    store.markPumpPortalEventProcessed(1, 'skipped', 'below configured liquidity threshold');
+    store.saveScoredCandidate(candidate, score);
+    store.recordBotRuntimeStatus({
+      status: 'running',
+      lastLoopAt: '2026-01-01T00:00:10.000Z',
+      lastProcessPassAt: '2026-01-01T00:00:10.000Z',
+      lastExitPassAt: '2026-01-01T00:00:11.000Z',
+      lastError: null,
+    });
+
+    const status = store.loadBotRuntimeStatus();
+    expect(status).toMatchObject({
+      id: 'main',
+      status: 'running',
+      lastLoopAt: '2026-01-01T00:00:10.000Z',
+      lastProcessPassAt: '2026-01-01T00:00:10.000Z',
+      lastExitPassAt: '2026-01-01T00:00:11.000Z',
+      latestRawEventAt: '2026-01-01T00:00:00.000Z',
+      latestScoredCandidateAt: expect.any(String),
+      pendingEventCount: 0,
+      openPositionCount: 0,
+    });
+    expect(status?.latestProcessedEventAt).toBeTruthy();
+    store.close();
+  });
+
   it('tracks incomplete live executions and marks them persisted with position writes', () => {
     const store = createStore();
     store.recordLiveExecutionPrepared({
