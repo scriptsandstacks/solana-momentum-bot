@@ -309,16 +309,16 @@ For the owner/operator go-live checklist, see
 | `[trade] CLOSED ...` | Reason, P&L ($, %), hold time (+ tx signature in live mode) |
 | `[cycle] ...` | Events processed, opened, closed, open count, cash |
 | `[analytics] ...` | Full stats output every N passes (`--analytics-every`, default 10) |
-| `[run:process] ...` | Raw enrichment / scoring counts |
-| `[run:exits] ...` | Raw exit counts, including `failed=` for live tx errors |
-| `[run:exits:fast] ...` | Activity-triggered exit pass results |
+| `[run:process] ...` | Raw enrichment / scoring counts, including `ms=` pass duration |
+| `[run:exits] ...` | Raw exit counts, including `failed=` for live tx errors and `ms=` duration |
+| `[run:exits:fast] ...` | Fast interval or activity-triggered exit pass results, including `ms=` duration |
 | `[reconcile] ...` | Startup wallet reconciliation results |
 
 ### CLI commands
 
 | Command | Purpose |
 |---|---|
-| `run` | Main loop. `mode: live` enables on-chain swaps. `--exit-interval-seconds` (default 10 in live). |
+| `run` | Main loop. `mode: live` enables on-chain swaps. `--exit-interval-seconds` defaults to 10 in paper and live so exits are not tied to candidate-processing throughput. `--max-trade-event-age-minutes` defaults to 15 so stale backlog events can be scored but not traded. `--max-pending-attempts` controls no-market-data retry churn. |
 | `live-readiness` | Audit live prerequisites, confirmation/impact policy, and sizing without reading wallet contents or placing trades. |
 | `wallet-balances` | Read live wallet SOL/USDC/USDT route-input balances and SOL fee reserve status without placing trades. |
 | `recover-positions` | Resolve wallet/SQLite discrepancies. `--dry-run`, `--yes`. |
@@ -342,6 +342,8 @@ For the owner/operator go-live checklist, see
 
 ### PumpPortal WebSocket
 Subscribes to `subscribeNewToken` and `subscribeMigration` free streams. Events are persisted immediately, processed asynchronously. Events with no market data remain `pending` and are retried up to 5 times.
+
+Pending processing uses a freshness-aware batch: roughly 70% newest pending events for current opportunities plus 30% oldest pending events for backlog cleanup. Known route-input mints (SOL/USDC/USDT) are skipped before enrichment. Events older than the configured max trade age are still scored for analytics/outcomes, but they cannot open new positions.
 
 ### Enrichment
 DexScreener (`/tokens/<mints>`) and Raydium pool endpoint queried in parallel per mint. Results merged: price/liquidity/pair from the deepest pool; volume/buy-sell counts/momentum from DexScreener. Retry-refreshed candidates get a fresh route check before opening.
@@ -385,6 +387,14 @@ entry_network_fee_usd, exit_network_fee_usd  ← live mode only
 **`token_volume_snapshots`** — per-token 5m volume history for acceleration signal
 
 **`pumpportal_events`** — raw WebSocket events with processing status
+
+**`bot_runtime_status`** — singleton `main` heartbeat row for UI/API health checks
+```
+id, status, last_loop_at, last_ingest_at, last_process_pass_at,
+last_exit_pass_at, latest_raw_event_at, latest_processed_event_at,
+latest_scored_candidate_at, latest_trade_at, pending_event_count,
+open_position_count, last_error, updated_at
+```
 
 **`live_execution_journal`** — live swap intent, signature, state, and audit history
 

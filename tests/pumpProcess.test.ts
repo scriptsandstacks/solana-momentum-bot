@@ -82,6 +82,59 @@ describe('processPumpPortalEvents', () => {
     expect(statuses[0]).toMatchObject({ id: 1, status: 'processed' });
   });
 
+  it('scores stale events but does not open positions from them', async () => {
+    const scored: Array<{ candidate: TokenCandidate; score: OpportunityScore }> = [];
+    const opened: PaperPosition[] = [];
+    const statuses: Array<{ id: number; status: string; note?: string }> = [];
+
+    const result = await processPumpPortalEvents({
+      store: {
+        listPendingPumpPortalEvents: () => [
+          {
+            id: 2,
+            eventType: 'new_token',
+            tokenMint: 'mint-stale',
+            symbol: 'OLD',
+            rawJson: '{}',
+            receivedAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+          },
+        ],
+        markPumpPortalEventProcessed: (id, status, note) => statuses.push({ id, status, note }),
+        saveScoredCandidate: (candidate, score) => scored.push({ candidate, score }),
+        saveOpenPosition: (position) => opened.push(position),
+      },
+      solanaConfig: {
+        enabled: true,
+        minLiquidityUsd: 10_000,
+        minVolume5mUsd: 5_000,
+        maxSlippageBps: 500,
+        confirmationCommitment: 'confirmed',
+      },
+      paper: {
+        startingBalanceUsd: 1000,
+        positionSizeUsd: 25,
+        maxOpenPositions: 3,
+      },
+      minimumScoreToEnter: 75,
+      maxTradeEventAgeMinutes: 15,
+      fetchCandidates: async () => [strongCandidate('mint-stale')],
+      checkRoute: async () => ({
+        routeAvailable: true,
+        estimatedSlippageBps: 100,
+        routeInputMint: 'usdc-mint',
+        routeInputSymbol: 'USDC',
+        sellRouteAvailable: true,
+      }),
+    });
+
+    expect(result).toMatchObject({ eventsRead: 1, candidatesEnriched: 1, scored: 1, openedPositions: 0 });
+    expect(scored).toHaveLength(1);
+    expect(opened).toHaveLength(0);
+    expect(statuses[0]).toMatchObject({ id: 2, status: 'processed' });
+    expect(statuses[0].note).toContain('stale event age=');
+    expect(statuses[0].note).toContain('no trade');
+  });
+
   it('marks events skipped when market data is not available yet', async () => {
     const statuses: Array<{ id: number; status: string; note?: string }> = [];
 
@@ -118,6 +171,54 @@ describe('processPumpPortalEvents', () => {
 
     expect(result).toMatchObject({ eventsRead: 1, scored: 0, skipped: 1 });
     expect(statuses[0]).toMatchObject({ id: 7, status: 'pending', note: 'no DexScreener market data yet' });
+  });
+
+  it('skips route input mints before market enrichment', async () => {
+    const statuses: Array<{ id: number; status: string; note?: string }> = [];
+    let fetchCalls = 0;
+
+    const result = await processPumpPortalEvents({
+      store: {
+        listPendingPumpPortalEvents: () => [
+          {
+            id: 8,
+            eventType: 'new_token',
+            tokenMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            symbol: 'USDC',
+            rawJson: '{}',
+            receivedAt: '2026-01-01T00:00:00Z',
+          },
+        ],
+        markPumpPortalEventProcessed: (id, status, note) => statuses.push({ id, status, note }),
+        saveScoredCandidate: () => undefined,
+        saveOpenPosition: () => undefined,
+      },
+      solanaConfig: {
+        enabled: true,
+        minLiquidityUsd: 10_000,
+        minVolume5mUsd: 5_000,
+        maxSlippageBps: 500,
+        confirmationCommitment: 'confirmed',
+      },
+      paper: {
+        startingBalanceUsd: 1000,
+        positionSizeUsd: 25,
+        maxOpenPositions: 3,
+      },
+      minimumScoreToEnter: 75,
+      fetchCandidates: async () => {
+        fetchCalls += 1;
+        return [];
+      },
+    });
+
+    expect(result).toMatchObject({ eventsRead: 1, scored: 0, skipped: 1 });
+    expect(fetchCalls).toBe(0);
+    expect(statuses[0]).toMatchObject({
+      id: 8,
+      status: 'skipped',
+      note: 'route input mint is not a trade candidate',
+    });
   });
 
   it('marks events skipped after the retry cap is reached', async () => {

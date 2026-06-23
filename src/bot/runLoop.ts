@@ -13,7 +13,7 @@ import type { TradingStrategy } from '../strategies/types.js';
 import type { ChainConfig } from '../config/schema.js';
 import type { PaperBrokerOptions } from '../paper/paperBroker.js';
 import type { OpportunityScore, PaperPosition, PaperTrade, TokenCandidate } from '../types/domain.js';
-import type { ScoredOutcomeUpdate, TrackableScoredCandidateRow, RetriableScoredCandidateRow, ClosedTradeStatRow } from '../storage/sqliteStore.js';
+import type { BotRuntimeStatusUpdate, ScoredOutcomeUpdate, TrackableScoredCandidateRow, RetriableScoredCandidateRow, ClosedTradeStatRow } from '../storage/sqliteStore.js';
 
 interface RunLoopStore {
   savePumpPortalEvent(event: PumpPortalRawEvent): void;
@@ -26,6 +26,17 @@ interface RunLoopStore {
     signature?: string;
     rawJson: string;
     receivedAt: string;
+  }>;
+  listPendingPumpPortalEventsForTrading?(limit?: number): Array<{
+    id: number;
+    eventType: string;
+    tokenMint?: string;
+    symbol?: string;
+    name?: string;
+    signature?: string;
+    rawJson: string;
+    receivedAt: string;
+    processingAttempts?: number;
   }>;
   markPumpPortalEventProcessed?(id: number, status: 'pending' | 'processed' | 'skipped' | 'failed', note?: string): void;
   saveScoredCandidate?(candidate: TokenCandidate, score: OpportunityScore): void;
@@ -55,6 +66,9 @@ interface RunLoopStore {
   pruneScoredCandidates?(cutoffIso: string): number;
   pruneTokenVolumeSnapshots?(cutoffIso: string): number;
   prunePumpPortalEvents?(cutoffIso: string): number;
+  // Runtime heartbeat: one status row for UI/API health checks that should not
+  // infer process liveness from scored-candidate activity.
+  recordBotRuntimeStatus?(update: BotRuntimeStatusUpdate): void;
 }
 
 type ProcessExits = (options: {
@@ -121,6 +135,8 @@ type ProcessPumpEvents = (options: {
   minimumScoreToEnter: number;
   strategies?: TradingStrategy[];
   limit?: number;
+  maxTradeEventAgeMinutes?: number;
+  maxPendingAttempts?: number;
   reporter?: Reporter;
   broker?: ExecutionBroker;
 }) => Promise<PumpProcessResult>;
@@ -131,6 +147,8 @@ interface RunBotLoopOptions {
   durationMs?: number;
   processIntervalMs: number;
   processLimit: number;
+  maxTradeEventAgeMinutes?: number;
+  maxPendingAttempts?: number;
   store: RunLoopStore;
   solanaConfig: ChainConfig;
   paper: PaperBrokerOptions;
@@ -241,6 +259,12 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
       options.store.savePumpPortalEvent(event);
       eventsSaved += 1;
       result.eventsSaved = eventsSaved;
+      recordRuntimeStatus({
+        status: 'running',
+        lastLoopAt: new Date().toISOString(),
+        lastIngestAt: event.receivedAt,
+        lastError: null,
+      });
       options.onLog?.(`[pumpportal] ${event.eventType} mint=${event.tokenMint ?? 'unknown'} symbol=${event.symbol ?? 'unknown'}`);
     },
     onError: (error) => options.onLog?.(`[pumpportal:error] ${error instanceof Error ? error.message : String(error)}`),
@@ -251,7 +275,9 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
   let exitOnlyInterval: NodeJS.Timeout | undefined;
   let stopped = false;
   let processInFlight = false;
+  let exitInFlight = false;
   let activeProcess: Promise<void> | undefined;
+  let activeExit: Promise<void> | undefined;
   // Set when on-chain token activity arrives while a pass is in-flight.
   // Checked at the end of every pass so the exit runs immediately after.
   let activityPendingExit = false;
@@ -292,9 +318,18 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
     }
   };
 
+  const recordRuntimeStatus = (update: BotRuntimeStatusUpdate) => {
+    try {
+      options.store.recordBotRuntimeStatus?.(update);
+    } catch (error) {
+      options.onLog?.(`[run:heartbeat:error] ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
   const processOnce = async () => {
     if (stopped) return;
     processInFlight = true;
+    const processStartedAt = Date.now();
     try {
       const processResult = await processPumpEvents({
         store: options.store,
@@ -303,9 +338,12 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
         minimumScoreToEnter: options.minimumScoreToEnter,
         strategies: options.strategies,
         limit: options.processLimit,
+        maxTradeEventAgeMinutes: options.maxTradeEventAgeMinutes,
+        maxPendingAttempts: options.maxPendingAttempts,
         reporter: options.reporter,
         broker: options.broker,
       });
+      const processMs = Date.now() - processStartedAt;
       result.processRuns += 1;
       result.eventsRead += processResult.eventsRead;
       result.candidatesEnriched += processResult.candidatesEnriched;
@@ -313,31 +351,26 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
       result.openedPositions += processResult.openedPositions;
       result.skipped += processResult.skipped;
       result.failed += processResult.failed;
+      const processPassAt = new Date().toISOString();
+      recordRuntimeStatus({
+        status: 'running',
+        lastLoopAt: processPassAt,
+        lastProcessPassAt: processPassAt,
+        lastError: null,
+      });
       options.onLog?.(
-        `[run:process] events=${processResult.eventsRead} enriched=${processResult.candidatesEnriched} scored=${processResult.scored} opened=${processResult.openedPositions} skipped=${processResult.skipped} failed=${processResult.failed}`,
+        `[run:process] events=${processResult.eventsRead} enriched=${processResult.candidatesEnriched} scored=${processResult.scored} opened=${processResult.openedPositions} skipped=${processResult.skipped} failed=${processResult.failed} ms=${processMs}`,
       );
 
       // After ingesting/opening, re-price open positions and apply exit rules so
       // positions actually close instead of accumulating until the cap blocks
       // every new entry.
       if (options.exits && canProcessExits(options.store)) {
-        const exitResult = await processExits({
-          store: options.store,
-          paper: options.paper,
-          exits: options.exits,
-          resolveExits: options.resolveExits,
-          reporter: options.reporter,
-          broker: options.broker,
-          onLog: options.onLog,
-        });
-        result.closedPositions += exitResult.closed;
-        options.onLog?.(
-          `[run:exits] checked=${exitResult.positionsChecked} repriced=${exitResult.repriced} closed=${exitResult.closed} sl=${exitResult.stopLoss} tp=${exitResult.takeProfit} trail=${exitResult.trailingStop} timeout=${exitResult.timeout} noPrice=${exitResult.missingPrice} failed=${exitResult.failed}`,
-        );
+        const exitResult = await runExitPass('main');
 
         // If the exit pass freed capacity, try to fill it with recently scored
         // candidates that were blocked when they were first processed.
-        if (canRetryBlockedOpens(options.store)) {
+        if (exitResult && canRetryBlockedOpens(options.store)) {
           const cutoffIso = new Date(Date.now() - options.exits.maxHoldMinutes * 60_000).toISOString();
           const retryResult = await retryBlockedOpens({
             store: options.store,
@@ -352,7 +385,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
           result.retriedPositions += retryResult.openedPositions;
           if (retryResult.openedPositions > 0 || retryResult.skippedRefresh > 0) {
             options.onLog?.(
-              `[run:retry] candidates=${retryResult.candidates} opened=${retryResult.openedPositions} skippedRefresh=${retryResult.skippedRefresh}`,
+              `[run:retry] candidates=${retryResult.candidates} opened=${retryResult.openedPositions} skippedRefresh=${retryResult.skippedRefresh} ms=${Date.now() - processStartedAt}`,
             );
           }
         }
@@ -362,6 +395,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
       // so the score threshold can be tuned from real MFE/MAE data. Horizon
       // matches the trade hold window.
       if (options.exits && canTrackOutcomes(options.store)) {
+        const outcomeStartedAt = Date.now();
         const outcomeResult = await trackOutcomes({
           store: options.store,
           horizonMinutes: options.exits.maxHoldMinutes,
@@ -369,7 +403,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
         });
         result.outcomesUpdated += outcomeResult.updated;
         options.onLog?.(
-          `[run:outcomes] finalized=${outcomeResult.finalized} tracked=${outcomeResult.tracked} updated=${outcomeResult.updated} completed=${outcomeResult.completed} noPrice=${outcomeResult.missingPrice}`,
+          `[run:outcomes] finalized=${outcomeResult.finalized} tracked=${outcomeResult.tracked} updated=${outcomeResult.updated} completed=${outcomeResult.completed} noPrice=${outcomeResult.missingPrice} ms=${Date.now() - outcomeStartedAt}`,
         );
       }
 
@@ -447,13 +481,11 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
     await activeProcess;
   };
 
-  // Exit-only pass: evaluates open positions against current prices and fires
-  // exit rules without running event ingestion or outcome tracking. Skipped when
-  // the main process pass is in flight to avoid concurrent broker state mutation.
-  const runExitOnlyPass = async () => {
-    if (processInFlight || stopped) return;
+  const runExitPass = async (source: 'main' | 'fast'): Promise<ProcessExitsResult | undefined> => {
     if (!options.exits || !canProcessExits(options.store)) return;
-    processInFlight = true;
+    if (exitInFlight || stopped) return;
+    exitInFlight = true;
+    const exitStartedAt = Date.now();
     try {
       const exitResult = await processExits({
         store: options.store,
@@ -465,22 +497,46 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
         onLog: options.onLog,
       });
       result.closedPositions += exitResult.closed;
-      if (exitResult.closed > 0 || exitResult.repriced > 0 || exitResult.failed > 0) {
+      const exitPassAt = new Date().toISOString();
+      recordRuntimeStatus({
+        status: 'running',
+        lastLoopAt: exitPassAt,
+        lastExitPassAt: exitPassAt,
+        lastError: null,
+      });
+      if (source === 'main' || exitResult.closed > 0 || exitResult.repriced > 0 || exitResult.failed > 0) {
+        const prefix = source === 'fast' ? '[run:exits:fast]' : '[run:exits]';
         options.onLog?.(
-          `[run:exits:fast] checked=${exitResult.positionsChecked} repriced=${exitResult.repriced} closed=${exitResult.closed} sl=${exitResult.stopLoss} tp=${exitResult.takeProfit} trail=${exitResult.trailingStop} timeout=${exitResult.timeout} failed=${exitResult.failed}`,
+          `${prefix} checked=${exitResult.positionsChecked} repriced=${exitResult.repriced} closed=${exitResult.closed} sl=${exitResult.stopLoss} tp=${exitResult.takeProfit} trail=${exitResult.trailingStop} timeout=${exitResult.timeout} noPrice=${exitResult.missingPrice} failed=${exitResult.failed} ms=${Date.now() - exitStartedAt}`,
         );
       }
       syncTokenWatcher();
+      return exitResult;
     } finally {
-      processInFlight = false;
+      exitInFlight = false;
     }
   };
 
+  // Exit-only pass: evaluates open positions against current prices and fires
+  // exit rules without waiting for candidate processing. It has its own guard
+  // so a slow enrichment pass cannot delay stop-loss/trailing-stop checks.
+  const runExitOnlyPass = async () => {
+    activeExit = runExitPass('fast')
+      .then(() => undefined)
+      .finally(() => {
+        activeExit = undefined;
+      });
+    await activeExit;
+  };
+
   const logProcessError = (error: unknown) => {
-    options.onLog?.(`[run:error] ${error instanceof Error ? error.message : String(error)}`);
+    const message = error instanceof Error ? error.message : String(error);
+    recordRuntimeStatus({ status: 'running', lastError: message });
+    options.onLog?.(`[run:error] ${message}`);
   };
 
   options.onLog?.('[run] started');
+  recordRuntimeStatus({ status: 'running', lastLoopAt: new Date().toISOString(), lastError: null });
   try {
     await client.connectFreeStreams();
     await startProcessPass();
@@ -517,13 +573,18 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
     });
   } finally {
     stopped = true;
+    recordRuntimeStatus({ status: 'stopping', lastLoopAt: new Date().toISOString() });
     if (interval) clearInterval(interval);
     if (exitOnlyInterval) clearInterval(exitOnlyInterval);
     tokenWatcher?.close();
     if (activeProcess) {
       await activeProcess.catch(logProcessError);
     }
+    if (activeExit) {
+      await activeExit.catch(logProcessError);
+    }
     client.close();
+    recordRuntimeStatus({ status: 'stopped', lastLoopAt: new Date().toISOString() });
     options.onLog?.('[run] stopped');
   }
 

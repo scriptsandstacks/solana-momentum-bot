@@ -95,7 +95,7 @@ Set `discordWebhookUrlEnv: DISCORD_WEBHOOK_URL` in `config.yaml` under `notifica
 
 | Command | What it does |
 |---|---|
-| `run` | Main loop: watch PumpPortal, process events, manage exits, track outcomes, auto-prune daily. Live mode: real Jupiter swaps with real-time WebSocket exit triggers. |
+| `run` | Main loop: watch PumpPortal, process events, manage exits, track outcomes, auto-prune daily. Exits run on a separate interval by default, and stale backlog events are scored but not traded. Live mode: real Jupiter swaps with real-time WebSocket exit triggers. |
 | `snapshot` | One-shot read-only operator view: readiness, wallet balances, open positions, recent trades, journal status, analytics summary |
 | `live-readiness` | Audit every live-trading prerequisite without reading keys or placing trades |
 | `wallet-balances` | Read live wallet SOL/USDC/USDT balances and SOL fee reserve status without placing trades |

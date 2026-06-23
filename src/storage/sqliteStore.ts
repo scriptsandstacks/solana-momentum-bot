@@ -81,6 +81,32 @@ interface PumpPortalEventRow {
   processingAttempts?: number;
 }
 
+export interface BotRuntimeStatusUpdate {
+  status: 'running' | 'stopping' | 'stopped';
+  lastLoopAt?: string;
+  lastIngestAt?: string;
+  lastProcessPassAt?: string;
+  lastExitPassAt?: string;
+  lastError?: string | null;
+}
+
+export interface BotRuntimeStatusRow {
+  id: string;
+  status: string;
+  lastLoopAt?: string;
+  lastIngestAt?: string;
+  lastProcessPassAt?: string;
+  lastExitPassAt?: string;
+  latestRawEventAt?: string;
+  latestProcessedEventAt?: string;
+  latestScoredCandidateAt?: string;
+  latestTradeAt?: string;
+  pendingEventCount: number;
+  openPositionCount: number;
+  lastError?: string;
+  updatedAt: string;
+}
+
 export interface ClosedTradeStatRow {
   reason: string;
   exitPriceSource: string;
@@ -544,6 +570,92 @@ export class SqliteStore {
     transaction();
   }
 
+  recordBotRuntimeStatus(update: BotRuntimeStatusUpdate): void {
+    const now = new Date().toISOString();
+    const stats = this.db
+      .prepare(
+        `SELECT
+           (SELECT MAX(received_at) FROM pumpportal_events) as latestRawEventAt,
+           (SELECT MAX(processed_at) FROM pumpportal_events WHERE processed_at IS NOT NULL) as latestProcessedEventAt,
+           (SELECT MAX(created_at) FROM scored_candidates) as latestScoredCandidateAt,
+           (SELECT MAX(closed_at) FROM closed_trades) as latestTradeAt,
+           (SELECT COUNT(*) FROM pumpportal_events WHERE processing_status = 'pending') as pendingEventCount,
+           (SELECT COUNT(*) FROM open_positions) as openPositionCount`,
+      )
+      .get() as {
+        latestRawEventAt: string | null;
+        latestProcessedEventAt: string | null;
+        latestScoredCandidateAt: string | null;
+        latestTradeAt: string | null;
+        pendingEventCount: number;
+        openPositionCount: number;
+      };
+
+    this.db
+      .prepare(
+        `INSERT INTO bot_runtime_status (
+           id, status, last_loop_at, last_ingest_at, last_process_pass_at, last_exit_pass_at,
+           latest_raw_event_at, latest_processed_event_at, latest_scored_candidate_at, latest_trade_at,
+           pending_event_count, open_position_count, last_error, updated_at
+         ) VALUES (
+           'main', @status, @lastLoopAt, @lastIngestAt, @lastProcessPassAt, @lastExitPassAt,
+           @latestRawEventAt, @latestProcessedEventAt, @latestScoredCandidateAt, @latestTradeAt,
+           @pendingEventCount, @openPositionCount, @lastError, @updatedAt
+         )
+         ON CONFLICT(id) DO UPDATE SET
+           status = excluded.status,
+           last_loop_at = COALESCE(excluded.last_loop_at, bot_runtime_status.last_loop_at),
+           last_ingest_at = COALESCE(excluded.last_ingest_at, bot_runtime_status.last_ingest_at),
+           last_process_pass_at = COALESCE(excluded.last_process_pass_at, bot_runtime_status.last_process_pass_at),
+           last_exit_pass_at = COALESCE(excluded.last_exit_pass_at, bot_runtime_status.last_exit_pass_at),
+           latest_raw_event_at = excluded.latest_raw_event_at,
+           latest_processed_event_at = excluded.latest_processed_event_at,
+           latest_scored_candidate_at = excluded.latest_scored_candidate_at,
+           latest_trade_at = excluded.latest_trade_at,
+           pending_event_count = excluded.pending_event_count,
+           open_position_count = excluded.open_position_count,
+           last_error = excluded.last_error,
+           updated_at = excluded.updated_at`,
+      )
+      .run({
+        status: update.status,
+        lastLoopAt: update.lastLoopAt ?? null,
+        lastIngestAt: update.lastIngestAt ?? null,
+        lastProcessPassAt: update.lastProcessPassAt ?? null,
+        lastExitPassAt: update.lastExitPassAt ?? null,
+        latestRawEventAt: stats.latestRawEventAt,
+        latestProcessedEventAt: stats.latestProcessedEventAt,
+        latestScoredCandidateAt: stats.latestScoredCandidateAt,
+        latestTradeAt: stats.latestTradeAt,
+        pendingEventCount: stats.pendingEventCount,
+        openPositionCount: stats.openPositionCount,
+        lastError: update.lastError ?? null,
+        updatedAt: now,
+      });
+  }
+
+  loadBotRuntimeStatus(): BotRuntimeStatusRow | undefined {
+    return this.db
+      .prepare(
+        `SELECT id, status,
+                last_loop_at as lastLoopAt,
+                last_ingest_at as lastIngestAt,
+                last_process_pass_at as lastProcessPassAt,
+                last_exit_pass_at as lastExitPassAt,
+                latest_raw_event_at as latestRawEventAt,
+                latest_processed_event_at as latestProcessedEventAt,
+                latest_scored_candidate_at as latestScoredCandidateAt,
+                latest_trade_at as latestTradeAt,
+                pending_event_count as pendingEventCount,
+                open_position_count as openPositionCount,
+                last_error as lastError,
+                updated_at as updatedAt
+         FROM bot_runtime_status
+         WHERE id = 'main'`,
+      )
+      .get() as BotRuntimeStatusRow | undefined;
+  }
+
   recordLiveExecutionPrepared(
     entry: Omit<LiveExecutionJournalEntry, 'signature' | 'status' | 'error' | 'createdAt' | 'updatedAt'>,
   ): void {
@@ -803,6 +915,30 @@ export class SqliteStore {
       .all(limit) as PumpPortalEventRow[];
   }
 
+  listPendingPumpPortalEventsForTrading(limit = 50): PumpPortalEventRow[] {
+    const safeLimit = Math.max(1, Math.floor(limit));
+    const newestLimit = Math.max(1, Math.ceil(safeLimit * 0.7));
+    const oldestLimit = Math.max(0, safeLimit - newestLimit);
+    const select = `SELECT id, event_type as eventType, token_mint as tokenMint, symbol, name,
+                           signature, raw_json as rawJson, received_at as receivedAt,
+                           processing_status as processingStatus, processing_note as processingNote,
+                           processed_at as processedAt, processing_attempts as processingAttempts
+                    FROM pumpportal_events
+                    WHERE processing_status = 'pending' AND token_mint IS NOT NULL AND token_mint != ''`;
+    const newest = this.db
+      .prepare(`${select} ORDER BY id DESC LIMIT ?`)
+      .all(newestLimit) as PumpPortalEventRow[];
+    const oldest = oldestLimit > 0
+      ? this.db.prepare(`${select} ORDER BY id ASC LIMIT ?`).all(oldestLimit) as PumpPortalEventRow[]
+      : [];
+
+    const byId = new Map<number, PumpPortalEventRow>();
+    for (const row of [...newest, ...oldest]) {
+      if (!byId.has(row.id)) byId.set(row.id, row);
+    }
+    return [...byId.values()].slice(0, safeLimit);
+  }
+
   markPumpPortalEventProcessed(id: number, status: 'pending' | 'processed' | 'skipped' | 'failed', note?: string): void {
     // Bump processing_attempts whenever we defer the row back to 'pending' so
     // callers can cap retries on abandoned mints (no market data ever appears).
@@ -964,6 +1100,23 @@ export class SqliteStore {
 
       CREATE INDEX IF NOT EXISTS idx_pumpportal_events_received_at ON pumpportal_events(received_at);
       CREATE INDEX IF NOT EXISTS idx_pumpportal_events_type_mint ON pumpportal_events(event_type, token_mint);
+
+      CREATE TABLE IF NOT EXISTS bot_runtime_status (
+        id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        last_loop_at TEXT,
+        last_ingest_at TEXT,
+        last_process_pass_at TEXT,
+        last_exit_pass_at TEXT,
+        latest_raw_event_at TEXT,
+        latest_processed_event_at TEXT,
+        latest_scored_candidate_at TEXT,
+        latest_trade_at TEXT,
+        pending_event_count INTEGER NOT NULL DEFAULT 0,
+        open_position_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        updated_at TEXT NOT NULL
+      );
     `);
     this.addColumnIfMissing('open_positions', 'strategy_id', "TEXT NOT NULL DEFAULT 'freshLaunchMomentum'");
     this.addColumnIfMissing('open_positions', 'high_water_mark_usd', 'REAL');

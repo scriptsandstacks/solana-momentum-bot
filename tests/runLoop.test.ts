@@ -31,15 +31,19 @@ describe('runBotLoop', () => {
     FakePumpClient.closes = 0;
     const saved: PumpPortalRawEvent[] = [];
     const processedLimits: number[] = [];
+    const pendingAttemptLimits: number[] = [];
     const logs: string[] = [];
+    const runtimeUpdates: Array<{ lastIngestAt?: string; lastProcessPassAt?: string }> = [];
 
     const result = await runBotLoop({
       apiKey: 'abc123',
       durationMs: 25,
       processIntervalMs: 10,
       processLimit: 7,
+      maxPendingAttempts: 3,
       store: {
         savePumpPortalEvent: (event) => saved.push(event),
+        recordBotRuntimeStatus: (update) => runtimeUpdates.push(update),
       },
       solanaConfig: {
         enabled: true,
@@ -55,8 +59,9 @@ describe('runBotLoop', () => {
       },
       minimumScoreToEnter: 75,
       ClientCtor: FakePumpClient,
-      processPumpEvents: async ({ limit }) => {
+      processPumpEvents: async ({ limit, maxPendingAttempts }) => {
         processedLimits.push(limit ?? 0);
+        pendingAttemptLimits.push(maxPendingAttempts ?? -1);
         return { eventsRead: 1, candidatesEnriched: 1, scored: 1, openedPositions: 0, skipped: 0, failed: 0 };
       },
       onLog: (message) => logs.push(message),
@@ -65,12 +70,16 @@ describe('runBotLoop', () => {
     expect(saved).toHaveLength(1);
     expect(processedLimits.length).toBeGreaterThanOrEqual(2);
     expect(processedLimits.every((limit) => limit === 7)).toBe(true);
+    expect(pendingAttemptLimits.every((attempts) => attempts === 3)).toBe(true);
     expect(FakePumpClient.closes).toBe(1);
     expect(result.eventsSaved).toBe(1);
     expect(result.processRuns).toBe(processedLimits.length);
     expect(result.scored).toBe(processedLimits.length);
     expect(logs.join('\n')).toContain('[run] started');
     expect(logs.join('\n')).toContain('[run] stopped');
+    expect(logs.some((message) => /\[run:process].* ms=\d+/.test(message))).toBe(true);
+    expect(runtimeUpdates.some((update) => update.lastIngestAt === '2026-01-01T00:00:00Z')).toBe(true);
+    expect(runtimeUpdates.some((update) => update.lastProcessPassAt)).toBe(true);
   });
 
   it('runs an exit pass each interval when exit rules and a stateful store are provided', async () => {
@@ -318,6 +327,7 @@ describe('runBotLoop', () => {
   it('runs exit-only passes on the faster exitIntervalMs when configured', async () => {
     FakePumpClient.closes = 0;
     const exitOnlyCalls: number[] = [];
+    const logs: string[] = [];
     let callSeq = 0;
 
     const result = await runBotLoop({
@@ -344,9 +354,9 @@ describe('runBotLoop', () => {
       processPumpEvents: async () => ({ eventsRead: 0, candidatesEnriched: 0, scored: 0, openedPositions: 0, skipped: 0, failed: 0 }),
       processExits: async () => {
         exitOnlyCalls.push(callSeq++);
-        return { positionsChecked: 0, repriced: 0, missingPrice: 0, closed: 0, stopLoss: 0, takeProfit: 0, trailingStop: 0, timeout: 0, failed: 0 };
+        return { positionsChecked: 1, repriced: 1, missingPrice: 0, closed: 0, stopLoss: 0, takeProfit: 0, trailingStop: 0, timeout: 0, failed: 0 };
       },
-      onLog: () => {},
+      onLog: (message) => logs.push(message),
     });
 
     // With a 50ms run, 40ms main interval, 12ms exit interval:
@@ -354,6 +364,61 @@ describe('runBotLoop', () => {
     // - exit-only pass fires ~4 times (12ms, 24ms, 36ms, 48ms)
     // Exit calls should exceed main process runs since interval is tighter.
     expect(exitOnlyCalls.length).toBeGreaterThan(result.processRuns);
+    expect(logs.some((message) => /\[run:exits:fast].* ms=\d+/.test(message))).toBe(true);
     expect(result).toBeDefined();
+  });
+
+  it('keeps fast exits running while a candidate processing pass is blocked', async () => {
+    FakePumpClient.closes = 0;
+    let processCalls = 0;
+    let slowProcessStarted = false;
+    let fastExitsDuringSlow = 0;
+    let releaseSlowProcess: (() => void) | undefined;
+
+    const result = await runBotLoop({
+      apiKey: 'abc123',
+      durationMs: 80,
+      processIntervalMs: 20,
+      exitIntervalMs: 5,
+      processLimit: 5,
+      store: {
+        savePumpPortalEvent: () => {},
+        loadOpenPositions: () => [],
+        getRealizedPnlUsd: () => 0,
+        getRealizedPnlUsdSince: () => 0,
+        getNextPositionSeq: () => 1,
+        saveOpenPosition: () => {},
+        saveClosedTrade: () => {},
+      },
+      solanaConfig: { enabled: true, minLiquidityUsd: 10_000, minVolume5mUsd: 5_000, maxSlippageBps: 500, confirmationCommitment: 'confirmed' },
+      paper: { startingBalanceUsd: 1000, positionSizeUsd: 25, maxOpenPositions: 3 },
+      minimumScoreToEnter: 75,
+      exits: { stopLossPct: 20, takeProfitPct: 300, trailingStopPct: 15, trailingArmPct: 30, maxHoldMinutes: 60 },
+      ClientCtor: FakePumpClient,
+      processPumpEvents: async () => {
+        processCalls += 1;
+        if (processCalls === 2) {
+          slowProcessStarted = true;
+          await new Promise<void>((resolve) => {
+            releaseSlowProcess = resolve;
+          });
+        }
+        return { eventsRead: 0, candidatesEnriched: 0, scored: 0, openedPositions: 0, skipped: 0, failed: 0 };
+      },
+      processExits: async () => {
+        if (slowProcessStarted) {
+          fastExitsDuringSlow += 1;
+          if (fastExitsDuringSlow >= 2) {
+            releaseSlowProcess?.();
+            releaseSlowProcess = undefined;
+          }
+        }
+        return { positionsChecked: 1, repriced: 1, missingPrice: 0, closed: 0, stopLoss: 0, takeProfit: 0, trailingStop: 0, timeout: 0, failed: 0 };
+      },
+    });
+
+    expect(slowProcessStarted).toBe(true);
+    expect(fastExitsDuringSlow).toBeGreaterThanOrEqual(2);
+    expect(result.processRuns).toBeGreaterThanOrEqual(2);
   });
 });

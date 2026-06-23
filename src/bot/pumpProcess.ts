@@ -12,6 +12,7 @@ import type { Reporter } from './reporter.js';
 import type { ChainConfig } from '../config/schema.js';
 import type { OpportunityScore, PaperPosition, TokenCandidate } from '../types/domain.js';
 import type { TokenVolumeSnapshotRow } from '../storage/sqliteStore.js';
+import { SOL_MINT, USDC_MINT, USDT_MINT } from '../execution/solanaTransactionHistory.js';
 
 interface PumpPortalEventRow {
   id: number;
@@ -31,9 +32,11 @@ interface PumpPortalEventRow {
 const DEFAULT_MAX_PENDING_ATTEMPTS = 5;
 const VOLUME_ACCELERATION_WINDOW_MINUTES = 30;
 const NO_SELL_ROUTE_PENALTY_POINTS = 50;
+const ROUTE_INPUT_MINTS = new Set([SOL_MINT, USDC_MINT, USDT_MINT]);
 
 interface PumpProcessStore {
   listPendingPumpPortalEvents(limit?: number): PumpPortalEventRow[];
+  listPendingPumpPortalEventsForTrading?(limit?: number): PumpPortalEventRow[];
   markPumpPortalEventProcessed(id: number, status: 'pending' | 'processed' | 'skipped' | 'failed', note?: string): void;
   saveScoredCandidate(candidate: TokenCandidate, score: OpportunityScore): void;
   saveOpenPosition(position: PaperPosition): void;
@@ -51,6 +54,9 @@ interface PumpProcessOptions {
   strategies?: TradingStrategy[];
   limit?: number;
   maxPendingAttempts?: number;
+  // When set, scored candidates from older raw events are retained for analytics,
+  // but they cannot open new positions. Freshness matters for momentum entries.
+  maxTradeEventAgeMinutes?: number;
   fetchCandidates?: (tokenMints: string[]) => Promise<TokenCandidate[]>;
   checkRoute?: (outputMint: string) => Promise<JupiterRouteCheck>;
   // Injectable for testing; defaults to the real Solana RPC call.
@@ -75,7 +81,10 @@ export interface PumpProcessResult {
 }
 
 export async function processPumpPortalEvents(options: PumpProcessOptions): Promise<PumpProcessResult> {
-  const events = options.store.listPendingPumpPortalEvents(options.limit ?? 50);
+  const limit = options.limit ?? 50;
+  const events = options.store.listPendingPumpPortalEventsForTrading
+    ? options.store.listPendingPumpPortalEventsForTrading(limit)
+    : options.store.listPendingPumpPortalEvents(limit);
   const result: PumpProcessResult = {
     eventsRead: events.length,
     candidatesEnriched: 0,
@@ -87,12 +96,23 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
 
   if (events.length === 0) return result;
 
+  const tradeEvents: PumpPortalEventRow[] = [];
+  for (const event of events) {
+    if (event.tokenMint && ROUTE_INPUT_MINTS.has(event.tokenMint)) {
+      options.store.markPumpPortalEventProcessed(event.id, 'skipped', 'route input mint is not a trade candidate');
+      result.skipped += 1;
+    } else {
+      tradeEvents.push(event);
+    }
+  }
+  if (tradeEvents.length === 0) return result;
+
   // Use the provided strategy list or fall back to the singleton for backward compat.
   const strategies = options.strategies && options.strategies.length > 0
     ? options.strategies
     : [freshLaunchMomentumStrategy];
 
-  const mints = [...new Set(events.map((event) => event.tokenMint).filter((mint): mint is string => Boolean(mint)))];
+  const mints = [...new Set(tradeEvents.map((event) => event.tokenMint).filter((mint): mint is string => Boolean(mint)))];
   const fetchCandidates = options.fetchCandidates ?? fetchPumpPortalMarketCandidates;
   const checkRoute = options.checkRoute ?? checkJupiterRoute;
   const candidates = await fetchCandidates(mints);
@@ -107,7 +127,7 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
       ? restoreBrokerFromStore(options.store, options.paper)
       : new PaperBroker(options.paper));
 
-  for (const event of events) {
+  for (const event of tradeEvents) {
     if (!event.tokenMint) {
       options.store.markPumpPortalEventProcessed(event.id, 'skipped', 'missing token mint');
       result.skipped += 1;
@@ -201,6 +221,11 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
       // (which is kept in options for the retry pass compatibility).
       const entryThreshold = strategy.config.minScoreToEnter;
       let note = `strategy=${strategy.id} score=${score.total} recommendation=${score.recommendation}`;
+      const eventAgeMinutes = ageMinutesSince(event.receivedAt);
+      const staleForTrading =
+        options.maxTradeEventAgeMinutes !== undefined &&
+        eventAgeMinutes !== undefined &&
+        eventAgeMinutes > options.maxTradeEventAgeMinutes;
       const maxAttempts = options.maxPendingAttempts ?? DEFAULT_MAX_PENDING_ATTEMPTS;
       const previousAttempts = event.processingAttempts ?? 0;
       const wouldQualifyWithoutSellRoutePenalty =
@@ -225,7 +250,9 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
         continue;
       }
 
-      if (score.total >= entryThreshold && score.recommendation === 'paper_trade') {
+      if (staleForTrading) {
+        note += ` stale event age=${eventAgeMinutes!.toFixed(1)}m no trade`;
+      } else if (score.total >= entryThreshold && score.recommendation === 'paper_trade') {
         // Size the position by the strategy's conviction tier before capacity check
         // so we know how much cash is required.
         const positionSizeUsd = strategy.resolvePositionSizeUsd(score.total, options.paper.positionSizeUsd);
@@ -253,4 +280,10 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
   }
 
   return result;
+}
+
+function ageMinutesSince(iso: string): number | undefined {
+  const timestamp = Date.parse(iso);
+  if (!Number.isFinite(timestamp)) return undefined;
+  return (Date.now() - timestamp) / 60_000;
 }
