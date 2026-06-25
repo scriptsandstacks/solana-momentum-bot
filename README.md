@@ -10,6 +10,7 @@ Automated trading bot for Pump.fun tokens on Solana. Watches for newly created a
 |---|---|
 | [docs/how-it-works.md](docs/how-it-works.md) | Non-technical — strategies, edge, risk management, reading reports |
 | [docs/system.md](docs/system.md) | Technical — architecture, data flow, strategy logic, exit rules, CLI reference |
+| [docs/drawdown-recovery-runbook.md](docs/drawdown-recovery-runbook.md) | Operator — paper-mode recovery checklist after material drawdown |
 | [docs/handoff.md](docs/handoff.md) | Engineering — current implementation state, open items, next steps |
 
 ---

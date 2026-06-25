@@ -300,6 +300,8 @@ transactions cannot be dismissed through this command.
 
 For the owner/operator go-live checklist, see
 [`docs/go-live-runbook.md`](go-live-runbook.md).
+For paper-mode recovery after a material drawdown, see
+[`docs/drawdown-recovery-runbook.md`](drawdown-recovery-runbook.md).
 
 ### During `run`
 
