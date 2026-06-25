@@ -33,6 +33,25 @@ describe('PaperBroker', () => {
     expect(broker.getOpenPositions()).toHaveLength(1);
   });
 
+  it('rejects duplicate open exposure to the same token mint', async () => {
+    const broker = new PaperBroker({ startingBalanceUsd: 100, positionSizeUsd: 25, maxOpenPositions: 3 });
+    await broker.openPosition(candidate, 82, new Date('2026-01-01T00:00:00Z'));
+
+    const duplicate = {
+      ...candidate,
+      symbol: 'MOCK2',
+      pairAddress: 'pair-2',
+      strategyId: 'migrationMomentum',
+    };
+
+    const check = broker.canOpenPositionForCandidate(duplicate, new Date('2026-01-01T00:01:00Z'));
+    expect(check.ok).toBe(false);
+    expect(check.reason).toMatch(/already has open exposure/i);
+    await expect(
+      broker.openPosition(duplicate, 80, new Date('2026-01-01T00:01:00Z')),
+    ).rejects.toThrow(/already has open exposure/i);
+  });
+
   it('closes a paper position and records pnl', async () => {
     const broker = new PaperBroker({ startingBalanceUsd: 100, positionSizeUsd: 25, maxOpenPositions: 3 });
     const position = await broker.openPosition(candidate, 82, new Date('2026-01-01T00:00:00Z'));

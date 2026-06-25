@@ -101,8 +101,15 @@ export class PaperBroker implements ExecutionBroker {
   }
 
   canOpenPosition(now = new Date(), requiredSizeUsd?: number): OpenPositionCheck {
+    return this.canOpenPositionForCandidate(undefined, now, requiredSizeUsd);
+  }
+
+  canOpenPositionForCandidate(candidate?: TokenCandidate, now = new Date(), requiredSizeUsd?: number): OpenPositionCheck {
     if (this.openPositions.size >= this.maxOpenPositions) {
       return { ok: false, reason: `Cannot open position: max open positions (${this.maxOpenPositions}) reached` };
+    }
+    if (candidate && [...this.openPositions.values()].some((position) => position.token.address === candidate.address)) {
+      return { ok: false, reason: `Cannot open position: ${candidate.symbol} already has open exposure` };
     }
     const required = requiredSizeUsd ?? this.positionSizeUsd;
     if (this.cashUsd < required) {
@@ -121,7 +128,7 @@ export class PaperBroker implements ExecutionBroker {
   // trade. Use this for conviction-tiered sizing: pass strategy.resolvePositionSizeUsd()
   // output here rather than changing the broker's global configuration.
   async openPosition(candidate: TokenCandidate, score: number, openedAt = new Date(), positionSizeUsd?: number): Promise<PaperPosition> {
-    const check = this.canOpenPosition(openedAt);
+    const check = this.canOpenPositionForCandidate(candidate, openedAt);
     if (!check.ok) {
       throw new Error(check.reason);
     }

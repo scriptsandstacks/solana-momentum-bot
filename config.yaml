@@ -12,7 +12,7 @@ chains:
     # (mint authority revocation, holder concentration, top-5 holder %).
     # Example: export SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<key>
     rpcUrlEnv: SOLANA_RPC_URL
-    minLiquidityUsd: 10000
+    minLiquidityUsd: 25000
     minVolume5mUsd: 5000
     maxSlippageBps: 500
     maxPriceImpactBps: 500
@@ -24,9 +24,9 @@ chains:
 
 paper:
   startingBalanceUsd: 1000
-  positionSizeUsd: 25
-  maxOpenPositions: 3
-  maxDailyLossUsd: 100
+  positionSizeUsd: 10
+  maxOpenPositions: 1
+  maxDailyLossUsd: 25
 
 exits:
   # Hard floor — exit immediately if down this much from entry (phase 1 and 2).
@@ -51,6 +51,13 @@ fees:
 
 scoring:
   minimumScoreToEnter: 75
+
+strategies:
+  freshLaunchMomentum:
+    enabled: true
+    minScoreToEnter: 75
+  migrationMomentum:
+    enabled: false
 
 # Data retention. The run loop auto-prunes once per UTC day; `prune` can also
 # be run manually. Trades are always kept regardless of these settings.

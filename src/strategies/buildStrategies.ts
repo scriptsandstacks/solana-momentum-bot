@@ -6,7 +6,7 @@ import type { StrategyConfig, TradingStrategy } from './types.js';
 type StrategyOverrides = NonNullable<BotConfig['strategies']>[keyof NonNullable<BotConfig['strategies']>];
 
 export function buildStrategies(config: BotConfig): TradingStrategy[] {
-  return [
+  const strategies = [
     createFreshLaunchStrategy(
       strategyConfigOverrides(config.strategies?.freshLaunchMomentum, {
         minScoreToEnter: config.scoring.minimumScoreToEnter,
@@ -14,6 +14,10 @@ export function buildStrategies(config: BotConfig): TradingStrategy[] {
     ),
     createMigrationStrategy(strategyConfigOverrides(config.strategies?.migrationMomentum)),
   ];
+  return strategies.filter((strategy) => {
+    const overrides = config.strategies?.[strategy.id as keyof NonNullable<BotConfig['strategies']>];
+    return overrides?.enabled !== false;
+  });
 }
 
 export function strategyThresholdMap(strategies: TradingStrategy[]): Record<string, number> {

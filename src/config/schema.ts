@@ -50,6 +50,7 @@ const exitRuleOverridesSchema = z.object({
 
 const strategyOverridesSchema = z
   .object({
+    enabled: z.boolean().optional(),
     minScoreToEnter: z.number().min(0).max(100).optional(),
     exits: exitRuleOverridesSchema.optional(),
   })

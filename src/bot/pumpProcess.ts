@@ -256,7 +256,12 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
         // Size the position by the strategy's conviction tier before capacity check
         // so we know how much cash is required.
         const positionSizeUsd = strategy.resolvePositionSizeUsd(score.total, options.paper.positionSizeUsd);
-        const capacity = broker.canOpenPosition(undefined, positionSizeUsd);
+        const candidateAwareBroker = broker as typeof broker & {
+          canOpenPositionForCandidate?: (candidate: TokenCandidate, now?: Date, requiredSizeUsd?: number) => { ok: boolean; reason?: string };
+        };
+        const capacity = candidateAwareBroker.canOpenPositionForCandidate
+          ? candidateAwareBroker.canOpenPositionForCandidate(enriched, undefined, positionSizeUsd)
+          : broker.canOpenPosition(undefined, positionSizeUsd);
         if (capacity.ok) {
           const position = await broker.openPosition(enriched, score.total, undefined, positionSizeUsd);
           options.store.saveOpenPosition(position);
