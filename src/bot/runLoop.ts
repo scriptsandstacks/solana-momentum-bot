@@ -137,6 +137,10 @@ type ProcessPumpEvents = (options: {
   limit?: number;
   maxTradeEventAgeMinutes?: number;
   maxPendingAttempts?: number;
+  entryFilters?: {
+    minAgeMinutes?: number;
+    disallowedRouteInputSymbols?: string[];
+  };
   reporter?: Reporter;
   broker?: ExecutionBroker;
 }) => Promise<PumpProcessResult>;
@@ -149,6 +153,10 @@ interface RunBotLoopOptions {
   processLimit: number;
   maxTradeEventAgeMinutes?: number;
   maxPendingAttempts?: number;
+  entryFilters?: {
+    minAgeMinutes?: number;
+    disallowedRouteInputSymbols?: string[];
+  };
   store: RunLoopStore;
   solanaConfig: ChainConfig;
   paper: PaperBrokerOptions;
@@ -340,6 +348,7 @@ export async function runBotLoop(options: RunBotLoopOptions): Promise<RunBotLoop
         limit: options.processLimit,
         maxTradeEventAgeMinutes: options.maxTradeEventAgeMinutes,
         maxPendingAttempts: options.maxPendingAttempts,
+        entryFilters: options.entryFilters,
         reporter: options.reporter,
         broker: options.broker,
       });

@@ -135,4 +135,19 @@ describe('config loading', () => {
     expect(config.strategies.migrationMomentum.enabled).toBe(false);
     expect(config.strategies.migrationMomentum.exits?.stopLossPct).toBe(16);
   });
+
+  it('accepts entry filters for emergency risk control', () => {
+    const config = parseConfig({
+      ...validConfig,
+      entryFilters: {
+        minAgeMinutes: 3,
+        disallowedRouteInputSymbols: ['SOL'],
+      },
+    });
+
+    expect(config.entryFilters).toEqual({
+      minAgeMinutes: 3,
+      disallowedRouteInputSymbols: ['SOL'],
+    });
+  });
 });

@@ -741,6 +741,8 @@ program
       solanaConfig: config.chains.solana,
       paper: paperBrokerOptions(config),
       minimumScoreToEnter: config.scoring.minimumScoreToEnter,
+      strategies: buildStrategies(config),
+      entryFilters: config.entryFilters,
       limit,
     });
     store.close();
@@ -891,6 +893,7 @@ program
         processLimit,
         maxTradeEventAgeMinutes,
         maxPendingAttempts,
+        entryFilters: config.entryFilters,
         store,
         solanaConfig: config.chains.solana,
         paper: paperBrokerOptions(config),

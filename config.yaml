@@ -52,6 +52,11 @@ fees:
 scoring:
   minimumScoreToEnter: 75
 
+entryFilters:
+  minAgeMinutes: 3
+  disallowedRouteInputSymbols:
+    - SOL
+
 strategies:
   freshLaunchMomentum:
     enabled: true
