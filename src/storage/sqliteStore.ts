@@ -124,6 +124,26 @@ export interface ClosedTradeStatRow {
   exitNetworkFeeUsd: number | null;
 }
 
+export interface ClosedTradeRiskRow {
+  id: number;
+  positionId: string;
+  address: string;
+  symbol: string;
+  strategyId: string;
+  score: number;
+  reason: string;
+  pnlUsd: number;
+  pnlPct: number;
+  openedAt: string;
+  closedAt: string;
+  routeInputSymbol: string | null;
+  liquidityUsd: number | null;
+  volume5mUsd: number | null;
+  priceChange5mPct: number | null;
+  ageMinutes: number | null;
+  sellRouteAvailable: number | null;
+}
+
 export interface TrackableScoredCandidateRow {
   id: number;
   address: string;
@@ -727,6 +747,24 @@ export class SqliteStore {
          ORDER BY closed_at ASC`,
       )
       .all() as ClosedTradeStatRow[];
+  }
+
+  loadClosedTradeRiskRows(): ClosedTradeRiskRow[] {
+    return this.db
+      .prepare(
+        `SELECT id, position_id as positionId, address, symbol, strategy_id as strategyId,
+                score, reason, pnl_usd as pnlUsd, pnl_pct as pnlPct,
+                opened_at as openedAt, closed_at as closedAt,
+                json_extract(token_json, '$.routeInputSymbol') as routeInputSymbol,
+                json_extract(token_json, '$.liquidityUsd') as liquidityUsd,
+                json_extract(token_json, '$.volume5mUsd') as volume5mUsd,
+                json_extract(token_json, '$.priceChange5mPct') as priceChange5mPct,
+                json_extract(token_json, '$.ageMinutes') as ageMinutes,
+                json_extract(token_json, '$.sellRouteAvailable') as sellRouteAvailable
+         FROM closed_trades
+         ORDER BY closed_at ASC`,
+      )
+      .all() as ClosedTradeRiskRow[];
   }
 
   listClosedTrades(limit = 50): ClosedTradeRow[] {

@@ -135,6 +135,108 @@ describe('processPumpPortalEvents', () => {
     expect(statuses[0].note).toContain('no trade');
   });
 
+  it('scores but does not open candidates below the configured minimum age', async () => {
+    const scored: Array<{ candidate: TokenCandidate; score: OpportunityScore }> = [];
+    const opened: PaperPosition[] = [];
+    const statuses: Array<{ id: number; status: string; note?: string }> = [];
+
+    const result = await processPumpPortalEvents({
+      store: {
+        listPendingPumpPortalEvents: () => [
+          {
+            id: 3,
+            eventType: 'new_token',
+            tokenMint: 'mint-too-new',
+            symbol: 'NEW',
+            rawJson: '{}',
+            receivedAt: '2026-01-01T00:00:00Z',
+          },
+        ],
+        markPumpPortalEventProcessed: (id, status, note) => statuses.push({ id, status, note }),
+        saveScoredCandidate: (candidate, score) => scored.push({ candidate, score }),
+        saveOpenPosition: (position) => opened.push(position),
+      },
+      solanaConfig: {
+        enabled: true,
+        minLiquidityUsd: 10_000,
+        minVolume5mUsd: 5_000,
+        maxSlippageBps: 500,
+        confirmationCommitment: 'confirmed',
+      },
+      paper: {
+        startingBalanceUsd: 1000,
+        positionSizeUsd: 25,
+        maxOpenPositions: 3,
+      },
+      minimumScoreToEnter: 75,
+      entryFilters: { minAgeMinutes: 3 },
+      fetchCandidates: async () => [{ ...strongCandidate('mint-too-new'), ageMinutes: 0 }],
+      checkRoute: async () => ({
+        routeAvailable: true,
+        estimatedSlippageBps: 100,
+        routeInputMint: 'usdc-mint',
+        routeInputSymbol: 'USDC',
+        sellRouteAvailable: true,
+      }),
+    });
+
+    expect(result).toMatchObject({ eventsRead: 1, scored: 1, openedPositions: 0 });
+    expect(scored).toHaveLength(1);
+    expect(opened).toHaveLength(0);
+    expect(statuses[0].note).toContain('not opened (age');
+  });
+
+  it('scores but does not open candidates using a disabled route input', async () => {
+    const scored: Array<{ candidate: TokenCandidate; score: OpportunityScore }> = [];
+    const opened: PaperPosition[] = [];
+    const statuses: Array<{ id: number; status: string; note?: string }> = [];
+
+    const result = await processPumpPortalEvents({
+      store: {
+        listPendingPumpPortalEvents: () => [
+          {
+            id: 4,
+            eventType: 'new_token',
+            tokenMint: 'mint-sol-route',
+            symbol: 'SOLR',
+            rawJson: '{}',
+            receivedAt: '2026-01-01T00:00:00Z',
+          },
+        ],
+        markPumpPortalEventProcessed: (id, status, note) => statuses.push({ id, status, note }),
+        saveScoredCandidate: (candidate, score) => scored.push({ candidate, score }),
+        saveOpenPosition: (position) => opened.push(position),
+      },
+      solanaConfig: {
+        enabled: true,
+        minLiquidityUsd: 10_000,
+        minVolume5mUsd: 5_000,
+        maxSlippageBps: 500,
+        confirmationCommitment: 'confirmed',
+      },
+      paper: {
+        startingBalanceUsd: 1000,
+        positionSizeUsd: 25,
+        maxOpenPositions: 3,
+      },
+      minimumScoreToEnter: 75,
+      entryFilters: { disallowedRouteInputSymbols: ['SOL'] },
+      fetchCandidates: async () => [{ ...strongCandidate('mint-sol-route'), ageMinutes: 5 }],
+      checkRoute: async () => ({
+        routeAvailable: true,
+        estimatedSlippageBps: 100,
+        routeInputMint: 'sol-mint',
+        routeInputSymbol: 'SOL',
+        sellRouteAvailable: true,
+      }),
+    });
+
+    expect(result).toMatchObject({ eventsRead: 1, scored: 1, openedPositions: 0 });
+    expect(scored).toHaveLength(1);
+    expect(opened).toHaveLength(0);
+    expect(statuses[0].note).toContain('not opened (route input SOL disabled)');
+  });
+
   it('marks events skipped when market data is not available yet', async () => {
     const statuses: Array<{ id: number; status: string; note?: string }> = [];
 

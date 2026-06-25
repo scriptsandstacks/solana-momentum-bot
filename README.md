@@ -10,6 +10,7 @@ Automated trading bot for Pump.fun tokens on Solana. Watches for newly created a
 |---|---|
 | [docs/how-it-works.md](docs/how-it-works.md) | Non-technical — strategies, edge, risk management, reading reports |
 | [docs/system.md](docs/system.md) | Technical — architecture, data flow, strategy logic, exit rules, CLI reference |
+| [docs/drawdown-recovery-runbook.md](docs/drawdown-recovery-runbook.md) | Operator — paper-mode recovery checklist after material drawdown |
 | [docs/handoff.md](docs/handoff.md) | Engineering — current implementation state, open items, next steps |
 
 ---
@@ -104,6 +105,7 @@ Set `discordWebhookUrlEnv: DISCORD_WEBHOOK_URL` in `config.yaml` under `notifica
 | `recover-positions` | Resolve wallet/SQLite discrepancies after crashes (`--dry-run`, `--yes`) |
 | `report` | Persisted scores, open positions, closed trades, events |
 | `stats` | Trade analytics: expectancy, win rate, P&L by strategy / reason / score bucket. Includes execution quality section (fee drag vs price-movement P&L) for live trades. |
+| `risk-report` | Drawdown-driver report: duplicate mints, route input, age, liquidity, price-change, and worst losses |
 | `strategies` | Compact per-strategy performance table |
 | `outcomes` | Counterfactual MFE/MAE for all scored candidates by score bucket |
 | `tune` | Outcome data → specific threshold recommendations. `--apply` writes to config. |
@@ -121,7 +123,7 @@ Set `discordWebhookUrlEnv: DISCORD_WEBHOOK_URL` in `config.yaml` under `notifica
 ```
 Use paper mode to calibrate, or switch to live when the owner is ready
         ↓
-stats + strategies → is expectancy positive?
+stats + strategies + risk-report → is expectancy positive and where is risk concentrated?
 outcomes → is the threshold set correctly?
 tune → what specifically needs to change?
         ↓

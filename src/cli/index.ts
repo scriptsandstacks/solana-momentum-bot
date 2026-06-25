@@ -7,6 +7,7 @@ import { renderReport } from '../bot/report.js';
 import { runPaperCycle } from '../bot/paperCycle.js';
 import { renderStorageReport } from '../bot/storageReport.js';
 import { computeTradeAnalytics, renderAnalyticsReport, computeOutcomeAnalytics, renderOutcomeAnalytics } from '../bot/analytics.js';
+import { computeRiskReport, renderRiskReport } from '../bot/riskReport.js';
 import { renderSnapshot } from '../bot/snapshot.js';
 import { trackCandidateOutcomes } from '../bot/trackOutcomes.js';
 import { runPumpWatch } from '../bot/pumpWatch.js';
@@ -348,6 +349,16 @@ program
     const store = new SqliteStore();
     const analytics = computeTradeAnalytics(store.loadClosedTradeStats());
     process.stdout.write(renderAnalyticsReport(analytics));
+    store.close();
+  });
+
+program
+  .command('risk-report')
+  .description('Identify drawdown drivers: duplicate mints, route input, age, liquidity, price-change, and worst losses')
+  .action(() => {
+    const store = new SqliteStore();
+    const report = computeRiskReport(store.loadClosedTradeRiskRows());
+    process.stdout.write(renderRiskReport(report));
     store.close();
   });
 
@@ -741,6 +752,8 @@ program
       solanaConfig: config.chains.solana,
       paper: paperBrokerOptions(config),
       minimumScoreToEnter: config.scoring.minimumScoreToEnter,
+      strategies: buildStrategies(config),
+      entryFilters: config.entryFilters,
       limit,
     });
     store.close();
@@ -891,6 +904,7 @@ program
         processLimit,
         maxTradeEventAgeMinutes,
         maxPendingAttempts,
+        entryFilters: config.entryFilters,
         store,
         solanaConfig: config.chains.solana,
         paper: paperBrokerOptions(config),

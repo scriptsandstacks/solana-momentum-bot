@@ -300,6 +300,8 @@ transactions cannot be dismissed through this command.
 
 For the owner/operator go-live checklist, see
 [`docs/go-live-runbook.md`](go-live-runbook.md).
+For paper-mode recovery after a material drawdown, see
+[`docs/drawdown-recovery-runbook.md`](drawdown-recovery-runbook.md).
 
 ### During `run`
 
@@ -326,6 +328,7 @@ For the owner/operator go-live checklist, see
 | `journal-resolve` | Resolve an RPC-proven failed or expired submitted execution. |
 | `report` | Persisted scores, open positions, closed trades, events. |
 | `stats` | Trade analytics: expectancy, win rate, P&L by strategy / reason / score bucket / source. |
+| `risk-report` | Drawdown-driver report: duplicate mints, route input, age, liquidity, price-change, and worst losses. |
 | `strategies` | Compact per-strategy performance summary. |
 | `outcomes` | Counterfactual MFE/MAE by score bucket. |
 | `tune` | Outcome data → threshold recommendations plus risk-signal calibration notes. `--apply` (`--yes`) only writes concrete config thresholds. |

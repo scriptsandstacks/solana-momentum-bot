@@ -36,6 +36,10 @@ const config: BotConfig = {
   scoring: {
     minimumScoreToEnter: 75,
   },
+  entryFilters: {
+    minAgeMinutes: 0,
+    disallowedRouteInputSymbols: [],
+  },
   strategies: {
     freshLaunchMomentum: {},
     migrationMomentum: {},

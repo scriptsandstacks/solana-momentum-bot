@@ -112,12 +112,14 @@ describe('config loading', () => {
       ...validConfig,
       strategies: {
         freshLaunchMomentum: {
+          enabled: true,
           minScoreToEnter: 80,
           exits: {
             maxHoldMinutes: 45,
           },
         },
         migrationMomentum: {
+          enabled: false,
           minScoreToEnter: 72,
           exits: {
             stopLossPct: 16,
@@ -127,8 +129,25 @@ describe('config loading', () => {
     });
 
     expect(config.strategies.freshLaunchMomentum.minScoreToEnter).toBe(80);
+    expect(config.strategies.freshLaunchMomentum.enabled).toBe(true);
     expect(config.strategies.freshLaunchMomentum.exits?.maxHoldMinutes).toBe(45);
     expect(config.strategies.migrationMomentum.minScoreToEnter).toBe(72);
+    expect(config.strategies.migrationMomentum.enabled).toBe(false);
     expect(config.strategies.migrationMomentum.exits?.stopLossPct).toBe(16);
+  });
+
+  it('accepts entry filters for emergency risk control', () => {
+    const config = parseConfig({
+      ...validConfig,
+      entryFilters: {
+        minAgeMinutes: 3,
+        disallowedRouteInputSymbols: ['SOL'],
+      },
+    });
+
+    expect(config.entryFilters).toEqual({
+      minAgeMinutes: 3,
+      disallowedRouteInputSymbols: ['SOL'],
+    });
   });
 });

@@ -57,6 +57,10 @@ interface PumpProcessOptions {
   // When set, scored candidates from older raw events are retained for analytics,
   // but they cannot open new positions. Freshness matters for momentum entries.
   maxTradeEventAgeMinutes?: number;
+  entryFilters?: {
+    minAgeMinutes?: number;
+    disallowedRouteInputSymbols?: string[];
+  };
   fetchCandidates?: (tokenMints: string[]) => Promise<TokenCandidate[]>;
   checkRoute?: (outputMint: string) => Promise<JupiterRouteCheck>;
   // Injectable for testing; defaults to the real Solana RPC call.
@@ -250,13 +254,21 @@ export async function processPumpPortalEvents(options: PumpProcessOptions): Prom
         continue;
       }
 
+      const entryFilterReason = blockedByEntryFilters(enriched, options.entryFilters);
       if (staleForTrading) {
         note += ` stale event age=${eventAgeMinutes!.toFixed(1)}m no trade`;
+      } else if (entryFilterReason) {
+        note += ` not opened (${entryFilterReason})`;
       } else if (score.total >= entryThreshold && score.recommendation === 'paper_trade') {
         // Size the position by the strategy's conviction tier before capacity check
         // so we know how much cash is required.
         const positionSizeUsd = strategy.resolvePositionSizeUsd(score.total, options.paper.positionSizeUsd);
-        const capacity = broker.canOpenPosition(undefined, positionSizeUsd);
+        const candidateAwareBroker = broker as typeof broker & {
+          canOpenPositionForCandidate?: (candidate: TokenCandidate, now?: Date, requiredSizeUsd?: number) => { ok: boolean; reason?: string };
+        };
+        const capacity = candidateAwareBroker.canOpenPositionForCandidate
+          ? candidateAwareBroker.canOpenPositionForCandidate(enriched, undefined, positionSizeUsd)
+          : broker.canOpenPosition(undefined, positionSizeUsd);
         if (capacity.ok) {
           const position = await broker.openPosition(enriched, score.total, undefined, positionSizeUsd);
           options.store.saveOpenPosition(position);
@@ -286,4 +298,21 @@ function ageMinutesSince(iso: string): number | undefined {
   const timestamp = Date.parse(iso);
   if (!Number.isFinite(timestamp)) return undefined;
   return (Date.now() - timestamp) / 60_000;
+}
+
+function blockedByEntryFilters(
+  candidate: TokenCandidate,
+  filters: PumpProcessOptions['entryFilters'],
+): string | undefined {
+  if (!filters) return undefined;
+  if (filters.minAgeMinutes !== undefined && candidate.ageMinutes < filters.minAgeMinutes) {
+    return `age ${candidate.ageMinutes}m below minimum ${filters.minAgeMinutes}m`;
+  }
+  const disallowedRoutes = new Set(
+    (filters.disallowedRouteInputSymbols ?? []).map((symbol) => symbol.toUpperCase()),
+  );
+  if (candidate.routeInputSymbol && disallowedRoutes.has(candidate.routeInputSymbol.toUpperCase())) {
+    return `route input ${candidate.routeInputSymbol} disabled`;
+  }
+  return undefined;
 }

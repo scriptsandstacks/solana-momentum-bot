@@ -78,4 +78,20 @@ describe('buildStrategies', () => {
       },
     });
   });
+
+  it('filters disabled strategies', () => {
+    const strategies = buildStrategies(
+      configWithStrategies({
+        freshLaunchMomentum: {
+          enabled: true,
+        },
+        migrationMomentum: {
+          enabled: false,
+        },
+      }),
+    );
+
+    expect(strategies.map((strategy) => strategy.id)).toEqual(['freshLaunchMomentum']);
+    expect(strategyThresholdMap(strategies)).toEqual({ freshLaunchMomentum: 75 });
+  });
 });

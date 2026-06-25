@@ -48,8 +48,16 @@ const exitRuleOverridesSchema = z.object({
   maxHoldMinutes: z.number().int().positive().optional(),
 });
 
+const entryFiltersSchema = z
+  .object({
+    minAgeMinutes: z.number().nonnegative().default(0),
+    disallowedRouteInputSymbols: z.array(z.string().min(1)).default([]),
+  })
+  .default({ minAgeMinutes: 0, disallowedRouteInputSymbols: [] });
+
 const strategyOverridesSchema = z
   .object({
+    enabled: z.boolean().optional(),
     minScoreToEnter: z.number().min(0).max(100).optional(),
     exits: exitRuleOverridesSchema.optional(),
   })
@@ -87,6 +95,7 @@ export const botConfigSchema = z.object({
   scoring: z.object({
     minimumScoreToEnter: z.number().min(0).max(100),
   }),
+  entryFilters: entryFiltersSchema,
   // Data-retention policy. Defaulted so older configs stay valid. Bounds the
   // growth of scored_candidates (the noisy "checked but not traded" rows) while
   // preserving anything tied to a real position. This window doubles as the
